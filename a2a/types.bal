@@ -26,6 +26,6 @@ public type Part record {|
     # MIME type; applies to all variants
     string? mediaType?;
     # Free-form metadata attached to this part
-    map<json>? metadata?;
+    map<json>? metadata?; #newer spec version can have additional fields
     json...;
 |};
