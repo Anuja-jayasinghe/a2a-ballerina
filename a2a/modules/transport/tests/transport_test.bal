@@ -2,6 +2,21 @@ import ballerina/test;
 import ballerina/a2a;
 import ballerina/http;
 
+// A short-lived listener + service, used only by
+// testReadSseStreamOverRealHttpResponse to exercise readSseStream against
+// a real http:Response rather than a synthetic stream.
+listener http:Listener sseTestListener = check new (19099);
+
+service /events on sseTestListener {
+    resource function get .() returns stream<http:SseEvent, error?> {
+        http:SseEvent[] events = [
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`},
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+        ];
+        return events.toStream();
+    }
+}
+
 @test:Config {}
 function testJsonRpcRequestEncodesPerWireExample() returns error? {
     JsonRpcRequest req = {
@@ -157,6 +172,44 @@ function testToA2AErrorMapsUnrecognizedCodeToInternalError() {
     test:assertTrue(err is a2a:A2AInternalError, "unrecognised codes should map to A2AInternalError");
     a2a:A2AInternalError internalErr = <a2a:A2AInternalError>err;
     test:assertEquals(internalErr.detail().code, -32600);
+}
+
+# Regression test: toA2AError passes the JSON-RPC error message both as
+# the error's own reason string and as A2AErrorDetail.message. Nothing
+# previously verified these stay in sync — a caller reading err.message()
+# (idiomatic Ballerina) must see the same text as err.detail().message.
+@test:Config {}
+function testToA2AErrorMessageMatchesDetailMessage() {
+    a2a:A2AError err = toA2AError({code: -32001, message: "Task not found"});
+
+    test:assertEquals(err.message(), "Task not found");
+    test:assertEquals(err.detail().message, "Task not found");
+    test:assertEquals(err.message(), err.detail().message);
+}
+
+# Exercises readSseStream(http:Response) end to end over a real HTTP
+# connection — a short-lived listener serves a canned SSE response, a real
+# http:Client fetches it, and the resulting http:Response (including its
+# actual resp.getSseEventStream() call) is fed to readSseStream. Only
+# A2AStreamGenerator was covered by the earlier synthetic-stream tests;
+# readSseStream's own wiring had zero coverage before this test.
+#
+# + return - an error if any HTTP or stream operation fails
+@test:Config {}
+function testReadSseStreamOverRealHttpResponse() returns error? {
+    http:Client testClient = check new ("http://localhost:19099");
+    http:Response resp = check testClient->get("/events");
+
+    stream<a2a:StreamResponse, error?> result = check readSseStream(resp);
+
+    a2a:StreamResponse first = check expectValue(result.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>first?.statusUpdate).status.state, a2a:TASK_STATE_WORKING);
+
+    a2a:StreamResponse second = check expectValue(result.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>second?.statusUpdate).status.state, a2a:TASK_STATE_COMPLETED);
+
+    record {| a2a:StreamResponse value; |}|error? third = result.next();
+    test:assertTrue(third is (), "stream should be closed after the terminal status delivered over real HTTP");
 }
 
 # Regression test: A2AError's 8 subtypes must be nominally distinct
