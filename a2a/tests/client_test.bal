@@ -1,4 +1,6 @@
+import ballerina/http;
 import ballerina/test;
+import ballerina/time;
 
 @test:Config {}
 function testResolveAgentCardSuccess() returns error? {
@@ -152,4 +154,142 @@ function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? 
     test:assertEquals(completedEvent.status.state, TASK_STATE_COMPLETED);
     test:assertEquals(completedEvent.taskId, "task-3");
     test:assertEquals(completedEvent.contextId, "ctx-3");
+}
+
+@test:Config {}
+function testGetTaskNotFoundErrorMapping() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        'error: {code: -32001, message: "Task not found", data: {taskId: "task-unknown"}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Task|error result = c->getTask("task-unknown");
+
+    test:assertTrue(result is error, "an unknown task should surface as an error");
+    test:assertTrue(result is TaskNotFoundError, "code -32001 should map to TaskNotFoundError");
+}
+
+@test:Config {}
+function testSendMessageMalformedEnvelopeMapping() returns error? {
+    // Neither result nor error — a malformed JSON-RPC envelope.
+    setNextJsonResponse({jsonrpc: "2.0", id: "1"});
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-5",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+    Task|Message|error result = c->sendMessage(msg);
+
+    test:assertTrue(result is error, "a malformed envelope should surface as an error");
+    test:assertTrue(result is InvalidAgentResponseError, "a malformed envelope should map to InvalidAgentResponseError");
+}
+
+@test:Config {}
+function testTenantPropagatesOnEveryMethod() returns error? {
+    string tenant = "acme-corp";
+    Client c = check new (getServerBaseUrl(), tenant = tenant);
+    Message msg = {
+        messageId: "msg-tenant",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+    json validTaskResponse = {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: "task-tenant", status: {state: "TASK_STATE_COMPLETED"}}
+    };
+    http:SseEvent[] minimalSseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-tenant","contextId":"ctx-tenant","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ];
+
+    setNextJsonResponse(validTaskResponse);
+    Task|Message|error sendMessageResult = c->sendMessage(msg);
+    check assertLastRequestTenant(tenant, "sendMessage");
+
+    setNextSseResponse(minimalSseResponse);
+    stream<StreamResponse, error?>|error sendMessageStreamResult = c->sendMessageStream(msg);
+    check assertLastRequestTenant(tenant, "sendMessageStream");
+    check closeIfStream(sendMessageStreamResult);
+
+    setNextJsonResponse(validTaskResponse);
+    Task|error getTaskResult = c->getTask("task-tenant");
+    check assertLastRequestTenant(tenant, "getTask");
+
+    setNextJsonResponse(validTaskResponse);
+    Task|error cancelTaskResult = c->cancelTask("task-tenant");
+    check assertLastRequestTenant(tenant, "cancelTask");
+
+    setNextSseResponse(minimalSseResponse);
+    stream<StreamResponse, error?>|error subscribeToTaskResult = c->subscribeToTask("task-tenant");
+    check assertLastRequestTenant(tenant, "subscribeToTask");
+    check closeIfStream(subscribeToTaskResult);
+}
+
+# Drains and closes a possibly-opened SSE stream so the mock server isn't
+# left trying to write to an abandoned connection between tests.
+#
+# + result - the raw remote-call result, only acted on if it's a stream
+# + return - an error if closing the stream fails
+isolated function closeIfStream(stream<StreamResponse, error?>|error result) returns error? {
+    if result is stream<StreamResponse, error?> {
+        record {| StreamResponse value; |}|error? next = result.next();
+        while next is record {| StreamResponse value; |} {
+            next = result.next();
+        }
+        check result.close();
+    }
+}
+
+@test:Config {}
+function testPerCallTenantOverridesClientDefault() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: "task-tenant-2", status: {state: "TASK_STATE_COMPLETED"}}
+    });
+
+    Client c = check new (getServerBaseUrl(), tenant = "default-tenant");
+    Message msg = {
+        messageId: "msg-tenant-2",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+
+    Task|Message|error result = c->sendMessage(msg, tenant = "override-tenant");
+
+    check assertLastRequestTenant("override-tenant", "sendMessage with a per-call override");
+}
+
+isolated function assertLastRequestTenant(string expectedTenant, string label) returns error? {
+    json params = check getLastRequestBody().params;
+    string tenantOnWire = check params.tenant;
+    test:assertEquals(tenantOnWire, expectedTenant, string `${label} should echo the tenant on the wire`);
+}
+
+@test:Config {}
+function testClientConfigTimeoutPassthrough() returns error? {
+    // A generous delay/threshold gap (0.1s timeout vs. a 3s mock delay,
+    // asserting well under that at 2s) so this doesn't flake under
+    // scheduling jitter when the full suite runs concurrently.
+    setNextDelay(3);
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: "task-slow", status: {state: "TASK_STATE_COMPLETED"}}
+    });
+
+    Client c = check new (getServerBaseUrl(), {timeout: 0.1});
+
+    decimal before = time:monotonicNow();
+    Task|error result = c->getTask("task-slow");
+    decimal elapsed = time:monotonicNow() - before;
+
+    setNextDelay(0);
+
+    test:assertTrue(result is error, "a client configured with a 0.1s timeout should time out against a slow mock response");
+    test:assertTrue(elapsed < 2d, string `expected the timeout to fire well under the mock's 3s delay, took ${elapsed}s`);
 }

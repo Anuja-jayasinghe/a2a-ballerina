@@ -46,6 +46,18 @@ type MockWellKnownScript record {|
 
 isolated MockRpcScript rpcScript = {};
 isolated MockWellKnownScript wellKnownScript = {};
+isolated json lastRequestBody = {};
+
+# Returns the JSON body of the last request the mock JSON-RPC endpoint
+# received, so tests can assert on what the Client actually sent on the
+# wire (e.g. tenant propagation).
+#
+# + return - the last received request body
+public isolated function getLastRequestBody() returns json {
+    lock {
+        return lastRequestBody.clone();
+    }
+}
 
 # Scripts the next JSON-RPC request to receive a plain JSON response.
 #
@@ -132,7 +144,10 @@ service / on mockListener {
     }
 
     resource function post .(http:Caller caller, http:Request req) returns error? {
-        json _ = check req.getJsonPayload();
+        json body = check req.getJsonPayload();
+        lock {
+            lastRequestBody = body.clone();
+        }
 
         MockRpcScript script;
         lock {

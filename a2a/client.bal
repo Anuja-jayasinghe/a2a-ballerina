@@ -209,4 +209,82 @@ public isolated client class Client {
         }
         return self.openSseStream("message/stream", params);
     }
+
+    # Retrieves the current state of a task.
+    #
+    # Used for polling after a non-blocking send, for fetching final state
+    # after a push notification, or for inspecting a task after a stream
+    # has ended.
+    #
+    # + taskId - The task identifier returned by a previous sendMessage
+    # + historyLength - Maximum messages to include in task.history. Unset
+    #                   means no limit; zero requests that history be
+    #                   omitted.
+    # + tenant - Optional per-call tenant override
+    # + return - The current Task, or an error if unknown
+    isolated remote function getTask(
+            string taskId,
+            int? historyLength = (),
+            string? tenant = ()) returns Task|error {
+        map<json> params = {"id": taskId};
+        if historyLength is int {
+            params["historyLength"] = historyLength;
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string {
+            params["tenant"] = effectiveTenant;
+        }
+        json result = check self.rpcCall("tasks/get", params);
+        return check result.cloneWithType(Task);
+    }
+
+    # Requests cancellation of an in-progress task.
+    #
+    # Cancellation is best effort. If the task has already reached a
+    # terminal state the agent returns TaskNotCancelableError.
+    #
+    # + taskId - The task to cancel
+    # + metadata - Optional additional context passed to the agent
+    # + tenant - Optional per-call tenant override
+    # + return - The updated Task, or an error
+    isolated remote function cancelTask(
+            string taskId,
+            map<json>? metadata = (),
+            string? tenant = ()) returns Task|error {
+        map<json> params = {"id": taskId};
+        if metadata is map<json> {
+            params["metadata"] = metadata;
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string {
+            params["tenant"] = effectiveTenant;
+        }
+        json result = check self.rpcCall("tasks/cancel", params);
+        return check result.cloneWithType(Task);
+    }
+
+    # Opens a stream on an existing task.
+    #
+    # The primary use is recovering from a dropped sendMessageStream
+    # connection. Per specification section 3.1.6 the first event
+    # delivered is always the task's current state, which prevents
+    # information loss between calling getTask and re-subscribing.
+    #
+    # Requires capabilities.streaming to be true. Returns
+    # UnsupportedOperationError if attempted on a task already in a
+    # terminal state.
+    #
+    # + taskId - The task to subscribe to
+    # + tenant - Optional per-call tenant override
+    # + return - A stream of StreamResponse values, or an error
+    isolated remote function subscribeToTask(
+            string taskId,
+            string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        map<json> params = {"id": taskId};
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string {
+            params["tenant"] = effectiveTenant;
+        }
+        return self.openSseStream("tasks/resubscribe", params);
+    }
 }
