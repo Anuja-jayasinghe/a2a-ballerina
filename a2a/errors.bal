@@ -1,5 +1,7 @@
 // A2A error types.
 
+import ballerina/a2a.transport;
+
 # Detail attached to every A2AError.
 public type A2AErrorDetail record {|
     # Originating JSON-RPC code, preserved for diagnostics
@@ -33,3 +35,51 @@ public type VersionNotSupportedError distinct A2AError;
 public type PushNotificationNotSupportedError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
+
+# Maps a JSON-RPC error code to its typed A2AError, per the error code
+# table in design doc §4.1. Unrecognised codes map to A2AInternalError
+# with the original code preserved in A2AErrorDetail.code.
+#
+# Lives here rather than in modules/transport/ because it constructs
+# A2AError subtypes directly, and modules/transport/ cannot import the
+# root a2a module without creating a cyclic module dependency (the root
+# module already imports modules/transport/ for the envelope types).
+#
+# + err - the JSON-RPC error object received on the wire
+# + return - the corresponding typed A2AError
+isolated function toA2AError(transport:JsonRpcError err) returns A2AError {
+    match err.code {
+        -32001 => {
+            return error TaskNotFoundError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32002 => {
+            return error TaskNotCancelableError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32003 => {
+            return error PushNotificationNotSupportedError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32004 => {
+            return error UnsupportedOperationError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32005 => {
+            return error ContentTypeNotSupportedError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32006 => {
+            return error InvalidAgentResponseError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32007 => {
+            // ExtendedAgentCardNotConfiguredError has no dedicated Ballerina type
+            return error UnsupportedOperationError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32008 => {
+            // ExtensionSupportRequiredError has no dedicated Ballerina type
+            return error UnsupportedOperationError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        -32009 => {
+            return error VersionNotSupportedError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+        _ => {
+            return error A2AInternalError(err.message, message = err.message, code = err.code, data = err?.data);
+        }
+    }
+}

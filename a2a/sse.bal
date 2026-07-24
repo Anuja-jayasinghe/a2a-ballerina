@@ -1,6 +1,12 @@
-// SSE transport for the A2A client.
+// SSE stream decoding for the A2A client.
+//
+// Lives in the root module, not modules/transport/, because it constructs
+// StreamResponse/A2AError values directly and modules/transport/ cannot
+// import the root a2a module without creating a cyclic module dependency
+// (the root module already needs to import modules/transport/ for the
+// JSON-RPC envelope types). See LEARNING_LOG.md.
 
-import ballerina/a2a;
+import ballerina/a2a.transport;
 import ballerina/http;
 
 # Wraps the standard library SSE event stream, decoding each event's
@@ -9,11 +15,11 @@ import ballerina/http;
 #
 # + resp - the HTTP response opened with `Accept: text/event-stream`
 # + return - a stream of decoded StreamResponse values
-public isolated function readSseStream(http:Response resp)
-        returns stream<a2a:StreamResponse, error?>|error {
+isolated function readSseStream(http:Response resp)
+        returns stream<StreamResponse, error?>|error {
     stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
     A2AStreamGenerator generator = new (sseStream);
-    stream<a2a:StreamResponse, error?> result = new (generator);
+    stream<StreamResponse, error?> result = new (generator);
     return result;
 }
 
@@ -29,7 +35,7 @@ class A2AStreamGenerator {
         self.sseStream = sseStream;
     }
 
-    public isolated function next() returns record {| a2a:StreamResponse value; |}|error? {
+    public isolated function next() returns record {| StreamResponse value; |}|error? {
         if self.closed {
             return ();
         }
@@ -52,7 +58,7 @@ class A2AStreamGenerator {
                 continue;
             }
 
-            a2a:StreamResponse|error result = self.decodeEvent(data);
+            StreamResponse|error result = self.decodeEvent(data);
             if result is error {
                 self.closed = true;
                 return result;
@@ -65,23 +71,23 @@ class A2AStreamGenerator {
         }
     }
 
-    private isolated function decodeEvent(string data) returns a2a:StreamResponse|error {
+    private isolated function decodeEvent(string data) returns StreamResponse|error {
         json envelope = check data.fromJsonString();
-        JsonRpcResponse rpcResp = check envelope.cloneWithType(JsonRpcResponse);
+        transport:JsonRpcResponse rpcResp = check envelope.cloneWithType(transport:JsonRpcResponse);
 
-        JsonRpcError? rpcErr = rpcResp?.'error;
-        if rpcErr is JsonRpcError {
+        transport:JsonRpcError? rpcErr = rpcResp?.'error;
+        if rpcErr is transport:JsonRpcError {
             return toA2AError(rpcErr);
         }
 
         json? result = rpcResp?.result;
         if result is () {
-            return error a2a:InvalidAgentResponseError(
+            return error InvalidAgentResponseError(
                 "SSE event contained neither result nor error",
                 message = "SSE event contained neither result nor error"
             );
         }
-        return check result.cloneWithType(a2a:StreamResponse);
+        return check result.cloneWithType(StreamResponse);
     }
 
     public isolated function close() returns error? {
@@ -94,14 +100,14 @@ class A2AStreamGenerator {
 #
 # + event - the decoded stream event to inspect
 # + return - true if this event should close the stream
-isolated function isTerminalEvent(a2a:StreamResponse event) returns boolean {
-    a2a:TaskStatusUpdateEvent? statusUpdate = event?.statusUpdate;
+isolated function isTerminalEvent(StreamResponse event) returns boolean {
+    TaskStatusUpdateEvent? statusUpdate = event?.statusUpdate;
     if statusUpdate is () {
         return false;
     }
-    a2a:TaskState state = statusUpdate.status.state;
-    return state == a2a:TASK_STATE_COMPLETED
-        || state == a2a:TASK_STATE_FAILED
-        || state == a2a:TASK_STATE_CANCELED
-        || state == a2a:TASK_STATE_REJECTED;
+    TaskState state = statusUpdate.status.state;
+    return state == TASK_STATE_COMPLETED
+        || state == TASK_STATE_FAILED
+        || state == TASK_STATE_CANCELED
+        || state == TASK_STATE_REJECTED;
 }
