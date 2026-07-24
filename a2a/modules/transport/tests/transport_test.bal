@@ -1,5 +1,6 @@
 import ballerina/test;
 import ballerina/a2a;
+import ballerina/http;
 
 @test:Config {}
 function testJsonRpcRequestEncodesPerWireExample() returns error? {
@@ -156,4 +157,109 @@ function testToA2AErrorMapsUnrecognizedCodeToInternalError() {
     test:assertTrue(err is a2a:A2AInternalError, "unrecognised codes should map to A2AInternalError");
     a2a:A2AInternalError internalErr = <a2a:A2AInternalError>err;
     test:assertEquals(internalErr.detail().code, -32600);
+}
+
+# A synthetic SSE source for tests — no real HTTP involved. Feeds a
+# pre-built array of http:SseEvent|error values to an A2AStreamGenerator.
+class TestSseSource {
+    private (http:SseEvent|error)[] events;
+    private int idx = 0;
+
+    isolated function init((http:SseEvent|error)[] events) {
+        self.events = events;
+    }
+
+    public isolated function next() returns record {| http:SseEvent value; |}|error? {
+        if self.idx >= self.events.length() {
+            return ();
+        }
+        http:SseEvent|error event = self.events[self.idx];
+        self.idx += 1;
+        if event is error {
+            return event;
+        }
+        return {value: event};
+    }
+}
+
+isolated function newGenerator((http:SseEvent|error)[] events) returns A2AStreamGenerator {
+    stream<http:SseEvent, error?> sseStream = new (new TestSseSource(events));
+    return new A2AStreamGenerator(sseStream);
+}
+
+# Unwraps a generator.next() result into its StreamResponse, failing the
+# test immediately if the stream ended or returned an error where a value
+# was expected.
+#
+# + result - the raw return value of A2AStreamGenerator.next()
+# + return - the decoded StreamResponse, or an error
+isolated function expectValue(record {| a2a:StreamResponse value; |}|error? result) returns a2a:StreamResponse|error {
+    if result is error {
+        return result;
+    }
+    if result is () {
+        return error("expected a value but the stream ended");
+    }
+    return result.value;
+}
+
+@test:Config {}
+function testA2AStreamGeneratorClosesOnTerminalStatus() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"text":"partial"}]}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+    ]);
+
+    a2a:StreamResponse first = check expectValue(generator.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>first?.statusUpdate).status.state, a2a:TASK_STATE_WORKING);
+
+    a2a:StreamResponse second = check expectValue(generator.next());
+    test:assertTrue(second?.artifactUpdate is a2a:TaskArtifactUpdateEvent, "artifact event should be delivered");
+
+    a2a:StreamResponse third = check expectValue(generator.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>third?.statusUpdate).status.state, a2a:TASK_STATE_COMPLETED);
+
+    record {| a2a:StreamResponse value; |}|error? fourth = generator.next();
+    test:assertTrue(fourth is (), "stream should be closed after the terminal event, regardless of remaining source events");
+}
+
+@test:Config {}
+function testA2AStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ]);
+
+    a2a:StreamResponse first = check expectValue(generator.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>first?.statusUpdate).status.state, a2a:TASK_STATE_INPUT_REQUIRED);
+
+    // If INPUT_REQUIRED had closed the stream, this would fail instead of returning the next event.
+    a2a:StreamResponse second = check expectValue(generator.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>second?.statusUpdate).status.state, a2a:TASK_STATE_WORKING);
+}
+
+@test:Config {}
+function testA2AStreamGeneratorSkipsCommentFrames() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {comment: "keep-alive"},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ]);
+
+    a2a:StreamResponse result = check expectValue(generator.next());
+    test:assertEquals((<a2a:TaskStatusUpdateEvent>result?.statusUpdate).status.state, a2a:TASK_STATE_WORKING);
+}
+
+@test:Config {}
+function testA2AStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: "{not valid json"}
+    ]);
+
+    record {| a2a:StreamResponse value; |}|error? result = generator.next();
+    test:assertTrue(result is error, "malformed event data should surface as an error, not a panic");
+
+    // The generator should close after surfacing the error.
+    record {| a2a:StreamResponse value; |}|error? next = generator.next();
+    test:assertTrue(next is (), "generator should be closed after a decode error");
 }
