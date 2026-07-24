@@ -39,3 +39,34 @@ function testResolveAgentCardMalformedJson() returns error? {
 
     test:assertTrue(result is error, "a well-known body that doesn't decode as AgentCard should surface as an error");
 }
+
+@test:Config {}
+function testSendMessageHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            id: "task-1",
+            contextId: "ctx-1",
+            status: {state: "TASK_STATE_COMPLETED"},
+            artifacts: [
+                {artifactId: "art-1", parts: [{text: "29 degrees Celsius and partly cloudy."}]}
+            ]
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-1",
+        role: ROLE_USER,
+        parts: [{text: "What is the weather in Colombo?"}]
+    };
+
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Task, "mock returned a Task, so sendMessage should decode it as one");
+    Task task = <Task>result;
+    assertValidTask(task);
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
+}
