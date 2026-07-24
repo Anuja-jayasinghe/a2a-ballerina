@@ -26,6 +26,29 @@ public type Part record {|
     # MIME type; applies to all variants
     string? mediaType?;
     # Free-form metadata attached to this part
-    map<json>? metadata?; #newer spec version can have additional fields
+    map<json>? metadata?;
+    // newer specification version can have additional fields
+    json...;
+|};
+
+# One turn of communication between a client and an agent.
+public type Message record {|
+    # Required; caller generates a UUID
+    string messageId;
+    # ROLE_USER for outbound messages
+    Role role;
+    # Content of this message
+    Part[] parts;
+    # Groups related tasks and messages
+    string? contextId?;
+    # Set when continuing an existing task
+    string? taskId?;
+    # Other tasks this message references
+    string[] referenceTaskIds = [];
+    # Extension URIs for this message
+    string[] extensions = [];
+    # Free-form metadata attached to this message
+    map<json>? metadata?;
+    // newer specification version can have additional fields
     json...;
 |};

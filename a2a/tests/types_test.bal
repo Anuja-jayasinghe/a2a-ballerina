@@ -62,3 +62,60 @@ function testPartToleratesUnrecognizedField() returns error? {
         "some value from a newer spec revision"
     );
 }
+
+@test:Config {}
+function testMessageMinimalRoundTrip() returns error? {
+    Message original = {
+        messageId: "msg-1",
+        role: ROLE_USER,
+        parts: [{text: "What is the weather in Colombo?"}]
+    };
+    Message decoded = check original.toJson().cloneWithType(Message);
+
+    test:assertEquals(decoded, original);
+    test:assertTrue(decoded?.contextId is (), "contextId should be nil");
+    test:assertTrue(decoded?.taskId is (), "taskId should be nil");
+    test:assertTrue(decoded?.metadata is (), "metadata should be nil");
+    test:assertEquals(decoded.referenceTaskIds, []);
+    test:assertEquals(decoded.extensions, []);
+}
+
+@test:Config {}
+function testMessageFullRoundTrip() returns error? {
+    Message original = {
+        messageId: "msg-2",
+        role: ROLE_AGENT,
+        parts: [
+            {text: "Here is the forecast."},
+            {data: {temperature: 29, condition: "partly cloudy"}}
+        ],
+        contextId: "ctx-1",
+        taskId: "task-1",
+        referenceTaskIds: ["task-0"],
+        extensions: ["https://example.com/extensions/weather"],
+        metadata: {"source": "weather-agent"}
+    };
+    Message decoded = check original.toJson().cloneWithType(Message);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testMessageToleratesUnrecognizedField() returns error? {
+    json payload = {
+        messageId: "msg-3",
+        role: "ROLE_USER",
+        parts: [{text: "What is the weather in Colombo?"}],
+        futureField: "some value from a newer spec revision"
+    };
+
+    Message decoded = check payload.cloneWithType(Message);
+
+    test:assertEquals(decoded.messageId, "msg-3");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals(
+        (check reserialized.futureField),
+        "some value from a newer spec revision"
+    );
+}
