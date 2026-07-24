@@ -119,3 +119,478 @@ function testMessageToleratesUnrecognizedField() returns error? {
         "some value from a newer spec revision"
     );
 }
+
+@test:Config {}
+function testAgentProviderRoundTrip() returns error? {
+    AgentProvider original = {organization: "Acme Corp", url: "https://acme.example.com", contactEmail: "support@acme.example.com"};
+    AgentProvider decoded = check original.toJson().cloneWithType(AgentProvider);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentProviderToleratesUnrecognizedField() returns error? {
+    json payload = {
+        organization: "Acme Corp",
+        url: "https://acme.example.com",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentProvider decoded = check payload.cloneWithType(AgentProvider);
+
+    test:assertEquals(decoded.organization, "Acme Corp");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentExtensionRoundTrip() returns error? {
+    AgentExtension original = {uri: "https://example.com/extensions/weather", description: "Weather lookups", required: true};
+    AgentExtension decoded = check original.toJson().cloneWithType(AgentExtension);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentExtensionToleratesUnrecognizedField() returns error? {
+    json payload = {
+        uri: "https://example.com/extensions/weather",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentExtension decoded = check payload.cloneWithType(AgentExtension);
+
+    test:assertEquals(decoded.uri, "https://example.com/extensions/weather");
+    test:assertEquals(decoded.required, false);
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentCapabilitiesRoundTrip() returns error? {
+    AgentCapabilities original = {
+        streaming: true,
+        pushNotifications: true,
+        stateTransitionHistory: true,
+        extendedAgentCard: true,
+        extensions: [{uri: "https://example.com/extensions/weather"}]
+    };
+    AgentCapabilities decoded = check original.toJson().cloneWithType(AgentCapabilities);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCapabilitiesToleratesUnrecognizedField() returns error? {
+    json payload = {futureField: "some value from a newer spec revision"};
+
+    AgentCapabilities decoded = check payload.cloneWithType(AgentCapabilities);
+
+    test:assertEquals(decoded.streaming, false);
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentSkillRoundTrip() returns error? {
+    AgentSkill original = {
+        id: "weather-lookup",
+        name: "Weather Lookup",
+        description: "Reports current weather for a city",
+        tags: ["weather"],
+        inputModes: ["text"],
+        outputModes: ["text"],
+        examples: ["What is the weather in Colombo?"]
+    };
+    AgentSkill decoded = check original.toJson().cloneWithType(AgentSkill);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentSkillToleratesUnrecognizedField() returns error? {
+    json payload = {
+        id: "weather-lookup",
+        name: "Weather Lookup",
+        description: "Reports current weather for a city",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentSkill decoded = check payload.cloneWithType(AgentSkill);
+
+    test:assertEquals(decoded.id, "weather-lookup");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentInterfaceRoundTrip() returns error? {
+    AgentInterface original = {
+        url: "https://acme.example.com/a2a",
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0",
+        tenant: "acme-corp"
+    };
+    AgentInterface decoded = check original.toJson().cloneWithType(AgentInterface);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentInterfaceToleratesUnrecognizedField() returns error? {
+    json payload = {
+        url: "https://acme.example.com/a2a",
+        protocolBinding: "JSONRPC",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentInterface decoded = check payload.cloneWithType(AgentInterface);
+
+    test:assertEquals(decoded.protocolBinding, "JSONRPC");
+    test:assertTrue(decoded?.tenant is (), "tenant should be nil");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentCardCompositeRoundTrip() returns error? {
+    AgentCard original = {
+        name: "Weather Agent",
+        description: "Reports current weather conditions",
+        version: "1.2.0",
+        url: "https://weather.example.com/a2a",
+        provider: {organization: "Acme Corp", url: "https://acme.example.com"},
+        documentationUrl: "https://weather.example.com/docs",
+        capabilities: {streaming: true, pushNotifications: true},
+        supportedInterfaces: [
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"},
+            {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
+        ],
+        securitySchemes: {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+        security: [{"bearerAuth": []}],
+        skills: [
+            {
+                id: "weather-lookup",
+                name: "Weather Lookup",
+                description: "Reports current weather for a city",
+                tags: ["weather"],
+                examples: ["What is the weather in Colombo?"]
+            },
+            {
+                id: "forecast",
+                name: "Forecast",
+                description: "Reports a multi-day forecast for a city",
+                tags: ["weather", "forecast"]
+            }
+        ]
+    };
+    AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCardToleratesUnrecognizedField() returns error? {
+    json payload = {
+        name: "Weather Agent",
+        description: "Reports current weather conditions",
+        version: "1.2.0",
+        url: "https://weather.example.com/a2a",
+        capabilities: {},
+        skills: [],
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentCard decoded = check payload.cloneWithType(AgentCard);
+
+    test:assertEquals(decoded.name, "Weather Agent");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testTaskStatusRoundTrip() returns error? {
+    TaskStatus original = {
+        state: TASK_STATE_INPUT_REQUIRED,
+        message: {messageId: "msg-1", role: ROLE_AGENT, parts: [{text: "Which city?"}]},
+        timestamp: "2023-10-27T10:00:00Z"
+    };
+    TaskStatus decoded = check original.toJson().cloneWithType(TaskStatus);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testTaskStatusToleratesUnrecognizedField() returns error? {
+    json payload = {
+        state: "TASK_STATE_WORKING",
+        futureField: "some value from a newer spec revision"
+    };
+
+    TaskStatus decoded = check payload.cloneWithType(TaskStatus);
+
+    test:assertEquals(decoded.state, TASK_STATE_WORKING);
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testArtifactRoundTrip() returns error? {
+    Artifact original = {
+        artifactId: "art-1",
+        name: "Forecast",
+        description: "Three-day forecast",
+        parts: [{text: "29 degrees Celsius and partly cloudy."}],
+        metadata: {"units": "celsius"},
+        extensions: ["https://example.com/extensions/weather"]
+    };
+    Artifact decoded = check original.toJson().cloneWithType(Artifact);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testArtifactToleratesUnrecognizedField() returns error? {
+    json payload = {
+        artifactId: "art-1",
+        parts: [{text: "29 degrees Celsius and partly cloudy."}],
+        futureField: "some value from a newer spec revision"
+    };
+
+    Artifact decoded = check payload.cloneWithType(Artifact);
+
+    test:assertEquals(decoded.artifactId, "art-1");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testTaskCompositeRoundTrip() returns error? {
+    Task original = {
+        id: "task-7f3a9b2c",
+        contextId: "ctx-4e8d1a6f",
+        status: {state: TASK_STATE_COMPLETED, timestamp: "2026-07-20T14:32:11Z"},
+        history: [
+            {messageId: "msg-1", role: ROLE_USER, parts: [{text: "What is the weather in Colombo?"}]},
+            {messageId: "msg-2", role: ROLE_AGENT, parts: [{text: "Let me check that for you."}]}
+        ],
+        artifacts: [
+            {artifactId: "art-9c2e", parts: [{text: "29 degrees Celsius and partly cloudy."}]},
+            {
+                artifactId: "art-9c2f",
+                name: "Forecast chart",
+                parts: [{url: "https://weather.example.com/chart.png", mediaType: "image/png"}],
+                extensions: ["https://example.com/extensions/weather"]
+            }
+        ],
+        metadata: {"source": "weather-agent"}
+    };
+    Task decoded = check original.toJson().cloneWithType(Task);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testTaskToleratesUnrecognizedField() returns error? {
+    json payload = {
+        id: "task-1",
+        status: {state: "TASK_STATE_SUBMITTED"},
+        futureField: "some value from a newer spec revision"
+    };
+
+    Task decoded = check payload.cloneWithType(Task);
+
+    test:assertEquals(decoded.id, "task-1");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testTaskStatusUpdateEventRoundTrip() returns error? {
+    TaskStatusUpdateEvent original = {
+        taskId: "task-1",
+        contextId: "ctx-1",
+        status: {state: TASK_STATE_WORKING},
+        metadata: {"progress": 0.5}
+    };
+    TaskStatusUpdateEvent decoded = check original.toJson().cloneWithType(TaskStatusUpdateEvent);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testTaskStatusUpdateEventToleratesUnrecognizedField() returns error? {
+    json payload = {
+        taskId: "task-1",
+        contextId: "ctx-1",
+        status: {state: "TASK_STATE_WORKING"},
+        futureField: "some value from a newer spec revision"
+    };
+
+    TaskStatusUpdateEvent decoded = check payload.cloneWithType(TaskStatusUpdateEvent);
+
+    test:assertEquals(decoded.taskId, "task-1");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testTaskArtifactUpdateEventRoundTrip() returns error? {
+    TaskArtifactUpdateEvent original = {
+        taskId: "task-1",
+        contextId: "ctx-1",
+        artifact: {artifactId: "art-1", parts: [{text: "29 degrees Celsius"}]},
+        append: true,
+        lastChunk: true,
+        metadata: {"chunk": 2}
+    };
+    TaskArtifactUpdateEvent decoded = check original.toJson().cloneWithType(TaskArtifactUpdateEvent);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testTaskArtifactUpdateEventToleratesUnrecognizedField() returns error? {
+    json payload = {
+        taskId: "task-1",
+        contextId: "ctx-1",
+        artifact: {artifactId: "art-1", parts: [{text: "29 degrees Celsius"}]},
+        futureField: "some value from a newer spec revision"
+    };
+
+    TaskArtifactUpdateEvent decoded = check payload.cloneWithType(TaskArtifactUpdateEvent);
+
+    test:assertEquals(decoded.taskId, "task-1");
+    test:assertEquals(decoded.append, false);
+    test:assertEquals(decoded.lastChunk, false);
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testStreamResponseRoundTrip() returns error? {
+    StreamResponse original = {
+        statusUpdate: {taskId: "task-1", contextId: "ctx-1", status: {state: TASK_STATE_COMPLETED}}
+    };
+    StreamResponse decoded = check original.toJson().cloneWithType(StreamResponse);
+
+    test:assertEquals(decoded, original);
+    test:assertTrue(decoded?.task is (), "task should be nil");
+    test:assertTrue(decoded?.message is (), "message should be nil");
+    test:assertTrue(decoded?.artifactUpdate is (), "artifactUpdate should be nil");
+}
+
+@test:Config {}
+function testStreamResponseToleratesUnrecognizedField() returns error? {
+    json payload = {
+        message: {messageId: "msg-1", role: "ROLE_AGENT", parts: [{text: "Hello"}]},
+        futureField: "some value from a newer spec revision"
+    };
+
+    StreamResponse decoded = check payload.cloneWithType(StreamResponse);
+
+    test:assertTrue(decoded?.message is Message, "message should decode");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAuthenticationInfoRoundTrip() returns error? {
+    AuthenticationInfo original = {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."};
+    AuthenticationInfo decoded = check original.toJson().cloneWithType(AuthenticationInfo);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAuthenticationInfoToleratesUnrecognizedField() returns error? {
+    json payload = {
+        scheme: "Bearer",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AuthenticationInfo decoded = check payload.cloneWithType(AuthenticationInfo);
+
+    test:assertEquals(decoded.scheme, "Bearer");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testTaskPushNotificationConfigRoundTrip() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://client.example.com/webhooks/a2a",
+        id: "webhook-1",
+        token: "correlation-token",
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."}
+    };
+    TaskPushNotificationConfig decoded = check original.toJson().cloneWithType(TaskPushNotificationConfig);
+
+    test:assertEquals(decoded, original);
+    test:assertTrue(decoded?.taskId is (), "taskId should be nil in a sendMessage-style config");
+}
+
+@test:Config {}
+function testTaskPushNotificationConfigToleratesUnrecognizedField() returns error? {
+    json payload = {
+        url: "https://client.example.com/webhooks/a2a",
+        futureField: "some value from a newer spec revision"
+    };
+
+    TaskPushNotificationConfig decoded = check payload.cloneWithType(TaskPushNotificationConfig);
+
+    test:assertEquals(decoded.url, "https://client.example.com/webhooks/a2a");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testSendMessageConfigurationRoundTrip() returns error? {
+    SendMessageConfiguration original = {
+        acceptedOutputModes: ["text", "image/png"],
+        historyLength: 5,
+        returnImmediately: true,
+        taskPushNotificationConfig: {url: "https://client.example.com/webhooks/a2a"}
+    };
+    SendMessageConfiguration decoded = check original.toJson().cloneWithType(SendMessageConfiguration);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testSendMessageConfigurationDefaults() returns error? {
+    json payload = {};
+
+    SendMessageConfiguration decoded = check payload.cloneWithType(SendMessageConfiguration);
+
+    test:assertEquals(decoded.acceptedOutputModes, ["text"]);
+    test:assertTrue(decoded?.historyLength is (), "historyLength should be unset by default");
+    test:assertEquals(decoded.returnImmediately, false);
+    test:assertTrue(decoded?.taskPushNotificationConfig is (), "taskPushNotificationConfig should be unset by default");
+}
+
+@test:Config {}
+function testSendMessageConfigurationToleratesUnrecognizedField() returns error? {
+    json payload = {
+        futureField: "some value from a newer spec revision"
+    };
+
+    SendMessageConfiguration decoded = check payload.cloneWithType(SendMessageConfiguration);
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
