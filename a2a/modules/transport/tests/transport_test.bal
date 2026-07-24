@@ -159,6 +159,22 @@ function testToA2AErrorMapsUnrecognizedCodeToInternalError() {
     test:assertEquals(internalErr.detail().code, -32600);
 }
 
+# Regression test: A2AError's 8 subtypes must be nominally distinct
+# (declared with `distinct`), not plain aliases for `error<A2AErrorDetail>`.
+# Without `distinct`, every subtype is structurally identical and `is`
+# checks between siblings are always true regardless of which error was
+# actually constructed — this previously let every testToA2AErrorMaps*
+# test above pass for the wrong reason.
+@test:Config {}
+function testA2AErrorSubtypesAreMutuallyDistinguishable() {
+    a2a:A2AError taskNotFound = toA2AError({code: -32001, message: "Task not found"});
+
+    test:assertTrue(taskNotFound is a2a:A2AError, "every subtype must still satisfy the common base type");
+    test:assertTrue(taskNotFound is a2a:TaskNotFoundError, "should be its own mapped type");
+    test:assertFalse(taskNotFound is a2a:PushNotificationNotSupportedError, "must not match an unrelated sibling type");
+    test:assertFalse(taskNotFound is a2a:A2AInternalError, "must not match an unrelated sibling type");
+}
+
 # A synthetic SSE source for tests — no real HTTP involved. Feeds a
 # pre-built array of http:SseEvent|error values to an A2AStreamGenerator.
 class TestSseSource {
