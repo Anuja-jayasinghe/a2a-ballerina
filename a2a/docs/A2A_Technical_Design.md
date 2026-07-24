@@ -505,6 +505,34 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 
 *Phase 1 Client Technical Design. Specification-verified against A2A Protocol v1.0.0. Three implementation questions in section 12.1 require confirmation before coding begins; everything else is settled and ready to build.*
 
+---
+
+> ⚠️ **SUPERSEDED — do not implement from this section.**
+>
+> Everything from here down to "Task Delegation Lifecycle" below is an
+> earlier, unversioned draft of this design, superseded by the
+> "Phase 1: Client Technical Design" section above. It disagrees with
+> the Phase 1 draft in at least three confirmed places, independently
+> verified against the live A2A spec
+> (https://a2a-protocol.org/latest/specification/) — the Phase 1 draft
+> is correct in all three:
+>
+> - **`AgentInterface.tenant`** — this draft's `AgentInterface` omits the
+>   `tenant` field entirely; Phase 1 §3.2 includes it, and the client's
+>   tenant-routing design (§9.4) depends on it.
+> - **`AgentProvider.url`** — this draft makes it optional
+>   (`string? url?`); Phase 1 §3.2 makes it required (`string url`).
+> - **`TaskArtifactUpdateEvent.index`** — this draft still carries an
+>   `index` field; Phase 1 §3.5 contains an explicit correction note
+>   removing it, since specification §4.2.2 defines no such field.
+>
+> This section also sketches Phase 2 (Listener/service) material that is
+> out of scope for Phase 1 regardless of the above. Kept here for
+> historical reference only — always implement from the Phase 1 section
+> above, per `a2a/CLAUDE.md`.
+
+---
+
 # A2A Library for Ballerina — Technical Design1
 
 **A2A Library for Ballerina — Technical Design**1\. Scope & recap
@@ -1113,6 +1141,11 @@ The following design choices require formal team sign-off prior to the completio
 10. **A2A v0.3 Compatibility:** Backward compatibility modules are not planned for this phase.  
 11. **Cryptographic Signing:** JWS verification for Agent Cards is deferred pending security review.  
 12. **Observability:** OpenTelemetry integration remains a requirement for future production releases but is currently deferred.
+
+> ⚠️ **End of superseded section.** The walkthrough below has not been
+> checked against the Phase 1 draft the way the three disagreements
+> above were — treat it as illustrative narrative, not a source to
+> implement types or code from.
 
 # Task Delegation Lifecycle
 
