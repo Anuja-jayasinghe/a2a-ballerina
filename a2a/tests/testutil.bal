@@ -144,7 +144,12 @@ service / on mockListener {
         }
 
         if script.isSse {
-            check caller->respond(script.sseEvents.toStream());
+            // caller->respond() with a raw stream defaults POST responses
+            // to 201; the Client checks for exactly 200, so set it explicitly.
+            http:Response res = new;
+            res.statusCode = 200;
+            res.setPayload(script.sseEvents.toStream());
+            check caller->respond(res);
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;

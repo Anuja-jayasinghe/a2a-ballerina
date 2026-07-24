@@ -70,3 +70,86 @@ function testSendMessageHappyPath() returns error? {
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
     test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
 }
+
+@test:Config {}
+function testSendMessageStreamHappyPath() returns error? {
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-2","contextId":"ctx-2","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-2","contextId":"ctx-2","artifact":{"artifactId":"art-2","parts":[{"text":"29 degrees Celsius and partly cloudy."}]}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-2","contextId":"ctx-2","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+    ]);
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-2",
+        role: ROLE_USER,
+        parts: [{text: "What is the weather in Colombo?"}]
+    };
+
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(events.next());
+    TaskArtifactUpdateEvent artifactEvent = <TaskArtifactUpdateEvent>second?.artifactUpdate;
+    test:assertEquals(extractArtifactText(artifactEvent.artifact), "29 degrees Celsius and partly cloudy.");
+
+    StreamResponse third = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+
+    record {| StreamResponse value; |}|error? fourth = events.next();
+    test:assertTrue(fourth is (), "stream should close after the terminal status");
+}
+
+@test:Config {}
+function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? {
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}}`}
+    ]);
+
+    Client c = check new (getServerBaseUrl());
+    Message turn1 = {
+        messageId: "msg-3",
+        role: ROLE_USER,
+        parts: [{text: "Research quantum error correction advances in 2024"}]
+    };
+
+    stream<StreamResponse, error?> firstStream = check c->sendMessageStream(turn1);
+
+    StreamResponse working = check expectValue(firstStream.next());
+    test:assertEquals((<TaskStatusUpdateEvent>working?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse inputRequired = check expectValue(firstStream.next());
+    TaskStatusUpdateEvent inputRequiredEvent = <TaskStatusUpdateEvent>inputRequired?.statusUpdate;
+    test:assertEquals(inputRequiredEvent.status.state, TASK_STATE_INPUT_REQUIRED);
+
+    record {| StreamResponse value; |}|error? afterPause = firstStream.next();
+    test:assertTrue(afterPause is (), "no more events scripted after INPUT_REQUIRED for the first turn");
+
+    // Resume with the same taskId/contextId, as design §9.3 shows.
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+    ]);
+
+    Message turn2 = {
+        messageId: "msg-4",
+        role: ROLE_USER,
+        contextId: inputRequiredEvent.contextId,
+        taskId: inputRequiredEvent.taskId,
+        parts: [{text: "Focus on surface codes and topological qubits"}]
+    };
+
+    stream<StreamResponse, error?> secondStream = check c->sendMessageStream(turn2);
+
+    StreamResponse resumedWorking = check expectValue(secondStream.next());
+    test:assertEquals((<TaskStatusUpdateEvent>resumedWorking?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse completed = check expectValue(secondStream.next());
+    TaskStatusUpdateEvent completedEvent = <TaskStatusUpdateEvent>completed?.statusUpdate;
+    test:assertEquals(completedEvent.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(completedEvent.taskId, "task-3");
+    test:assertEquals(completedEvent.contextId, "ctx-3");
+}

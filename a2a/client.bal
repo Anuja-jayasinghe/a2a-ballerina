@@ -154,4 +154,59 @@ public isolated client class Client {
             "Response was neither a valid Task nor a valid Message"
         );
     }
+
+    # Opens a JSON-RPC streaming call and hands the response to
+    # readSseStream. Shared by sendMessageStream and subscribeToTask.
+    #
+    # + method - the JSON-RPC method name
+    # + params - the JSON-RPC method parameters
+    # + return - a stream of StreamResponse values, or an error
+    private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        transport:JsonRpcRequest req = {
+            id: uuid:createType4AsString(),
+            method: method,
+            params: params
+        };
+        map<string> headers = self.buildHeaders();
+        headers["Accept"] = "text/event-stream";
+        http:Response resp = check self.httpClient->post(
+            "", req.toJson(), headers
+        );
+        if resp.statusCode != 200 {
+            return error A2AInternalError(
+                string `Stream request failed with HTTP ${resp.statusCode}`,
+                code = resp.statusCode
+            );
+        }
+        return readSseStream(resp);
+    }
+
+    # Sends a message and receives updates in real time over SSE.
+    #
+    # Requires the remote agent to declare capabilities.streaming as true;
+    # otherwise the agent returns UnsupportedOperationError.
+    #
+    # The stream opens with a Task or a Message, then delivers zero or more
+    # TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes
+    # when the task reaches a terminal state. Each StreamResponse carries
+    # exactly one non-nil field.
+    #
+    # + message - The message to send
+    # + config - Optional send configuration
+    # + tenant - Optional per-call tenant override
+    # + return - A stream of StreamResponse values, or an error
+    isolated remote function sendMessageStream(
+            Message message,
+            SendMessageConfiguration? config = (),
+            string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        map<json> params = {"message": message.toJson()};
+        if config is SendMessageConfiguration {
+            params["configuration"] = config.toJson();
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string {
+            params["tenant"] = effectiveTenant;
+        }
+        return self.openSseStream("message/stream", params);
+    }
 }
