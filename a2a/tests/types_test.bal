@@ -294,6 +294,28 @@ function testAgentCardCompositeRoundTrip() returns error? {
     test:assertEquals(decoded, original);
 }
 
+# v1.0 removed AgentCard.url as a required field; real v1.0 servers only
+# publish supportedInterfaces[0].url. url must round-trip fine when absent.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testAgentCardRoundTripWithoutLegacyUrl() returns error? {
+    AgentCard original = {
+        name: "Weather Agent",
+        description: "Reports current weather conditions",
+        version: "1.2.0",
+        capabilities: {streaming: true},
+        supportedInterfaces: [
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
+
+    test:assertEquals(decoded, original);
+    test:assertTrue(decoded?.url is (), "url should be nil when never set");
+}
+
 @test:Config {}
 function testAgentCardToleratesUnrecognizedField() returns error? {
     json payload = {

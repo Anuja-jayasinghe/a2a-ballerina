@@ -33,6 +33,23 @@ public isolated function resolveAgentCard(
     return check body.cloneWithType(AgentCard);
 }
 
+# Resolves the URL to construct a Client against, per v1.0's removal of
+# AgentCard.url as a required field.
+#
+# + card - the agent card to read the endpoint from
+# + return - supportedInterfaces[0].url if present, the legacy url field
+#            if that's unset but url is, or an error if neither is present
+public isolated function primaryUrl(AgentCard card) returns string|error {
+    if card.supportedInterfaces.length() > 0 {
+        return card.supportedInterfaces[0].url;
+    }
+    string? legacyUrl = card?.url;
+    if legacyUrl is string {
+        return legacyUrl;
+    }
+    return error("AgentCard has neither supportedInterfaces nor a legacy url field");
+}
+
 # An A2A protocol client for calling remote agents.
 public isolated client class Client {
     private final http:Client httpClient;
@@ -139,19 +156,33 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
 
-        json result = check self.rpcCall("message/send", params);
+        json result = check self.rpcCall("SendMessage", params);
 
-        // Try Task first; fall back to Message. Both are valid responses.
-        Task|error asTask = result.cloneWithType(Task);
-        if asTask is Task {
-            return asTask;
+        // The wire response wraps the payload — {"task": {...}} or
+        // {"message": {...}} — rather than returning either one flat.
+        SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);
+        Task? maybeTask = wrapped?.task;
+        Message? maybeMessage = wrapped?.message;
+
+        // A conforming server can't produce this — task/message form a real
+        // protobuf oneof upstream, which makes both being set structurally
+        // impossible in a well-formed response. But SendMessageResult is a
+        // plain open record on our side, not an actual oneof, so nothing
+        // stops a non-conforming server from sending both. Rather than
+        // silently preferring one, treat it as the malformed response it is.
+        if maybeTask is Task && maybeMessage is Message {
+            return error InvalidAgentResponseError(
+                "Response contained both a task and a message"
+            );
         }
-        Message|error asMessage = result.cloneWithType(Message);
-        if asMessage is Message {
-            return asMessage;
+        if maybeTask is Task {
+            return maybeTask;
+        }
+        if maybeMessage is Message {
+            return maybeMessage;
         }
         return error InvalidAgentResponseError(
-            "Response was neither a valid Task nor a valid Message"
+            "Response contained neither a task nor a message"
         );
     }
 
@@ -207,7 +238,7 @@ public isolated client class Client {
         if effectiveTenant is string {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("message/stream", params);
+        return self.openSseStream("SendStreamingMessage", params);
     }
 
     # Retrieves the current state of a task.
@@ -234,7 +265,7 @@ public isolated client class Client {
         if effectiveTenant is string {
             params["tenant"] = effectiveTenant;
         }
-        json result = check self.rpcCall("tasks/get", params);
+        json result = check self.rpcCall("GetTask", params);
         return check result.cloneWithType(Task);
     }
 
@@ -259,7 +290,7 @@ public isolated client class Client {
         if effectiveTenant is string {
             params["tenant"] = effectiveTenant;
         }
-        json result = check self.rpcCall("tasks/cancel", params);
+        json result = check self.rpcCall("CancelTask", params);
         return check result.cloneWithType(Task);
     }
 
@@ -285,6 +316,6 @@ public isolated client class Client {
         if effectiveTenant is string {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("tasks/resubscribe", params);
+        return self.openSseStream("SubscribeToTask", params);
     }
 }

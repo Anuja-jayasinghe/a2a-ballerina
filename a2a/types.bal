@@ -131,8 +131,11 @@ public type AgentCard record {|
     string description;
     # Agent's own version, not the protocol version
     string version;
-    # Primary service URL
-    string url;
+    # Legacy primary service URL. Removed as a required field in v1.0 —
+    # servers now publish the primary endpoint as supportedInterfaces[0].url
+    # instead. Kept optional here only for servers still sending it; use
+    # primaryUrl(card) rather than reading this field directly.
+    string? url?;
     # Organization publishing this agent
     AgentProvider? provider?;
     # Link to human-readable documentation
@@ -262,6 +265,20 @@ public type StreamResponse record {|
     TaskStatusUpdateEvent? statusUpdate?;
     # Present on delivered output content
     TaskArtifactUpdateEvent? artifactUpdate?;
+    json...;
+|};
+
+# The wrapper returned by a unary sendMessage call. A narrower sibling of
+# StreamResponse: a non-streaming reply can only ever be a Task or a
+# Message, never a status or artifact update, so those two fields are
+# omitted here rather than left perpetually nil.
+#
+# Exactly one field is non-nil, per specification section 3.1.1.
+public type SendMessageResult record {|
+    # Present when the agent creates or continues a tracked task
+    Task? task?;
+    # Present for a plain conversational reply with no task
+    Message? message?;
     json...;
 |};
 

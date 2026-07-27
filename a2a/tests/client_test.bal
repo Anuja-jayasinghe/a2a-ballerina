@@ -42,18 +42,100 @@ function testResolveAgentCardMalformedJson() returns error? {
     test:assertTrue(result is error, "a well-known body that doesn't decode as AgentCard should surface as an error");
 }
 
+# v1.0 removed AgentCard.url as a required field — the real reference
+# server never sends it, only supportedInterfaces[0].url. Regression test
+# for that: resolveAgentCard must succeed against a card with no url at
+# all, and primaryUrl() must fall back to supportedInterfaces correctly.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testResolveAgentCardSucceedsWithoutLegacyUrl() returns error? {
+    setWellKnownOverride({
+        name: "Mock Weather Agent",
+        description: "A scripted mock agent used by Client tests",
+        version: "1.0.0",
+        capabilities: {streaming: true},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+        ],
+        skills: [
+            {id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city"}
+        ]
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    if result is error {
+        test:assertFail("resolveAgentCard should succeed against a card with no legacy url field: " + result.message());
+    }
+    AgentCard card = result;
+    test:assertTrue(card?.url is (), "url should be nil, not defaulted, when the server never sent it");
+    test:assertEquals(check primaryUrl(card), "http://localhost:19199");
+}
+
+@test:Config {}
+function testPrimaryUrlPrefersSupportedInterfaces() returns error? {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        url: "https://legacy.example.com",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "https://primary.example.com", protocolBinding: "JSONRPC"},
+            {url: "https://secondary.example.com", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+
+    test:assertEquals(check primaryUrl(card), "https://primary.example.com");
+}
+
+@test:Config {}
+function testPrimaryUrlFallsBackToLegacyUrl() returns error? {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        url: "https://legacy.example.com",
+        capabilities: {},
+        skills: []
+    };
+
+    test:assertEquals(check primaryUrl(card), "https://legacy.example.com");
+}
+
+@test:Config {}
+function testPrimaryUrlErrorsWhenNeitherIsSet() {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        capabilities: {},
+        skills: []
+    };
+
+    string|error result = primaryUrl(card);
+
+    test:assertTrue(result is error, "primaryUrl should error when the card has neither supportedInterfaces nor a legacy url");
+}
+
 @test:Config {}
 function testSendMessageHappyPath() returns error? {
     setNextJsonResponse({
         jsonrpc: "2.0",
         id: "1",
         result: {
-            id: "task-1",
-            contextId: "ctx-1",
-            status: {state: "TASK_STATE_COMPLETED"},
-            artifacts: [
-                {artifactId: "art-1", parts: [{text: "29 degrees Celsius and partly cloudy."}]}
-            ]
+            task: {
+                id: "task-1",
+                contextId: "ctx-1",
+                status: {state: "TASK_STATE_COMPLETED"},
+                artifacts: [
+                    {artifactId: "art-1", parts: [{text: "29 degrees Celsius and partly cloudy."}]}
+                ]
+            }
         }
     });
 
@@ -71,6 +153,72 @@ function testSendMessageHappyPath() returns error? {
     assertValidTask(task);
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
     test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
+}
+
+# The real reference server's SendMessage response wraps the payload —
+# {"result": {"task": {...}}} or {"result": {"message": {...}}} — never a
+# flat Task/Message. The happy-path test above only ever exercised the
+# task branch; this covers the message branch of that same wrapper.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageHappyPathMessageVariant() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            message: {
+                messageId: "reply-msg-1",
+                role: "ROLE_AGENT",
+                parts: [{text: "Hi there!"}]
+            }
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-1a",
+        role: ROLE_USER,
+        parts: [{text: "hi"}]
+    };
+
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Message, "mock returned a Message, so sendMessage should decode it as one");
+    Message reply = <Message>result;
+    test:assertEquals(reply.messageId, "reply-msg-1");
+    test:assertEquals(reply.parts[0]?.text, "Hi there!");
+}
+
+# A conforming server can't produce this (task/message form a real
+# protobuf oneof upstream), but SendMessageResult is a plain open record on
+# our side with no such enforcement — a non-conforming server sending both
+# should be treated as a malformed response, not silently resolved by
+# preferring one field over the other.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageRejectsResponseWithBothTaskAndMessage() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            task: {id: "task-ambiguous", status: {state: "TASK_STATE_COMPLETED"}},
+            message: {messageId: "reply-ambiguous", role: "ROLE_AGENT", parts: [{text: "Hi there!"}]}
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-ambiguous",
+        role: ROLE_USER,
+        parts: [{text: "hi"}]
+    };
+
+    Task|Message|error result = c->sendMessage(msg);
+
+    test:assertTrue(result is error, "a response with both task and message set should surface as an error");
+    test:assertTrue(result is InvalidAgentResponseError, "should map to InvalidAgentResponseError, not silently prefer task");
 }
 
 @test:Config {}
@@ -202,11 +350,17 @@ function testTenantPropagatesOnEveryMethod() returns error? {
         id: "1",
         result: {id: "task-tenant", status: {state: "TASK_STATE_COMPLETED"}}
     };
+    // sendMessage's response wraps the Task, unlike getTask/cancelTask.
+    json wrappedTaskResponse = {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {task: {id: "task-tenant", status: {state: "TASK_STATE_COMPLETED"}}}
+    };
     http:SseEvent[] minimalSseResponse = [
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-tenant","contextId":"ctx-tenant","status":{"state":"TASK_STATE_WORKING"}}}}`}
     ];
 
-    setNextJsonResponse(validTaskResponse);
+    setNextJsonResponse(wrappedTaskResponse);
     Task|Message|error sendMessageResult = c->sendMessage(msg);
     check assertLastRequestTenant(tenant, "sendMessage");
 
@@ -249,7 +403,7 @@ function testPerCallTenantOverridesClientDefault() returns error? {
     setNextJsonResponse({
         jsonrpc: "2.0",
         id: "1",
-        result: {id: "task-tenant-2", status: {state: "TASK_STATE_COMPLETED"}}
+        result: {task: {id: "task-tenant-2", status: {state: "TASK_STATE_COMPLETED"}}}
     });
 
     Client c = check new (getServerBaseUrl(), tenant = "default-tenant");
