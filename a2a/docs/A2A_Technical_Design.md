@@ -44,11 +44,27 @@ Proposed package: **ballerina/a2a**, mirroring the file-per-concern convention a
 
 ```
 ballerina/a2a/
-  Ballerina.toml  types.bal          — all public data model types  client.bal         — isolated client class Client + resolveAgentCard  errors.bal         — error types and JSON-RPC error code mapping  modules/    transport/      jsonrpc.bal    — JSON-RPC 2.0 envelope types, request builder,                       response parser, error mapper
-sse.bal        — thin wrapper over http:SseEvent stream: decodes each    event's JSON-RPC envelope into a StreamResponse and closes the stream on a terminal status
+  Ballerina.toml
+  types.bal          — all public data model types
+  client.bal         — isolated client class Client + resolveAgentCard
+  errors.bal         — A2AError hierarchy and toA2AError JSON-RPC error code mapping
+  sse.bal            — A2AStreamGenerator / readSseStream: decodes each SSE event's
+                       JSON-RPC envelope into a StreamResponse and closes the
+                       stream on a terminal status
+  modules/
+    transport/
+      jsonrpc.bal    — JSON-RPC 2.0 envelope types only: JsonRpcRequest,
+                       JsonRpcResponse, JsonRpcError
 ```
 
-*Each file owns one concern. Everything under modules/transport/ is an unexported submodule — its types are internal plumbing and never form part of the supported public API. Phase 2 adds listener.bal and task\_store.bal to this same package.*  
+*Each file owns one concern, but the split between the root module and modules/transport/ is drawn on module-dependency direction, not just topic:*
+
+* ***modules/transport/ is a pure wire-format leaf.*** *It contains only the JSON-RPC envelope types (JsonRpcRequest, JsonRpcResponse, JsonRpcError) and has zero dependency on the root a2a module. It does not build request envelopes, parse responses into domain types, or map error codes — anything that would require referencing A2AError, StreamResponse, Task, or any other root-level type stays out of transport/.*
+* ***Protocol-semantic logic lives in the root module, not in transport.*** *toA2AError (errors.bal) and SSE-to-StreamResponse decoding (sse.bal, via A2AStreamGenerator) both construct root-level types — A2AError subtypes and StreamResponse — from transport's wire types. Since the root module already imports ballerina/a2a.transport for the envelope types, transport cannot import the root module back without creating a cyclic module dependency, which bal build rejects outright. Placing this logic in the root module (importing transport, never the reverse) is what keeps the dependency graph a single direction.*
+
+**Note (see commit e4bf7d8):** an earlier draft of this layout had toA2AError and the SSE decoder living inside modules/transport/, with transport importing the root a2a module to construct A2AError/StreamResponse values — while client.bal separately imported modules/transport/ for the envelope types. That is exactly the cyclic dependency described above, and it does not compile. Do not move error mapping or SSE decoding back into modules/transport/ in a future phase without re-establishing this constraint; if new protocol-semantic logic needs wire-format types, add it to the root module (or a new root-level file) and have it import transport, not the other way around.
+
+Everything under modules/transport/ is an unexported submodule — its types are internal plumbing and never form part of the supported public API. Phase 2 adds listener.bal and task\_store.bal to this same package.  
 **Public API surface for Phase 1:** the Client class, the resolveAgentCard function, all data model types in types.bal, and all error types in errors.bal. Nothing else is exported.
 
 # ---
