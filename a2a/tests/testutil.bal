@@ -125,6 +125,29 @@ isolated function defaultMockAgentCard() returns json {
     return card.toJson();
 }
 
+# Sends a response via the given caller, discarding any error instead of
+# letting it propagate as the resource function's return value.
+#
+# Used for delayed responses (setNextDelay): when a test's client-side
+# timeout fires first, the client has already closed the connection by
+# the time this delayed respond() runs, so the write fails. Propagating
+# that failure via `check` would make the resource function return an
+# error, which the HTTP engine then tries to convert into its own error
+# response on the same (already-attempted) exchange — logging a spurious
+# "illegal return: response has already been sent" that reads like a
+# real failure in test output. The client-side timeout is what the test
+# actually asserts on; the server-side write failing afterward is
+# expected and not actionable, so it's swallowed here rather than logged.
+#
+# + caller - the caller to respond on
+# + res - the response to send
+isolated function respondIgnoringClientGoneAway(http:Caller caller, http:Response res) {
+    error? result = caller->respond(res);
+    if result is error {
+        // Deliberately ignored — see function doc above.
+    }
+}
+
 service / on mockListener {
     resource function get \.well\-known/agent\-card\.json(http:Caller caller) returns error? {
         MockWellKnownScript wk;
@@ -164,12 +187,12 @@ service / on mockListener {
             http:Response res = new;
             res.statusCode = 200;
             res.setPayload(script.sseEvents.toStream());
-            check caller->respond(res);
+            respondIgnoringClientGoneAway(caller, res);
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;
             res.setJsonPayload(script.jsonBody);
-            check caller->respond(res);
+            respondIgnoringClientGoneAway(caller, res);
         }
     }
 }

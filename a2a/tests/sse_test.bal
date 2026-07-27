@@ -117,6 +117,31 @@ function testA2AStreamGeneratorSkipsCommentFrames() returns error? {
 }
 
 @test:Config {}
+function testA2AStreamGeneratorPropagatesUnderlyingStreamErrorBeforeTerminal() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"text":"partial"}]}}}}`},
+        error("connection reset by peer")
+    ]);
+
+    StreamResponse first = check expectValue(generator.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(generator.next());
+    test:assertTrue(second?.artifactUpdate is TaskArtifactUpdateEvent, "artifact event should be delivered");
+
+    record {| StreamResponse value; |}|error? third = generator.next();
+    test:assertTrue(third is error, "an underlying stream error before a terminal status should propagate to the caller, not be swallowed");
+    if third is error {
+        test:assertEquals(third.message(), "connection reset by peer");
+    }
+
+    // The generator should have closed itself after surfacing the error.
+    record {| StreamResponse value; |}|error? fourth = generator.next();
+    test:assertTrue(fourth is (), "generator should be closed after propagating an underlying stream error");
+}
+
+@test:Config {}
 function testA2AStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
     A2AStreamGenerator generator = newGenerator([
         {data: "{not valid json"}
