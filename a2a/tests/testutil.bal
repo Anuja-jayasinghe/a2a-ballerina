@@ -1,18 +1,11 @@
 import ballerina/http;
 import ballerina/lang.runtime;
-import ballerina/os;
 import ballerina/test;
 
-# Base URL for Client/resolveAgentCard tests. Reads A2A_TEST_SERVER_URL so
-# Phase 5's interoperability tests can point the same test suite at a real
-# reference server later; falls back to the local scripted mock below.
+# Base URL for the scripted mock A2A server used by Client tests.
 #
 # + return - the base URL to run tests against
 public isolated function getServerBaseUrl() returns string {
-    string envUrl = os:getEnv("A2A_TEST_SERVER_URL");
-    if envUrl != "" {
-        return envUrl;
-    }
     return "http://localhost:19199";
 }
 
