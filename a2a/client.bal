@@ -209,6 +209,26 @@ public isolated client class Client {
                 code = resp.statusCode
             );
         }
+
+        // A rejected streaming request (e.g. subscribing to a task already
+        // in a terminal state) can come back as a plain JSON-RPC error with
+        // HTTP 200, not an SSE-framed stream — resp.getSseEventStream()
+        // rejects that Content-Type with a raw, untyped error rather than
+        // surfacing the actual JSON-RPC error underneath. Detect that case
+        // first and route it through the same error mapping as a unary call.
+        if !resp.getContentType().startsWith("text/event-stream") {
+            json body = check resp.getJsonPayload();
+            transport:JsonRpcResponse rpcResp =
+                check body.cloneWithType(transport:JsonRpcResponse);
+            transport:JsonRpcError? rpcErr = rpcResp?.'error;
+            if rpcErr is transport:JsonRpcError {
+                return toA2AError(rpcErr);
+            }
+            return error InvalidAgentResponseError(
+                "Stream request returned a non-streaming response with neither a JSON-RPC error nor an SSE stream"
+            );
+        }
+
         return readSseStream(resp);
     }
 
