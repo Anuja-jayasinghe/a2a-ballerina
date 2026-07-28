@@ -106,10 +106,66 @@ unlike v1.0's `{"task":{...}}`/`{"message":{...}}` wrapper
 
 **Stream events** (confirmed against `a2a/compat/v0_3/types.py`'s
 `TaskStatusUpdateEvent`/`TaskArtifactUpdateEvent` classes): discriminated by
-`"kind"`: `task`, `message`, `status-update`, `artifact-update`. v0.3's
-`TaskStatusUpdateEvent` also carries a `final: bool` field with no v1.0
-equivalent — safe to drop, since terminal-ness is re-derived from the
-translated `TaskState` the same way it already is for v1.0 streams.
+`"kind"`: `task`, `message`, `status-update`, `artifact-update`.
+
+**`final` field — confirmed safe to drop, not assumed.** v0.3's
+`TaskStatusUpdateEvent` carries a `final: bool` field with no v1.0
+equivalent. Verified against the actual reference implementation's own
+conversion code, `a2a/compat/v0_3/conversions.py`, both directions:
+
+- `to_compat_task_status_update_event` (lines 395–418, the v1.0→v0.3
+  direction) *derives* `final` purely from `status.state`:
+  ```python
+  final = status.state in (
+      types_v03.TaskState.completed,
+      types_v03.TaskState.canceled,
+      types_v03.TaskState.failed,
+      types_v03.TaskState.rejected,
+  )
+  ```
+  — the exact same terminal-state set this client's own `isTerminalEvent()`
+  (`sse.bal`) already checks.
+- `to_core_task_status_update_event` (lines 381–392, the v0.3→v1.0
+  direction — the same direction this design's `decodeV03StreamEvent` needs)
+  **ignores `compat_event.final` entirely**, copying only `status` across.
+
+So the reference implementation's own v0.3→v1.0 translation already treats
+`final` as pure derived redundancy carrying no independent signal — dropping
+it and re-deriving terminal-ness from the translated `TaskState` (as this
+design already does) matches the reference SDK's own behavior exactly, not
+just a convenient assumption. As defense against a non-conforming server
+setting `final: true` inconsistently with `state` (e.g. `final: true` with
+`state: working`), add a unit test asserting the client ignores `final` and
+closes the stream only when the translated `state` is terminal — see
+Testing below.
+
+**Error code table — confirmed shared, not assumed.** Checked
+`a2a/compat/v0_3/types.py` for every A2A-specific error class and its
+literal `code`:
+
+| Code | v0.3 class | v1.0 (`errors.bal`) |
+|---|---|---|
+| -32001 | `TaskNotFoundError` | `TaskNotFoundError` |
+| -32002 | `TaskNotCancelableError` | `TaskNotCancelableError` |
+| -32003 | `PushNotificationNotSupportedError` | `PushNotificationNotSupportedError` |
+| -32004 | `UnsupportedOperationError` | `UnsupportedOperationError` |
+| -32005 | `ContentTypeNotSupportedError` | `ContentTypeNotSupportedError` |
+| -32006 | `InvalidAgentResponseError` | `InvalidAgentResponseError` |
+| -32007 | `AuthenticatedExtendedCardNotConfiguredError` | `UnsupportedOperationError` (name differs, same code/semantics, no dedicated Ballerina type either version) |
+| -32008 | *(does not exist in v0.3)* | `UnsupportedOperationError` (`ExtensionSupportRequiredError`, no dedicated type) |
+| -32009 | *(does not exist in v0.3)* | `VersionNotSupportedError` |
+
+Codes -32001 through -32007 are identical in meaning and numeric value
+across both versions — confirmed by matching class names at matching
+literal codes in the actual installed v0.3 types, not inferred. -32008
+(`ExtensionSupportRequiredError`) and -32009 (`VersionNotSupportedError`)
+are v1.0-only additions with no v0.3 equivalent at all (extension support
+and per-interface version negotiation are v1.0 concepts) — a v0.3 server
+can structurally never emit them. **Conclusion: `toA2AError` (`errors.bal`)
+needs no changes for v0.3 support.** It already maps the full shared code
+range correctly, and the two v1.0-only codes simply never get triggered by
+a v0.3 peer, which is expected and harmless — no error-mapping code path
+in this design does anything version-specific.
 
 **Header negotiation**: the spec describes per-interface `A2A-Version`
 header validation. Empirically this didn't gate the currency agent's
@@ -204,6 +260,16 @@ plain `error` on malformed/unrecognized JSON (an unknown `"kind"` value, a
 state string outside the mapping table), surfacing the same way today's
 `cloneWithType` failures already do.
 
+## Raw evidence
+
+The full raw request/response JSON from a successful `message/send` call
+against the real running `adk_currency_agent` — matching the evidentiary
+standard set by `servers/helloworld/findings.md` — is recorded in
+`a2a-interop-tests/servers/adk_currency_agent/findings.md`, alongside the
+`SendMessage` failure probe, the agent card's raw JSON, and the actual
+`ballerina/a2a` client's observed behavior against this server (discovery
+succeeds, `sendMessage` fails with `Method not found` → `A2AInternalError`).
+
 ## Testing
 
 - **Unit tests** (`tests/`, mock-based): extend `testutil.bal`'s scripting
@@ -212,10 +278,21 @@ state string outside the mapping table), surfacing the same way today's
   forcing `V0_3` mode via both detection paths (`supportedInterfaces`
   present vs. legacy top-level `protocolVersion`). Cover all 5 operations,
   the full stream-event dispatch table, and `detectProtocolMode` directly.
+  - **`AgentCard.protocolVersion` round-trip + tolerance**: the new field
+    is serialized and deserialized correctly when present, and absent when
+    unset (matching the existing round-trip/tolerance pattern every other
+    `AgentCard` field already has in `types_test.bal`); an unrecognized
+    extra field alongside it is still tolerated (open-record tolerance,
+    same as every other type).
+  - **`final`-field regression**: script a v0.3 stream event with
+    `"final": true` on a *non-terminal* state (e.g. `"working"`) and assert
+    the client does not close the stream — proving `final` is ignored and
+    terminal-ness is derived solely from the translated `TaskState`, per
+    the confirmed reference-SDK behavior above, not merely assumed safe.
 - **Interop test** (separate `a2a-interop-tests` repo, matching the existing
-  `servers/helloworld` pattern): a new `servers/adk_currency_agent/` with
-  `setup.md` (the `uv sync` / `GOOGLE_API_KEY` / `uv run currency_agent`
-  steps already exercised by hand) and `findings.md` documenting the v0.3
-  discovery itself, plus new interop tests exercising `sendMessage`/
-  `sendMessageStream` end-to-end against the real running agent — this is
-  what actually proves the compat layer works, beyond mocks.
+  `servers/helloworld` pattern): `servers/adk_currency_agent/` (already
+  added — `setup.md` with the `uv sync` / `GOOGLE_API_KEY` / `uv run
+  currency_agent` steps, and `findings.md` with the full raw evidence), plus
+  new interop tests exercising `sendMessage`/`sendMessageStream` end-to-end
+  against the real running agent — this is what actually proves the
+  compat layer works, beyond mocks.
