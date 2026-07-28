@@ -44,11 +44,27 @@ Proposed package: **ballerina/a2a**, mirroring the file-per-concern convention a
 
 ```
 ballerina/a2a/
-  Ballerina.toml  types.bal          — all public data model types  client.bal         — isolated client class Client + resolveAgentCard  errors.bal         — error types and JSON-RPC error code mapping  modules/    transport/      jsonrpc.bal    — JSON-RPC 2.0 envelope types, request builder,                       response parser, error mapper
-sse.bal        — thin wrapper over http:SseEvent stream: decodes each    event's JSON-RPC envelope into a StreamResponse and closes the stream on a terminal status
+  Ballerina.toml
+  types.bal          — all public data model types
+  client.bal         — isolated client class Client + resolveAgentCard
+  errors.bal         — A2AError hierarchy and toA2AError JSON-RPC error code mapping
+  sse.bal            — A2AStreamGenerator / readSseStream: decodes each SSE event's
+                       JSON-RPC envelope into a StreamResponse and closes the
+                       stream on a terminal status
+  modules/
+    transport/
+      jsonrpc.bal    — JSON-RPC 2.0 envelope types only: JsonRpcRequest,
+                       JsonRpcResponse, JsonRpcError
 ```
 
-*Each file owns one concern. Everything under modules/transport/ is an unexported submodule — its types are internal plumbing and never form part of the supported public API. Phase 2 adds listener.bal and task\_store.bal to this same package.*  
+*Each file owns one concern, but the split between the root module and modules/transport/ is drawn on module-dependency direction, not just topic:*
+
+* ***modules/transport/ is a pure wire-format leaf.*** *It contains only the JSON-RPC envelope types (JsonRpcRequest, JsonRpcResponse, JsonRpcError) and has zero dependency on the root a2a module. It does not build request envelopes, parse responses into domain types, or map error codes — anything that would require referencing A2AError, StreamResponse, Task, or any other root-level type stays out of transport/.*
+* ***Protocol-semantic logic lives in the root module, not in transport.*** *toA2AError (errors.bal) and SSE-to-StreamResponse decoding (sse.bal, via A2AStreamGenerator) both construct root-level types — A2AError subtypes and StreamResponse — from transport's wire types. Since the root module already imports ballerina/a2a.transport for the envelope types, transport cannot import the root module back without creating a cyclic module dependency, which bal build rejects outright. Placing this logic in the root module (importing transport, never the reverse) is what keeps the dependency graph a single direction.*
+
+**Note (see commit e4bf7d8):** an earlier draft of this layout had toA2AError and the SSE decoder living inside modules/transport/, with transport importing the root a2a module to construct A2AError/StreamResponse values — while client.bal separately imported modules/transport/ for the envelope types. That is exactly the cyclic dependency described above, and it does not compile. Do not move error mapping or SSE decoding back into modules/transport/ in a future phase without re-establishing this constraint; if new protocol-semantic logic needs wire-format types, add it to the root module (or a new root-level file) and have it import transport, not the other way around.
+
+Everything under modules/transport/ is an unexported submodule — its types are internal plumbing and never form part of the supported public API. Phase 2 adds listener.bal and task\_store.bal to this same package.  
 **Public API surface for Phase 1:** the Client class, the resolveAgentCard function, all data model types in types.bal, and all error types in errors.bal. Nothing else is exported.
 
 # ---
@@ -64,11 +80,12 @@ Each open record also declares an explicit **json...;** rest field. Dropping the
 ## **3.2 Agent discovery types**
 
 ```
-public type AgentProvider record {    string organization;    string url;    string? contactEmail?;    json...;};public type AgentExtension record {    string uri;    string? description?;    boolean required = false;    json...;};public type AgentCapabilities record {    boolean streaming = false;    boolean pushNotifications = false;    boolean stateTransitionHistory = false;    boolean extendedAgentCard = false;    AgentExtension[] extensions = [];    json...;};public type AgentSkill record {    string id;    string name;    string description;    string[] tags = [];    string[] inputModes = [];    string[] outputModes = [];    string[] examples = [];    json...;};public type AgentInterface record {    string url;    string protocolBinding;    string? protocolVersion?;    string? tenant?;    json...;};public type AgentCard record {    string name;    string description;    string version;    string url;    AgentProvider? provider?;    string? documentationUrl?;    string? iconUrl?;    AgentCapabilities capabilities;    AgentInterface[] supportedInterfaces = [];    map<json> securitySchemes = {};    json[] security = [];    string[] defaultInputModes = ["text"];    string[] defaultOutputModes = ["text"];    AgentSkill[] skills;    json[] signatures = [];    json...;};
+public type AgentProvider record {    string organization;    string url;    string? contactEmail?;    json...;};public type AgentExtension record {    string uri;    string? description?;    boolean required = false;    json...;};public type AgentCapabilities record {    boolean streaming = false;    boolean pushNotifications = false;    boolean stateTransitionHistory = false;    boolean extendedAgentCard = false;    AgentExtension[] extensions = [];    json...;};public type AgentSkill record {    string id;    string name;    string description;    string[] tags = [];    string[] inputModes = [];    string[] outputModes = [];    string[] examples = [];    json...;};public type AgentInterface record {    string url;    string protocolBinding;    string? protocolVersion?;    string? tenant?;    json...;};public type AgentCard record {    string name;    string description;    string version;    string? url?;          // legacy; superseded by supportedInterfaces[0].url, use primaryUrl()    AgentProvider? provider?;    string? documentationUrl?;    string? iconUrl?;    AgentCapabilities capabilities;    AgentInterface[] supportedInterfaces = [];    map<json> securitySchemes = {};    json[] security = [];    string[] defaultInputModes = ["text"];    string[] defaultOutputModes = ["text"];    AgentSkill[] skills;    json[] signatures = [];    json...;};
 ```
 
 *The AgentCard is the document a remote agent publishes to describe itself. The client fetches it to discover capabilities, the service URL, available skills, and required authentication. Note AgentInterface.tenant — when a selected interface declares a tenant value, the client must echo that value in every subsequent operation.*  
 **A note on securitySchemes:** the specification defines five distinct scheme shapes (API key, HTTP auth, OAuth2, OpenID Connect, mutual TLS), each with different fields. Modelling that union properly is a project of its own. Phase 1 types it as map\<json\> so the field is present and readable rather than buried in the rest field, with full typing deferred. This is a known simplification, tracked in section 13\.
+**A note on url (superseded):** v1.0 removed AgentCard.url as a required field — the primary endpoint now lives at supportedInterfaces[0].url. url is kept here only as optional, for servers still sending the legacy field. Callers should use the primaryUrl(card) helper (client.bal) rather than reading either field directly, since it applies the correct precedence (supportedInterfaces[0].url first, url as fallback, error if neither is set) — verified necessary because the real Python reference server never sends url at all.
 
 ## **3.3 Message and content types**
 
@@ -90,10 +107,11 @@ public enum TaskState {    TASK_STATE_UNSPECIFIED,    TASK_STATE_SUBMITTED,  
 ## **3.5 Streaming event types**
 
 ```
-public type TaskStatusUpdateEvent record {    string taskId;    string contextId;    TaskStatus status;    map<json>? metadata?;    json...;};public type TaskArtifactUpdateEvent record {    string taskId;    string contextId;    Artifact artifact;    boolean append = false;      // append to a previous artifact of same id    boolean lastChunk = false;   // final chunk of this artifact    map<json>? metadata?;    json...;};# StreamResponse is the wrapper delivered by streaming operations.# Exactly one field is non-nil per event, per specification section 3.2.3.public type StreamResponse record {    Task? task?;    Message? message?;    TaskStatusUpdateEvent? statusUpdate?;    TaskArtifactUpdateEvent? artifactUpdate?;    json...;};
+public type TaskStatusUpdateEvent record {    string taskId;    string contextId;    TaskStatus status;    map<json>? metadata?;    json...;};public type TaskArtifactUpdateEvent record {    string taskId;    string contextId;    Artifact artifact;    boolean append = false;      // append to a previous artifact of same id    boolean lastChunk = false;   // final chunk of this artifact    map<json>? metadata?;    json...;};# StreamResponse is the wrapper delivered by streaming operations.# Exactly one field is non-nil per event, per specification section 3.2.3.public type StreamResponse record {    Task? task?;    Message? message?;    TaskStatusUpdateEvent? statusUpdate?;    TaskArtifactUpdateEvent? artifactUpdate?;    json...;};# SendMessageResult is the wrapper returned by a unary sendMessage call —# a narrower sibling of StreamResponse with the streaming-only fields# (statusUpdate/artifactUpdate) omitted, since a unary reply can only# ever be a Task or a Message.# Exactly one field is non-nil, per specification section 3.1.1.public type SendMessageResult record {    Task? task?;    Message? message?;    json...;};
 ```
 
 *The two event types are kept separate because they carry structurally different payloads. A status update reports a lifecycle transition; an artifact update delivers output content and supports chunked delivery via append and lastChunk. Merging them into a single type with optional fields would silently discard chunked-artifact support and would not round-trip correctly to the wire format.*  
+**On SendMessageResult vs. StreamResponse:** the real reference server's SendMessage response wraps its payload exactly like a StreamResponse's first event does — `{"task": {...}}` or `{"message": {...}}` — never a flat Task or Message. Verified empirically against the official Python reference server (see §7.3); this is not something the earlier draft of this section anticipated. SendMessageResult exists as its own type, rather than reusing StreamResponse directly, so a unary reply's static type can't accidentally carry a statusUpdate or artifactUpdate that would never actually be present.  
 **Correction against the previous draft:** an earlier version of this design included an index field on TaskArtifactUpdateEvent. Specification section 4.2.2 defines only taskId, contextId, artifact, append, lastChunk, and metadata. There is no index field in v1.0 and it has been removed. Ordering is guaranteed by the specification requirement that events must be delivered in generation order.
 
 ## **3.6 Push notification and request configuration types**
@@ -154,7 +172,7 @@ Accepting the type directly, rather than wrapping or including it, has three adv
 ## **5.3 Agent Card discovery**
 
 ```
-# Fetches and parses a remote agent's Agent Card from its well-known endpoint.# Per specification section 8.2 the canonical discovery path is# /.well-known/agent.json relative to the agent's base URL.## + agentBaseUrl - Root URL of the agent with no path component# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy# + headers - Optional default headers, for API key authentication# + return - The parsed AgentCard, or an error if the fetch or parse failspublic isolated function resolveAgentCard(    string agentBaseUrl,    http:ClientConfiguration clientConfig = {},    map<string> headers = {}) returns AgentCard|error {    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);    map<string> reqHeaders = {"A2A-Version": "1.0"};    foreach [string, string] [k, v] in headers.entries() {        reqHeaders[k] = v;    }    http:Response resp = check discoveryClient->get(        "/.well-known/agent.json", reqHeaders    );    if resp.statusCode != 200 {        return error A2AInternalError(            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,            code = resp.statusCode        );    }    json body = check resp.getJsonPayload();    return check body.cloneWithType(AgentCard);}
+# Fetches and parses a remote agent's Agent Card from its well-known endpoint.# Per specification section 8.2 the canonical discovery path is# /.well-known/agent-card.json relative to the agent's base URL.## + agentBaseUrl - Root URL of the agent with no path component# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy# + headers - Optional default headers, for API key authentication# + return - The parsed AgentCard, or an error if the fetch or parse failspublic isolated function resolveAgentCard(    string agentBaseUrl,    http:ClientConfiguration clientConfig = {},    map<string> headers = {}) returns AgentCard|error {    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);    map<string> reqHeaders = {"A2A-Version": "1.0"};    foreach [string, string] [k, v] in headers.entries() {        reqHeaders[k] = v;    }    http:Response resp = check discoveryClient->get(        "/.well-known/agent-card.json", reqHeaders    );    if resp.statusCode != 200 {        return error A2AInternalError(            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,            code = resp.statusCode        );    }    json body = check resp.getJsonPayload();    return check body.cloneWithType(AgentCard);}
 ```
 
 *Discovery is deliberately a standalone function rather than a method on Client. A caller needs the card before they can construct a client, because the card supplies the service URL, tells them which authentication scheme is required, and declares which capabilities the agent supports.*
@@ -168,25 +186,25 @@ All five methods are isolated remote functions. Each accepts an optional tenant 
 ## **6.1 sendMessage**
 
 ```
-# Sends a message to the remote agent.## Blocking by default: the call does not return until the task reaches a# terminal or interrupted state. Set config.returnImmediately to true for# non-blocking behaviour, then poll with getTask or subscribe with# subscribeToTask.## The agent may respond with a Task for tracked work, or with a Message for# a simple direct reply that needs no task lifecycle. Both are valid per# specification section 3.1.1, so the return type covers both.## + message - The message to send; messageId must be set by the caller# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A Task or a Message on success, or an A2AError on failureisolated remote function sendMessage(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns Task|Message|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("message/send", params);    // Try Task first; fall back to Message. Both are valid responses.    Task|error asTask = result.cloneWithType(Task);    if asTask is Task {        return asTask;    }    Message|error asMessage = result.cloneWithType(Message);    if asMessage is Message {        return asMessage;    }    return error InvalidAgentResponseError(        "Response was neither a valid Task nor a valid Message"    );}
+# Sends a message to the remote agent.## Blocking by default: the call does not return until the task reaches a# terminal or interrupted state. Set config.returnImmediately to true for# non-blocking behaviour, then poll with getTask or subscribe with# subscribeToTask.## The agent may respond with a Task for tracked work, or with a Message for# a simple direct reply that needs no task lifecycle. Both are valid per# specification section 3.1.1, so the return type covers both.## + message - The message to send; messageId must be set by the caller# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A Task or a Message on success, or an A2AError on failureisolated remote function sendMessage(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns Task|Message|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("SendMessage", params);    // The wire response wraps the payload -- {"task": {...}} or    // {"message": {...}} -- rather than returning either one flat.    SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);    Task? maybeTask = wrapped?.task;    if maybeTask is Task {        return maybeTask;    }    Message? maybeMessage = wrapped?.message;    if maybeMessage is Message {        return maybeMessage;    }    return error InvalidAgentResponseError(        "Response contained neither a task nor a message"    );}
 ```
 
 ## **6.2 sendMessageStream**
 
 ```
-# Sends a message and receives updates in real time over SSE.## Requires the remote agent to declare capabilities.streaming as true;# otherwise the agent returns UnsupportedOperationError.## The stream opens with a Task or a Message, then delivers zero or more# TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes when# the task reaches a terminal state. Each StreamResponse carries exactly# one non-nil field.## + message - The message to send# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function sendMessageStream(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("message/stream", params);}
+# Sends a message and receives updates in real time over SSE.## Requires the remote agent to declare capabilities.streaming as true;# otherwise the agent returns UnsupportedOperationError.## The stream opens with a Task or a Message, then delivers zero or more# TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes when# the task reaches a terminal state. Each StreamResponse carries exactly# one non-nil field.## + message - The message to send# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function sendMessageStream(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SendStreamingMessage", params);}
 ```
 
 ## **6.3 getTask**
 
 ```
-# Retrieves the current state of a task.## Used for polling after a non-blocking send, for fetching final state after# a push notification, or for inspecting a task after a stream has ended.## + taskId - The task identifier returned by a previous sendMessage# + historyLength - Maximum messages to include in task.history. Unset means#                   no limit; zero requests that history be omitted.# + tenant - Optional per-call tenant override# + return - The current Task, or TaskNotFoundError if unknownisolated remote function getTask(    string taskId,    int? historyLength = (),    string? tenant = ()) returns Task|error {    map<json> params = {"id": taskId};    if historyLength is int {        params["historyLength"] = historyLength;    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("tasks/get", params);    return check result.cloneWithType(Task);}
+# Retrieves the current state of a task.## Used for polling after a non-blocking send, for fetching final state after# a push notification, or for inspecting a task after a stream has ended.## + taskId - The task identifier returned by a previous sendMessage# + historyLength - Maximum messages to include in task.history. Unset means#                   no limit; zero requests that history be omitted.# + tenant - Optional per-call tenant override# + return - The current Task, or TaskNotFoundError if unknownisolated remote function getTask(    string taskId,    int? historyLength = (),    string? tenant = ()) returns Task|error {    map<json> params = {"id": taskId};    if historyLength is int {        params["historyLength"] = historyLength;    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("GetTask", params);    return check result.cloneWithType(Task);}
 ```
 
 ## **6.4 cancelTask**
 
 ```
-# Requests cancellation of an in-progress task.## Cancellation is best effort. If the task has already reached a terminal# state the agent returns TaskNotCancelableError.## + taskId - The task to cancel# + metadata - Optional additional context passed to the agent# + tenant - Optional per-call tenant override# + return - The updated Task, or TaskNotCancelableErrorisolated remote function cancelTask(    string taskId,    map<json>? metadata = (),    string? tenant = ()) returns Task|error {    map<json> params = {"id": taskId};    if metadata is map<json> {        params["metadata"] = metadata;    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("tasks/cancel", params);    return check result.cloneWithType(Task);}
+# Requests cancellation of an in-progress task.## Cancellation is best effort. If the task has already reached a terminal# state the agent returns TaskNotCancelableError.## + taskId - The task to cancel# + metadata - Optional additional context passed to the agent# + tenant - Optional per-call tenant override# + return - The updated Task, or TaskNotCancelableErrorisolated remote function cancelTask(    string taskId,    map<json>? metadata = (),    string? tenant = ()) returns Task|error {    map<json> params = {"id": taskId};    if metadata is map<json> {        params["metadata"] = metadata;    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("CancelTask", params);    return check result.cloneWithType(Task);}
 ```
 
 ## **6.5 subscribeToTask**
@@ -194,19 +212,19 @@ All five methods are isolated remote functions. Each accepts an optional tenant 
 ## 
 
 ```
-# Opens a stream on an existing task.## The primary use is recovering from a dropped sendMessageStream connection.# Per specification section 3.1.6 the first event delivered is always the# task's current state, which prevents information loss between calling# getTask and re-subscribing.## Requires capabilities.streaming to be true. Returns# UnsupportedOperationError if attempted on a task already in a terminal# state.## + taskId - The task to subscribe to# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function subscribeToTask(    string taskId,    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"id": taskId};    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("tasks/resubscribe", params);}
+# Opens a stream on an existing task.## The primary use is recovering from a dropped sendMessageStream connection.# Per specification section 3.1.6 the first event delivered is always the# task's current state, which prevents information loss between calling# getTask and re-subscribing.## Requires capabilities.streaming to be true. Returns# UnsupportedOperationError if attempted on a task already in a terminal# state.## + taskId - The task to subscribe to# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function subscribeToTask(    string taskId,    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"id": taskId};    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SubscribeToTask", params);}
 ```
 
 ## **6.6 Operation to wire mapping**
 
 | Client method | JSON-RPC method | HTTP | Response type |
 | :---- | :---- | :---- | :---- |
-| resolveAgentCard | none | GET /.well-known/agent.json | application/json |
-| sendMessage | message/send | POST | application/json |
-| sendMessageStream | message/stream | POST | text/event-stream |
-| getTask | tasks/get | POST | application/json |
-| cancelTask | tasks/cancel | POST | application/json |
-| subscribeToTask | tasks/resubscribe | POST | text/event-stream |
+| resolveAgentCard | none | GET /.well-known/agent-card.json | application/json |
+| sendMessage | SendMessage | POST | application/json |
+| sendMessageStream | SendStreamingMessage | POST | text/event-stream |
+| getTask | GetTask | POST | application/json |
+| cancelTask | CancelTask | POST | application/json |
+| subscribeToTask | SubscribeToTask | POST | text/event-stream |
 
 # ---
 
@@ -231,20 +249,26 @@ All five methods are isolated remote functions. Each accepts an optional tenant 
 **sendMessage request**
 
 ```
-POST / HTTP/1.1Host: agent.example.comContent-Type: application/jsonA2A-Version: 1.0Authorization: Bearer eyJhbGciOiJIUzI1NiIs...{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "method": "message/send",  "params": {    "message": {      "messageId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",      "role": "ROLE_USER",      "parts": [{"text": "What is the weather in Colombo?"}]    },    "configuration": {      "acceptedOutputModes": ["text"],      "returnImmediately": false    },    "tenant": "acme-corp"  }}
+POST / HTTP/1.1Host: agent.example.comContent-Type: application/jsonA2A-Version: 1.0Authorization: Bearer eyJhbGciOiJIUzI1NiIs...{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "method": "SendMessage",  "params": {    "message": {      "messageId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",      "role": "ROLE_USER",      "parts": [{"text": "What is the weather in Colombo?"}]    },    "configuration": {      "acceptedOutputModes": ["text"],      "returnImmediately": false    },    "tenant": "acme-corp"  }}
 ```
 
 **Successful response**
 
 ```
-{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "result": {    "id": "task-7f3a9b2c",    "contextId": "ctx-4e8d1a6f",    "status": {      "state": "TASK_STATE_COMPLETED",      "timestamp": "2026-07-20T14:32:11Z"    },    "artifacts": [{      "artifactId": "art-9c2e",      "parts": [{"text": "29 degrees Celsius and partly cloudy."}]    }]  }}
+{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "result": {    "task": {      "id": "task-7f3a9b2c",      "contextId": "ctx-4e8d1a6f",      "status": {        "state": "TASK_STATE_COMPLETED",        "timestamp": "2026-07-20T14:32:11.412967Z"      },      "artifacts": [{        "artifactId": "art-9c2e",        "parts": [{"text": "29 degrees Celsius and partly cloudy."}]      }]    }  }}
 ```
 
 **Error response**
 
 ```
-{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "error": {    "code": -32001,    "message": "Task not found",    "data": {"taskId": "task-unknown"}  }}
+{  "jsonrpc": "2.0",  "id": "550e8400-e29b-41d4-a716-446655440000",  "error": {    "code": -32001,    "message": "Task not found",    "data": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_FOUND", "domain": "a2a-protocol.org", "metadata": {}}]  }}
 ```
+
+**Note — verified against the live reference server, not assumed from the v1.0 migration guide.** An earlier draft of this section used v0.3-era method names (`message/send`, `tasks/get`, etc.) and assumed a flat `Task`/`Message` result. Both were wrong for v1.0: the official Python reference server (`a2a-sdk`, via `a2a-samples/samples/python/agents/helloworld`) only accepts the PascalCase method names shown above, and its `SendMessage` response wraps the payload (`{"task": {...}}` / `{"message": {...}}`) exactly as shown — confirmed by sending real requests and reading real responses, not by trusting the v1.0 migration guide (https://a2a-protocol.org/latest/whats-new-v1/)'s illustrative examples. That guide's own JSON examples for streaming events (`taskStatusUpdate`/`taskArtifactUpdate` keys, plus a claimed `index` field on artifact updates) do **not** match the real server's wire format either — the real keys are `statusUpdate`/`artifactUpdate` with no `index` field, exactly as §3.5 and §8 already document. Do not "fix" sse.bal or the streaming types toward the migration guide's examples; they are the imprecise ones here, not this document.
+
+**Note — the Python reference server itself is non-conforming for §6.5's terminal-task case, in two separate ways.** §6.5 says `subscribeToTask` against a task already in a terminal state "Returns UnsupportedOperationError" — this is correct and unchanged; it matches both the spec text and the Rust SDK's own documented example. The Python reference server (`a2a-sdk`, `samples/python/agents/helloworld`), however, does not implement this correctly: calling `SubscribeToTask` on an already-terminal task returns (a) the wrong error code — `-32602` (`Invalid params`) rather than `UnsupportedOperationError`'s spec-mandated code — and (b) the wrong transport shape for a streaming request — `HTTP 200` with a plain `application/json` body (`{"error": {...}}`), not any SSE-framed response at all. Both are server-side spec violations in this particular reference implementation, not a documentation error here.
+
+This matters beyond just `subscribeToTask`: it's the concrete evidence for why `openSseStream` (client.bal) checks the response `Content-Type` before treating a `200` as a stream. Before that check existed, this exact server response caused `resp.getSseEventStream()` to fail with a raw, untyped Ballerina error (`"invalid payload target type..."`) instead of surfacing the underlying JSON-RPC error as a typed `A2AError`. A server sending a non-streaming `200` in response to a streaming request — for any reason, spec-conforming or not — is apparently something a real implementation does, so the client has to handle it regardless of whose fault it is on the wire.
 
 # ---
 
@@ -400,7 +424,7 @@ The tenant field is an structurally non-transparent routing identifier used by m
 The client supports it at two levels. Supplying it to the constructor sets a default applied to every operation, which suits the common case of a client bound to one tenant for its lifetime. Supplying it to an individual method overrides the default for that call, which supports a single client instance addressing multiple tenants.
 
 ```
-// Discover the agent and read its declared interfacesa2a:AgentCard card = check a2a:resolveAgentCard("https://agent.example.com");// Select the JSON-RPC interface and pick up its tenant, if declaredstring? tenant = ();foreach a2a:AgentInterface iface in card.supportedInterfaces {    if iface.protocolBinding == "JSONRPC" {        tenant = iface?.tenant;        break;    }}// Client-level default: every call carries this tenanta2a:Client a2aClient = check new (card.url, tenant = tenant);// Per-call override for a different tenant on the same deploymenta2a:Task|a2a:Message result =    check a2aClient->sendMessage(msg, tenant = "other-tenant");
+// Discover the agent and read its declared interfacesa2a:AgentCard card = check a2a:resolveAgentCard("https://agent.example.com");// Select the JSON-RPC interface and pick up its tenant, if declaredstring? tenant = ();foreach a2a:AgentInterface iface in card.supportedInterfaces {    if iface.protocolBinding == "JSONRPC" {        tenant = iface?.tenant;        break;    }}// Client-level default: every call carries this tenanta2a:Client a2aClient = check new (check a2a:primaryUrl(card), tenant = tenant);// Per-call override for a different tenant on the same deploymenta2a:Task|a2a:Message result =    check a2aClient->sendMessage(msg, tenant = "other-tenant");
 ```
 
 # ---
@@ -504,6 +528,34 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 ---
 
 *Phase 1 Client Technical Design. Specification-verified against A2A Protocol v1.0.0. Three implementation questions in section 12.1 require confirmation before coding begins; everything else is settled and ready to build.*
+
+---
+
+> ⚠️ **SUPERSEDED — do not implement from this section.**
+>
+> Everything from here down to "Task Delegation Lifecycle" below is an
+> earlier, unversioned draft of this design, superseded by the
+> "Phase 1: Client Technical Design" section above. It disagrees with
+> the Phase 1 draft in at least three confirmed places, independently
+> verified against the live A2A spec
+> (https://a2a-protocol.org/latest/specification/) — the Phase 1 draft
+> is correct in all three:
+>
+> - **`AgentInterface.tenant`** — this draft's `AgentInterface` omits the
+>   `tenant` field entirely; Phase 1 §3.2 includes it, and the client's
+>   tenant-routing design (§9.4) depends on it.
+> - **`AgentProvider.url`** — this draft makes it optional
+>   (`string? url?`); Phase 1 §3.2 makes it required (`string url`).
+> - **`TaskArtifactUpdateEvent.index`** — this draft still carries an
+>   `index` field; Phase 1 §3.5 contains an explicit correction note
+>   removing it, since specification §4.2.2 defines no such field.
+>
+> This section also sketches Phase 2 (Listener/service) material that is
+> out of scope for Phase 1 regardless of the above. Kept here for
+> historical reference only — always implement from the Phase 1 section
+> above, per `a2a/CLAUDE.md`.
+
+---
 
 # A2A Library for Ballerina — Technical Design1
 
@@ -1114,6 +1166,11 @@ The following design choices require formal team sign-off prior to the completio
 11. **Cryptographic Signing:** JWS verification for Agent Cards is deferred pending security review.  
 12. **Observability:** OpenTelemetry integration remains a requirement for future production releases but is currently deferred.
 
+> ⚠️ **End of superseded section.** The walkthrough below has not been
+> checked against the Phase 1 draft the way the three disagreements
+> above were — treat it as illustrative narrative, not a source to
+> implement types or code from.
+
 # Task Delegation Lifecycle
 
 # A2A Client — Task Delegation Lifecycle
@@ -1140,11 +1197,11 @@ if !card.capabilities.streaming {
 
 ## Step 2 — Construct the client
 
-**What happens:** `card.url` (not the discovery URL) becomes the base for every subsequent call. Auth, TLS, retry, and timeout all flow through the standard `http:ClientConfiguration` — there's no A2A-specific auth type.
+**What happens:** the primary endpoint — `supportedInterfaces[0].url`, via the `primaryUrl()` helper, not the discovery URL — becomes the base for every subsequent call. Auth, TLS, retry, and timeout all flow through the standard `http:ClientConfiguration` — there's no A2A-specific auth type.
 
 ```
 a2a:Client researchClient = check new (
-    card.url,
+    check a2a:primaryUrl(card),
     {auth: {token: check getResearchAgentToken()}}
 );
 ```
@@ -1153,7 +1210,7 @@ a2a:Client researchClient = check new (
 
 ## Step 3 — Send the task and open the stream
 
-**What happens:** `sendMessageStream` builds a JSON-RPC `message/stream` request, sets `Accept: text/event-stream`, and returns a live `stream<StreamResponse, error?>` the moment the connection opens — it does not wait for the task to finish.
+**What happens:** `sendMessageStream` builds a JSON-RPC `SendStreamingMessage` request, sets `Accept: text/event-stream`, and returns a live `stream<StreamResponse, error?>` the moment the connection opens — it does not wait for the task to finish.
 
 ```
 a2a:Message msg = {

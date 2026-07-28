@@ -1,0 +1,644 @@
+import ballerina/http;
+import ballerina/test;
+import ballerina/time;
+
+@test:Config {}
+function testResolveAgentCardSuccess() returns error? {
+    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+
+    test:assertEquals(card.name, "Mock Weather Agent");
+    test:assertEquals(card.capabilities.streaming, true);
+    test:assertEquals(card.skills.length(), 1);
+    test:assertEquals(card.skills[0].id, "weather-lookup");
+}
+
+@test:Config {}
+function testResolveAgentCardUnreachableEndpoint() returns error? {
+    AgentCard|error result = resolveAgentCard("http://localhost:1");
+
+    test:assertTrue(result is error, "unreachable endpoint should surface as an error, not panic");
+}
+
+@test:Config {}
+function testResolveAgentCardNon200Status() returns error? {
+    setWellKnownOverride({message: "not found"}, 404);
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    test:assertTrue(result is error, "a non-200 well-known response should surface as an error");
+    test:assertTrue(result is A2AInternalError, "non-200 well-known response should map to A2AInternalError");
+}
+
+@test:Config {}
+function testResolveAgentCardMalformedJson() returns error? {
+    setWellKnownOverride({"totally": "not an agent card"});
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    test:assertTrue(result is error, "a well-known body that doesn't decode as AgentCard should surface as an error");
+}
+
+# v1.0 removed AgentCard.url as a required field — the real reference
+# server never sends it, only supportedInterfaces[0].url. Regression test
+# for that: resolveAgentCard must succeed against a card with no url at
+# all, and primaryUrl() must fall back to supportedInterfaces correctly.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testResolveAgentCardSucceedsWithoutLegacyUrl() returns error? {
+    setWellKnownOverride({
+        name: "Mock Weather Agent",
+        description: "A scripted mock agent used by Client tests",
+        version: "1.0.0",
+        capabilities: {streaming: true},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+        ],
+        skills: [
+            {id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city"}
+        ]
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    if result is error {
+        test:assertFail("resolveAgentCard should succeed against a card with no legacy url field: " + result.message());
+    }
+    AgentCard card = result;
+    test:assertTrue(card?.url is (), "url should be nil, not defaulted, when the server never sent it");
+    test:assertEquals(check primaryUrl(card), "http://localhost:19199");
+}
+
+@test:Config {}
+function testPrimaryUrlPrefersSupportedInterfaces() returns error? {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        url: "https://legacy.example.com",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "https://primary.example.com", protocolBinding: "JSONRPC"},
+            {url: "https://secondary.example.com", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+
+    test:assertEquals(check primaryUrl(card), "https://primary.example.com");
+}
+
+@test:Config {}
+function testPrimaryUrlFallsBackToLegacyUrl() returns error? {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        url: "https://legacy.example.com",
+        capabilities: {},
+        skills: []
+    };
+
+    test:assertEquals(check primaryUrl(card), "https://legacy.example.com");
+}
+
+@test:Config {}
+function testPrimaryUrlErrorsWhenNeitherIsSet() {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        capabilities: {},
+        skills: []
+    };
+
+    string|error result = primaryUrl(card);
+
+    test:assertTrue(result is error, "primaryUrl should error when the card has neither supportedInterfaces nor a legacy url");
+}
+
+@test:Config {}
+function testSendMessageHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            task: {
+                id: "task-1",
+                contextId: "ctx-1",
+                status: {state: "TASK_STATE_COMPLETED"},
+                artifacts: [
+                    {artifactId: "art-1", parts: [{text: "29 degrees Celsius and partly cloudy."}]}
+                ]
+            }
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-1",
+        role: ROLE_USER,
+        parts: [{text: "What is the weather in Colombo?"}]
+    };
+
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Task, "mock returned a Task, so sendMessage should decode it as one");
+    Task task = <Task>result;
+    assertValidTask(task);
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
+}
+
+# The real reference server's SendMessage response wraps the payload —
+# {"result": {"task": {...}}} or {"result": {"message": {...}}} — never a
+# flat Task/Message. The happy-path test above only ever exercised the
+# task branch; this covers the message branch of that same wrapper.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageHappyPathMessageVariant() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            message: {
+                messageId: "reply-msg-1",
+                role: "ROLE_AGENT",
+                parts: [{text: "Hi there!"}]
+            }
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-1a",
+        role: ROLE_USER,
+        parts: [{text: "hi"}]
+    };
+
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Message, "mock returned a Message, so sendMessage should decode it as one");
+    Message reply = <Message>result;
+    test:assertEquals(reply.messageId, "reply-msg-1");
+    test:assertEquals(reply.parts[0]?.text, "Hi there!");
+}
+
+# A conforming server can't produce this (task/message form a real
+# protobuf oneof upstream), but SendMessageResult is a plain open record on
+# our side with no such enforcement — a non-conforming server sending both
+# should be treated as a malformed response, not silently resolved by
+# preferring one field over the other.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageRejectsResponseWithBothTaskAndMessage() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            task: {id: "task-ambiguous", status: {state: "TASK_STATE_COMPLETED"}},
+            message: {messageId: "reply-ambiguous", role: "ROLE_AGENT", parts: [{text: "Hi there!"}]}
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-ambiguous",
+        role: ROLE_USER,
+        parts: [{text: "hi"}]
+    };
+
+    Task|Message|error result = c->sendMessage(msg);
+
+    test:assertTrue(result is error, "a response with both task and message set should surface as an error");
+    test:assertTrue(result is InvalidAgentResponseError, "should map to InvalidAgentResponseError, not silently prefer task");
+}
+
+@test:Config {}
+function testSendMessageStreamHappyPath() returns error? {
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-2","contextId":"ctx-2","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-2","contextId":"ctx-2","artifact":{"artifactId":"art-2","parts":[{"text":"29 degrees Celsius and partly cloudy."}]}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-2","contextId":"ctx-2","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+    ]);
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-2",
+        role: ROLE_USER,
+        parts: [{text: "What is the weather in Colombo?"}]
+    };
+
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(events.next());
+    TaskArtifactUpdateEvent artifactEvent = <TaskArtifactUpdateEvent>second?.artifactUpdate;
+    test:assertEquals(extractArtifactText(artifactEvent.artifact), "29 degrees Celsius and partly cloudy.");
+
+    StreamResponse third = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+
+    record {| StreamResponse value; |}|error? fourth = events.next();
+    test:assertTrue(fourth is (), "stream should close after the terminal status");
+}
+
+@test:Config {}
+function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? {
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}}`}
+    ]);
+
+    Client c = check new (getServerBaseUrl());
+    Message turn1 = {
+        messageId: "msg-3",
+        role: ROLE_USER,
+        parts: [{text: "Research quantum error correction advances in 2024"}]
+    };
+
+    stream<StreamResponse, error?> firstStream = check c->sendMessageStream(turn1);
+
+    StreamResponse working = check expectValue(firstStream.next());
+    test:assertEquals((<TaskStatusUpdateEvent>working?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse inputRequired = check expectValue(firstStream.next());
+    TaskStatusUpdateEvent inputRequiredEvent = <TaskStatusUpdateEvent>inputRequired?.statusUpdate;
+    test:assertEquals(inputRequiredEvent.status.state, TASK_STATE_INPUT_REQUIRED);
+
+    record {| StreamResponse value; |}|error? afterPause = firstStream.next();
+    test:assertTrue(afterPause is (), "no more events scripted after INPUT_REQUIRED for the first turn");
+
+    // Resume with the same taskId/contextId, as design §9.3 shows.
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_WORKING"}}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-3","contextId":"ctx-3","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+    ]);
+
+    Message turn2 = {
+        messageId: "msg-4",
+        role: ROLE_USER,
+        contextId: inputRequiredEvent.contextId,
+        taskId: inputRequiredEvent.taskId,
+        parts: [{text: "Focus on surface codes and topological qubits"}]
+    };
+
+    stream<StreamResponse, error?> secondStream = check c->sendMessageStream(turn2);
+
+    StreamResponse resumedWorking = check expectValue(secondStream.next());
+    test:assertEquals((<TaskStatusUpdateEvent>resumedWorking?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse completed = check expectValue(secondStream.next());
+    TaskStatusUpdateEvent completedEvent = <TaskStatusUpdateEvent>completed?.statusUpdate;
+    test:assertEquals(completedEvent.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(completedEvent.taskId, "task-3");
+    test:assertEquals(completedEvent.contextId, "ctx-3");
+}
+
+@test:Config {}
+function testGetTaskNotFoundErrorMapping() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        'error: {code: -32001, message: "Task not found", data: {taskId: "task-unknown"}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Task|error result = c->getTask("task-unknown");
+
+    test:assertTrue(result is error, "an unknown task should surface as an error");
+    test:assertTrue(result is TaskNotFoundError, "code -32001 should map to TaskNotFoundError");
+}
+
+@test:Config {}
+function testSendMessageMalformedEnvelopeMapping() returns error? {
+    // Neither result nor error — a malformed JSON-RPC envelope.
+    setNextJsonResponse({jsonrpc: "2.0", id: "1"});
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-5",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+    Task|Message|error result = c->sendMessage(msg);
+
+    test:assertTrue(result is error, "a malformed envelope should surface as an error");
+    test:assertTrue(result is InvalidAgentResponseError, "a malformed envelope should map to InvalidAgentResponseError");
+}
+
+@test:Config {}
+function testTenantPropagatesOnEveryMethod() returns error? {
+    string tenant = "acme-corp";
+    Client c = check new (getServerBaseUrl(), tenant = tenant);
+    Message msg = {
+        messageId: "msg-tenant",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+    json validTaskResponse = {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: "task-tenant", status: {state: "TASK_STATE_COMPLETED"}}
+    };
+    // sendMessage's response wraps the Task, unlike getTask/cancelTask.
+    json wrappedTaskResponse = {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {task: {id: "task-tenant", status: {state: "TASK_STATE_COMPLETED"}}}
+    };
+    http:SseEvent[] minimalSseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-tenant","contextId":"ctx-tenant","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ];
+
+    setNextJsonResponse(wrappedTaskResponse);
+    Task|Message|error sendMessageResult = c->sendMessage(msg);
+    check assertLastRequestTenant(tenant, "sendMessage");
+
+    setNextSseResponse(minimalSseResponse);
+    stream<StreamResponse, error?>|error sendMessageStreamResult = c->sendMessageStream(msg);
+    check assertLastRequestTenant(tenant, "sendMessageStream");
+    check closeIfStream(sendMessageStreamResult);
+
+    setNextJsonResponse(validTaskResponse);
+    Task|error getTaskResult = c->getTask("task-tenant");
+    check assertLastRequestTenant(tenant, "getTask");
+
+    setNextJsonResponse(validTaskResponse);
+    Task|error cancelTaskResult = c->cancelTask("task-tenant");
+    check assertLastRequestTenant(tenant, "cancelTask");
+
+    setNextSseResponse(minimalSseResponse);
+    stream<StreamResponse, error?>|error subscribeToTaskResult = c->subscribeToTask("task-tenant");
+    check assertLastRequestTenant(tenant, "subscribeToTask");
+    check closeIfStream(subscribeToTaskResult);
+}
+
+# Confirms method-name translation actually happens on the wire, not just
+# that decoding tolerates it — asserts what the mock server actually
+# received via getLastRequestBody(), the same pattern
+# testTenantPropagatesOnEveryMethod already uses.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03ModeTranslatesSendMessageMethodName() returns error? {
+    // Since Task 8, sendMessage's response decoding branches on mode, so a
+    // V0_3 client now goes through decodeV03SendResult, which expects the
+    // unwrapped {"kind": "task", ...} shape rather than the v1.0
+    // {"task": {...}} wrapper. This test only cares about the wire method
+    // name, so the response body just needs to be shaped so decoding
+    // succeeds.
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "message/send");
+
+    // Prove the outbound body is actually v0.3-shaped on the wire, not just
+    // that the right method name was sent.
+    json wireParams = check lastRequest.params;
+    json wireMessage = check wireParams.message;
+    json[] wireParts = check wireMessage.parts.ensureType();
+    json wirePart0 = wireParts[0];
+    test:assertEquals(check wirePart0.kind, "text");
+    test:assertEquals(check wirePart0.text, "hi");
+    test:assertEquals(check wireMessage.role, "user");
+    test:assertEquals(check wireMessage.kind, "message");
+}
+
+# Same proof as testV03ModeTranslatesSendMessageMethodName, but for
+# sendMessageStream: the outbound body sent over the SSE-opening request
+# must also be v0.3-shaped, not just method-translated.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03ModeTranslatesSendMessageStreamRequestBody() returns error? {
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {streaming: true},
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+
+    http:SseEvent[] v03SseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-stream-1","contextId":"ctx-stream-1","status":{"state":"working"}}}`}
+    ];
+    setNextSseResponse(v03SseResponse);
+    Message msg = {messageId: "msg-stream-1", role: ROLE_USER, parts: [{text: "hello stream"}]};
+    stream<StreamResponse, error?>|error result = c->sendMessageStream(msg);
+    check closeIfStream(result);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "message/stream");
+    json wireParams = check lastRequest.params;
+    json wireMessage = check wireParams.message;
+    json[] wireParts = check wireMessage.parts.ensureType();
+    json wirePart0 = wireParts[0];
+    test:assertEquals(check wirePart0.kind, "text");
+    test:assertEquals(check wirePart0.text, "hello stream");
+    test:assertEquals(check wireMessage.role, "user");
+    test:assertEquals(check wireMessage.kind, "message");
+}
+
+@test:Config {}
+function testV1ModeStillSendsPascalCaseMethodNameByDefault() returns error? {
+    // No agentCard passed at all — confirms omitting the new parameter
+    // preserves today's exact v1.0-only behavior.
+    Client c = check new (getServerBaseUrl());
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "SendMessage");
+}
+
+# Drains and closes a possibly-opened SSE stream so the mock server isn't
+# left trying to write to an abandoned connection between tests.
+#
+# + result - the raw remote-call result, only acted on if it's a stream
+# + return - an error if closing the stream fails
+isolated function closeIfStream(stream<StreamResponse, error?>|error result) returns error? {
+    if result is stream<StreamResponse, error?> {
+        record {| StreamResponse value; |}|error? next = result.next();
+        while next is record {| StreamResponse value; |} {
+            next = result.next();
+        }
+        check result.close();
+    }
+}
+
+@test:Config {}
+function testPerCallTenantOverridesClientDefault() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {task: {id: "task-tenant-2", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Client c = check new (getServerBaseUrl(), tenant = "default-tenant");
+    Message msg = {
+        messageId: "msg-tenant-2",
+        role: ROLE_USER,
+        parts: [{text: "hello"}]
+    };
+
+    Task|Message|error result = c->sendMessage(msg, tenant = "override-tenant");
+
+    check assertLastRequestTenant("override-tenant", "sendMessage with a per-call override");
+}
+
+isolated function assertLastRequestTenant(string expectedTenant, string label) returns error? {
+    json params = check getLastRequestBody().params;
+    string tenantOnWire = check params.tenant;
+    test:assertEquals(tenantOnWire, expectedTenant, string `${label} should echo the tenant on the wire`);
+}
+
+@test:Config {}
+function testClientConfigTimeoutPassthrough() returns error? {
+    // A generous delay/threshold gap (0.1s timeout vs. a 3s mock delay,
+    // asserting well under that at 2s) so this doesn't flake under
+    // scheduling jitter when the full suite runs concurrently.
+    setNextDelay(3);
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: "task-slow", status: {state: "TASK_STATE_COMPLETED"}}
+    });
+
+    Client c = check new (getServerBaseUrl(), {timeout: 0.1});
+
+    decimal before = time:monotonicNow();
+    Task|error result = c->getTask("task-slow");
+    decimal elapsed = time:monotonicNow() - before;
+
+    setNextDelay(0);
+
+    test:assertTrue(result is error, "a client configured with a 0.1s timeout should time out against a slow mock response");
+    test:assertTrue(elapsed < 2d, string `expected the timeout to fire well under the mock's 3s delay, took ${elapsed}s`);
+}
+
+isolated function v03Client() returns Client|error {
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+    return new (getServerBaseUrl(), agentCard = legacyCard);
+}
+
+@test:Config {}
+function testV03SendMessageDecodesUnwrappedTaskResponse() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            id: "task-1", kind: "task",
+            status: {state: "completed"},
+            artifacts: [{artifactId: "art-1", parts: [{kind: "text", text: "100 USD is equal to 87.80 EUR."}]}]
+        }
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert 100 USD to EUR"}]};
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Task, "an unwrapped kind:task v0.3 result should decode as a Task");
+    Task task = <Task>result;
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(extractArtifactText(task.artifacts[0]), "100 USD is equal to 87.80 EUR.");
+}
+
+@test:Config {}
+function testV03SendMessageDecodesUnwrappedMessageResponse() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            messageId: "reply-1", kind: "message", role: "agent",
+            parts: [{kind: "text", text: "Sure, what currency?"}]
+        }
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert some money"}]};
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Message, "an unwrapped kind:message v0.3 result should decode as a Message");
+    test:assertEquals((<Message>result).role, ROLE_AGENT);
+}
+
+@test:Config {}
+function testV03GetTaskDecodesUnwrappedTask() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
+    });
+
+    Task task = check c->getTask("task-1");
+
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+}
+
+@test:Config {}
+function testV03CancelTaskDecodesUnwrappedTask() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "canceled"}}
+    });
+
+    Task task = check c->cancelTask("task-1");
+
+    test:assertEquals(task.status.state, TASK_STATE_CANCELED);
+}
+
+@test:Config {}
+function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error? {
+    Client c = check v03Client();
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"artifact-update","taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"kind":"text","text":"100 USD is equal to 87.80 EUR."}]}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
+    ]);
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert 100 USD to EUR"}]};
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(events.next());
+    test:assertEquals(extractArtifactText((<TaskArtifactUpdateEvent>second?.artifactUpdate).artifact), "100 USD is equal to 87.80 EUR.");
+
+    StreamResponse third = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+}
