@@ -121,6 +121,15 @@ function testParseV03PartFileWithBytes() returns error? {
 }
 
 @test:Config {}
+function testParseV03PartFileWithMalformedBytesIsError() returns error? {
+    Part|error result = parseV03Part({
+        "kind": "file",
+        "file": {"bytes": "not valid base64!!!", "mime_type": "text/plain"}
+    });
+    test:assertTrue(result is error, "malformed base64 in file bytes should surface as an error");
+}
+
+@test:Config {}
 function testParseV03PartData() returns error? {
     Part part = check parseV03Part({"kind": "data", "data": {"amount": 100, "currency": "USD"}});
     json? data = part?.data;
