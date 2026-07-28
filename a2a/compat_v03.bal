@@ -154,3 +154,116 @@ isolated function parseV03Part(json partJson) returns Part|error {
 
     return check v1Shape.cloneWithType(Part);
 }
+
+# + msgJson - the raw v0.3 Message JSON
+# + return - the equivalent v1.0 Message, or an error if malformed
+isolated function parseV03Message(json msgJson) returns Message|error {
+    map<json> m = check msgJson.ensureType();
+    string role = check m["role"].ensureType();
+    Role mappedRole = check mapV03Role(role);
+
+    json[] rawParts = check m["parts"].ensureType();
+    Part[] parts = [];
+    foreach json p in rawParts {
+        parts.push(check parseV03Part(p));
+    }
+
+    map<json> v1Shape = {
+        messageId: check m["messageId"].ensureType(),
+        role: mappedRole.toJson(),
+        parts: parts.toJson()
+    };
+    if m.hasKey("contextId") {
+        v1Shape["contextId"] = m["contextId"];
+    }
+    if m.hasKey("taskId") {
+        v1Shape["taskId"] = m["taskId"];
+    }
+    if m.hasKey("metadata") {
+        v1Shape["metadata"] = m["metadata"];
+    }
+
+    return check v1Shape.cloneWithType(Message);
+}
+
+# + statusJson - the raw v0.3 TaskStatus JSON
+# + return - the equivalent v1.0 TaskStatus, or an error if malformed
+isolated function parseV03TaskStatus(json statusJson) returns TaskStatus|error {
+    map<json> m = check statusJson.ensureType();
+    TaskState state = check mapV03State(check m["state"].ensureType());
+
+    map<json> v1Shape = {state: state.toJson()};
+    if m.hasKey("message") {
+        Message msg = check parseV03Message(m["message"]);
+        v1Shape["message"] = msg.toJson();
+    }
+    if m.hasKey("timestamp") {
+        v1Shape["timestamp"] = m["timestamp"];
+    }
+
+    return check v1Shape.cloneWithType(TaskStatus);
+}
+
+# + artifactJson - the raw v0.3 Artifact JSON
+# + return - the equivalent v1.0 Artifact, or an error if malformed
+isolated function parseV03Artifact(json artifactJson) returns Artifact|error {
+    map<json> m = check artifactJson.ensureType();
+
+    json[] rawParts = check m["parts"].ensureType();
+    Part[] parts = [];
+    foreach json p in rawParts {
+        parts.push(check parseV03Part(p));
+    }
+
+    map<json> v1Shape = {
+        artifactId: check m["artifactId"].ensureType(),
+        parts: parts.toJson()
+    };
+    if m.hasKey("name") {
+        v1Shape["name"] = m["name"];
+    }
+    if m.hasKey("description") {
+        v1Shape["description"] = m["description"];
+    }
+    if m.hasKey("metadata") {
+        v1Shape["metadata"] = m["metadata"];
+    }
+
+    return check v1Shape.cloneWithType(Artifact);
+}
+
+# + taskJson - the raw v0.3 Task JSON (unwrapped — see decodeV03SendResult)
+# + return - the equivalent v1.0 Task, or an error if malformed
+isolated function parseV03Task(json taskJson) returns Task|error {
+    map<json> m = check taskJson.ensureType();
+    TaskStatus status = check parseV03TaskStatus(m["status"]);
+
+    map<json> v1Shape = {
+        id: check m["id"].ensureType(),
+        status: status.toJson()
+    };
+    if m.hasKey("contextId") {
+        v1Shape["contextId"] = m["contextId"];
+    }
+    if m.hasKey("metadata") {
+        v1Shape["metadata"] = m["metadata"];
+    }
+    if m.hasKey("history") {
+        json[] rawHistory = check m["history"].ensureType();
+        Message[] history = [];
+        foreach json hm in rawHistory {
+            history.push(check parseV03Message(hm));
+        }
+        v1Shape["history"] = history.toJson();
+    }
+    if m.hasKey("artifacts") {
+        json[] rawArtifacts = check m["artifacts"].ensureType();
+        Artifact[] artifacts = [];
+        foreach json am in rawArtifacts {
+            artifacts.push(check parseV03Artifact(am));
+        }
+        v1Shape["artifacts"] = artifacts.toJson();
+    }
+
+    return check v1Shape.cloneWithType(Task);
+}

@@ -141,3 +141,88 @@ function testParseV03PartRejectsUnrecognizedKind() returns error? {
     Part|error result = parseV03Part({"kind": "video", "url": "x"});
     test:assertTrue(result is error, "an unrecognized v0.3 Part kind should surface as an error");
 }
+
+@test:Config {}
+function testParseV03Message() returns error? {
+    Message msg = check parseV03Message({
+        "messageId": "msg-1",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "Convert 100 USD to EUR"}],
+        "contextId": "ctx-1",
+        "kind": "message"
+    });
+    test:assertEquals(msg.messageId, "msg-1");
+    test:assertEquals(msg.role, ROLE_USER);
+    test:assertEquals(msg.parts.length(), 1);
+    test:assertEquals(msg.parts[0]?.text, "Convert 100 USD to EUR");
+    test:assertEquals(msg?.contextId, "ctx-1");
+}
+
+@test:Config {}
+function testParseV03TaskStatus() returns error? {
+    TaskStatus status = check parseV03TaskStatus({
+        "state": "completed",
+        "timestamp": "2026-07-28T03:18:13.954298+00:00",
+        "message": {
+            "messageId": "msg-2", "role": "agent",
+            "parts": [{"kind": "text", "text": "100 USD is equal to 87.80 EUR."}],
+            "kind": "message"
+        }
+    });
+    test:assertEquals(status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(status?.timestamp, "2026-07-28T03:18:13.954298+00:00");
+    Message? statusMessage = status?.message;
+    test:assertTrue(statusMessage is Message, "TaskStatus.message should be parsed, not dropped");
+    test:assertEquals((<Message>statusMessage).role, ROLE_AGENT);
+}
+
+@test:Config {}
+function testParseV03Artifact() returns error? {
+    Artifact artifact = check parseV03Artifact({
+        "artifactId": "art-1",
+        "name": "conversion_result",
+        "parts": [{"kind": "text", "text": "100 USD is equal to 87.80 EUR."}]
+    });
+    test:assertEquals(artifact.artifactId, "art-1");
+    test:assertEquals(artifact?.name, "conversion_result");
+    test:assertEquals(artifact.parts[0]?.text, "100 USD is equal to 87.80 EUR.");
+}
+
+# Full round-trip against the actual raw response recorded in
+# a2a-interop-tests/servers/adk_currency_agent/findings.md, minus the
+# outer JSON-RPC envelope (that's rpcCall's job, not parseV03Task's).
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testParseV03TaskFromRealCurrencyAgentResponse() returns error? {
+    Task task = check parseV03Task({
+        "artifacts": [
+            {"artifactId": "d9d3ff03-bf6c-4c68-ac46-b56a3088349c", "name": "conversion_result",
+             "parts": [{"kind": "text", "text": "100 USD is equal to 87.80 EUR."}]}
+        ],
+        "contextId": "1b4188cb-0bc7-48ea-a3e6-177fa50f1684",
+        "history": [
+            {"contextId": "1b4188cb-0bc7-48ea-a3e6-177fa50f1684", "kind": "message",
+             "messageId": "probe-msg-2", "parts": [{"kind": "text", "text": "Convert 100 USD to EUR"}],
+             "role": "user", "taskId": "6ea25505-6764-4b29-9932-0227e2cf7e3e"}
+        ],
+        "id": "6ea25505-6764-4b29-9932-0227e2cf7e3e",
+        "kind": "task",
+        "status": {
+            "message": {"contextId": "1b4188cb-0bc7-48ea-a3e6-177fa50f1684", "kind": "message",
+                        "messageId": "e754dd1e-61b7-4968-a36f-7c4ea0ec14fa",
+                        "parts": [{"kind": "text", "text": "100 USD is equal to 87.80 EUR."}],
+                        "role": "agent", "taskId": "6ea25505-6764-4b29-9932-0227e2cf7e3e"},
+            "state": "completed",
+            "timestamp": "2026-07-28T03:18:13.954298+00:00"
+        }
+    });
+
+    test:assertEquals(task.id, "6ea25505-6764-4b29-9932-0227e2cf7e3e");
+    test:assertEquals(task?.contextId, "1b4188cb-0bc7-48ea-a3e6-177fa50f1684");
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(task.history.length(), 1);
+    test:assertEquals(task.history[0].role, ROLE_USER);
+    test:assertEquals(task.artifacts.length(), 1);
+    test:assertEquals(task.artifacts[0].parts[0]?.text, "100 USD is equal to 87.80 EUR.");
+}
