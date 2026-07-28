@@ -44,3 +44,16 @@ function testDetectProtocolModeDefaultsLegacyCardWithNoProtocolVersionToV03() re
     };
     test:assertEquals(detectProtocolMode(bareLegacyCard), "V0_3");
 }
+
+@test:Config {}
+function testDetectProtocolModeLegacyCardWithNonV03ProtocolVersionToV1() returns error? {
+    // No supportedInterfaces, but an explicit top-level protocolVersion that
+    // does not start with "0." should be treated as v1.0-native.
+    AgentCard legacyV1Card = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "1.0.0",
+        capabilities: {},
+        skills: []
+    };
+    test:assertEquals(detectProtocolMode(legacyV1Card), "V1_0");
+}
