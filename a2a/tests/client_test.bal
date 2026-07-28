@@ -415,6 +415,52 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
 
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "message/send");
+
+    // Prove the outbound body is actually v0.3-shaped on the wire, not just
+    // that the right method name was sent.
+    json wireParams = check lastRequest.params;
+    json wireMessage = check wireParams.message;
+    json[] wireParts = check wireMessage.parts.ensureType();
+    json wirePart0 = wireParts[0];
+    test:assertEquals(check wirePart0.kind, "text");
+    test:assertEquals(check wirePart0.text, "hi");
+    test:assertEquals(check wireMessage.role, "user");
+    test:assertEquals(check wireMessage.kind, "message");
+}
+
+# Same proof as testV03ModeTranslatesSendMessageMethodName, but for
+# sendMessageStream: the outbound body sent over the SSE-opening request
+# must also be v0.3-shaped, not just method-translated.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03ModeTranslatesSendMessageStreamRequestBody() returns error? {
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {streaming: true},
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+
+    http:SseEvent[] v03SseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-stream-1","contextId":"ctx-stream-1","status":{"state":"working"}}}`}
+    ];
+    setNextSseResponse(v03SseResponse);
+    Message msg = {messageId: "msg-stream-1", role: ROLE_USER, parts: [{text: "hello stream"}]};
+    stream<StreamResponse, error?>|error result = c->sendMessageStream(msg);
+    check closeIfStream(result);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "message/stream");
+    json wireParams = check lastRequest.params;
+    json wireMessage = check wireParams.message;
+    json[] wireParts = check wireMessage.parts.ensureType();
+    json wirePart0 = wireParts[0];
+    test:assertEquals(check wirePart0.kind, "text");
+    test:assertEquals(check wirePart0.text, "hello stream");
+    test:assertEquals(check wireMessage.role, "user");
+    test:assertEquals(check wireMessage.kind, "message");
 }
 
 @test:Config {}

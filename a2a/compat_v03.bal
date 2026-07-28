@@ -71,6 +71,24 @@ isolated function mapV03Role(string role) returns Role|error {
     }
 }
 
+# + role - the outbound v1.0 Role to encode
+# + return - the equivalent v0.3 wire role string, or an error for
+#            ROLE_UNSPECIFIED (or anything else unrecognized) — the mirror
+#            image of mapV03Role, which errors the same way on decode
+isolated function encodeV03Role(Role role) returns string|error {
+    match role {
+        ROLE_USER => {
+            return "user";
+        }
+        ROLE_AGENT => {
+            return "agent";
+        }
+        _ => {
+            return error(string `Cannot encode v0.3 message: unrecognized or unspecified role ${role}`);
+        }
+    }
+}
+
 # + state - the v0.3 wire state string (e.g. "completed", "input-required")
 # + return - the equivalent v1.0 TaskState, or an error if unrecognized
 isolated function mapV03State(string state) returns TaskState|error {
@@ -182,6 +200,12 @@ isolated function parseV03Message(json msgJson) returns Message|error {
     if m.hasKey("metadata") {
         v1Shape["metadata"] = m["metadata"];
     }
+    if m.hasKey("referenceTaskIds") {
+        v1Shape["referenceTaskIds"] = m["referenceTaskIds"];
+    }
+    if m.hasKey("extensions") {
+        v1Shape["extensions"] = m["extensions"];
+    }
 
     return check v1Shape.cloneWithType(Message);
 }
@@ -228,6 +252,9 @@ isolated function parseV03Artifact(json artifactJson) returns Artifact|error {
     if m.hasKey("metadata") {
         v1Shape["metadata"] = m["metadata"];
     }
+    if m.hasKey("extensions") {
+        v1Shape["extensions"] = m["extensions"];
+    }
 
     return check v1Shape.cloneWithType(Artifact);
 }
@@ -272,8 +299,9 @@ isolated function parseV03Task(json taskJson) returns Task|error {
 # wire shape, the mirror image of parseV03Part.
 #
 # + part - the outbound Part, in v1.0 field-presence-discriminated shape
-# + return - the equivalent v0.3 Part JSON
-isolated function encodeV03Part(Part part) returns json {
+# + return - the equivalent v0.3 Part JSON, or an error if none of
+#            text/raw/url/data is actually set
+isolated function encodeV03Part(Part part) returns json|error {
     map<json> result = {};
     string? partText = part?.text;
     byte[]? raw = part?.raw;
@@ -306,9 +334,11 @@ isolated function encodeV03Part(Part part) returns json {
         }
         result["kind"] = "file";
         result["file"] = file;
-    } else if data is json {
+    } else if data !is () {
         result["kind"] = "data";
         result["data"] = data;
+    } else {
+        return error("Cannot encode v0.3 Part: none of text, raw, url, or data is set");
     }
     map<json>? partMetadata = part?.metadata;
     if partMetadata is map<json> {
@@ -324,15 +354,19 @@ isolated function encodeV03Part(Part part) returns json {
 # servers/adk_currency_agent/findings.md (a2a-interop-tests).
 #
 # + message - the outbound Message, in v1.0 shape as built by the caller
-# + return - the equivalent v0.3 Message JSON to send on the wire
-isolated function encodeV03Message(Message message) returns json {
+# + return - the equivalent v0.3 Message JSON to send on the wire, or an
+#            error if the role is ROLE_UNSPECIFIED (or otherwise
+#            unrecognized) or a Part can't be encoded
+isolated function encodeV03Message(Message message) returns json|error {
+    string wireRole = check encodeV03Role(message.role);
+
     json[] parts = [];
     foreach Part p in message.parts {
-        parts.push(encodeV03Part(p));
+        parts.push(check encodeV03Part(p));
     }
     map<json> result = {
         messageId: message.messageId,
-        role: message.role == ROLE_AGENT ? "agent" : "user",
+        role: wireRole,
         parts: parts,
         kind: "message"
     };
@@ -347,6 +381,55 @@ isolated function encodeV03Message(Message message) returns json {
     }
     if metadata is map<json> {
         result["metadata"] = metadata;
+    }
+    if message.referenceTaskIds.length() > 0 {
+        result["referenceTaskIds"] = message.referenceTaskIds.toJson();
+    }
+    if message.extensions.length() > 0 {
+        result["extensions"] = message.extensions.toJson();
+    }
+    return result;
+}
+
+# Encodes an outbound v1.0-shaped SendMessageConfiguration into the v0.3
+# wire shape.
+#
+# `returnImmediately` and v0.3's `blocking` are inverted senses of the same
+# switch (v1.0 defaults to blocking; v0.3 names the field after what it does
+# when true), so this negates rather than renames.
+# `taskPushNotificationConfig` is renamed to `pushNotificationConfig`, and
+# its v1.0-only `taskId` sub-field is dropped: TaskPushNotificationConfig.taskId
+# is documented ("Leave unset in a sendMessage request") as not applicable
+# in this position, so it's never forwarded even if a caller set it.
+# `acceptedOutputModes` and `historyLength` pass through unchanged.
+#
+# + config - the outbound SendMessageConfiguration, in v1.0 shape
+# + return - the equivalent v0.3 configuration JSON to send on the wire
+isolated function encodeV03SendConfiguration(SendMessageConfiguration config) returns json {
+    map<json> result = {
+        acceptedOutputModes: config.acceptedOutputModes.toJson(),
+        blocking: !config.returnImmediately
+    };
+    int? historyLength = config?.historyLength;
+    if historyLength is int {
+        result["historyLength"] = historyLength;
+    }
+    TaskPushNotificationConfig? pushConfig = config?.taskPushNotificationConfig;
+    if pushConfig is TaskPushNotificationConfig {
+        map<json> wirePushConfig = {url: pushConfig.url};
+        string? id = pushConfig?.id;
+        string? token = pushConfig?.token;
+        AuthenticationInfo? authentication = pushConfig?.authentication;
+        if id is string {
+            wirePushConfig["id"] = id;
+        }
+        if token is string {
+            wirePushConfig["token"] = token;
+        }
+        if authentication is AuthenticationInfo {
+            wirePushConfig["authentication"] = authentication.toJson();
+        }
+        result["pushNotificationConfig"] = wirePushConfig;
     }
     return result;
 }

@@ -158,10 +158,10 @@ public isolated client class Client {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = ()) returns Task|Message|error {
-        json messageJson = self.mode == "V0_3" ? encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
-            params["configuration"] = config.toJson();
+            params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
         }
         string? effectiveTenant = tenant ?: self.tenant;
         if effectiveTenant is string {
@@ -267,10 +267,10 @@ public isolated client class Client {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
-        json messageJson = self.mode == "V0_3" ? encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
-            params["configuration"] = config.toJson();
+            params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
         }
         string? effectiveTenant = tenant ?: self.tenant;
         if effectiveTenant is string {

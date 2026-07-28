@@ -331,7 +331,7 @@ function testDecodeV03StreamEventRejectsUnrecognizedKind() returns error? {
 @test:Config {}
 function testEncodeV03PartText() returns error? {
     Part part = {text: "hello"};
-    json result = encodeV03Part(part);
+    json result = check encodeV03Part(part);
     test:assertEquals(result, {"kind": "text", "text": "hello"});
 }
 
@@ -339,7 +339,7 @@ function testEncodeV03PartText() returns error? {
 function testEncodeV03PartFileWithBytes() returns error? {
     byte[] rawBytes = "hello".toBytes();
     Part part = {raw: rawBytes, filename: "report.pdf", mediaType: "application/pdf"};
-    json result = encodeV03Part(part);
+    json result = check encodeV03Part(part);
     map<json> m = check result.ensureType();
     test:assertEquals(m["kind"], "file");
     map<json> file = check m["file"].ensureType();
@@ -352,7 +352,7 @@ function testEncodeV03PartFileWithBytes() returns error? {
 @test:Config {}
 function testEncodeV03PartFileWithUrl() returns error? {
     Part part = {url: "https://example.com/report.pdf", filename: "report.pdf", mediaType: "application/pdf"};
-    json result = encodeV03Part(part);
+    json result = check encodeV03Part(part);
     map<json> m = check result.ensureType();
     test:assertEquals(m["kind"], "file");
     map<json> file = check m["file"].ensureType();
@@ -362,7 +362,7 @@ function testEncodeV03PartFileWithUrl() returns error? {
 @test:Config {}
 function testEncodeV03PartData() returns error? {
     Part part = {data: {"amount": 100, "currency": "USD"}};
-    json result = encodeV03Part(part);
+    json result = check encodeV03Part(part);
     map<json> m = check result.ensureType();
     test:assertEquals(m["kind"], "data");
     test:assertEquals(m["data"], {"amount": 100, "currency": "USD"});
@@ -375,7 +375,7 @@ function testEncodeV03MessageUserRole() returns error? {
         role: ROLE_USER,
         parts: [{text: "Convert 100 USD to EUR"}]
     };
-    json result = encodeV03Message(msg);
+    json result = check encodeV03Message(msg);
     map<json> m = check result.ensureType();
     test:assertEquals(m["role"], "user");
     test:assertEquals(m["kind"], "message");
@@ -392,7 +392,7 @@ function testEncodeV03MessageAgentRole() returns error? {
         role: ROLE_AGENT,
         parts: [{text: "100 USD is equal to 87.80 EUR."}, {data: {"amount": 87.80, "currency": "EUR"}}]
     };
-    json result = encodeV03Message(msg);
+    json result = check encodeV03Message(msg);
     map<json> m = check result.ensureType();
     test:assertEquals(m["role"], "agent");
     test:assertEquals(m["kind"], "message");
@@ -409,10 +409,138 @@ function testEncodeV03MessageOmitsUnsetOptionalFields() returns error? {
         role: ROLE_USER,
         parts: [{text: "hi"}]
     };
-    json result = encodeV03Message(msg);
+    json result = check encodeV03Message(msg);
     map<json> m = check result.ensureType();
     test:assertTrue(m.hasKey("messageId"), "messageId should be present");
     test:assertTrue(!m.hasKey("contextId"), "contextId should be absent, not present-but-null, when unset");
     test:assertTrue(!m.hasKey("taskId"), "taskId should be absent, not present-but-null, when unset");
     test:assertTrue(!m.hasKey("metadata"), "metadata should be absent, not present-but-null, when unset");
+    test:assertTrue(!m.hasKey("referenceTaskIds"), "referenceTaskIds should be absent when empty, not an empty array");
+    test:assertTrue(!m.hasKey("extensions"), "extensions should be absent when empty, not an empty array");
+}
+
+@test:Config {}
+function testEncodeV03MessageRejectsUnspecifiedRole() returns error? {
+    Message msg = {
+        messageId: "msg-4",
+        role: ROLE_UNSPECIFIED,
+        parts: [{text: "hi"}]
+    };
+    json|error result = encodeV03Message(msg);
+    test:assertTrue(result is error, "ROLE_UNSPECIFIED must not silently encode as \"user\"");
+}
+
+@test:Config {}
+function testEncodeV03PartRejectsEmptyPart() returns error? {
+    // None of text/raw/url/data is set — encodeV03Part must reject this
+    // rather than silently emitting {"kind":"data","data":null}.
+    Part part = {};
+    json|error result = encodeV03Part(part);
+    test:assertTrue(result is error, "a Part with none of text/raw/url/data set should be rejected, not encoded as kind:data");
+}
+
+@test:Config {}
+function testEncodeV03MessagePropagatesPartEncodingError() returns error? {
+    Message msg = {
+        messageId: "msg-5",
+        role: ROLE_USER,
+        parts: [{}]
+    };
+    json|error result = encodeV03Message(msg);
+    test:assertTrue(result is error, "encodeV03Message must surface a part-encoding failure rather than swallow it");
+}
+
+@test:Config {}
+function testMessageReferenceTaskIdsAndExtensionsRoundTrip() returns error? {
+    Message original = {
+        messageId: "msg-6",
+        role: ROLE_USER,
+        parts: [{text: "hi"}],
+        referenceTaskIds: ["task-1", "task-2"],
+        extensions: ["https://example.com/ext-a"]
+    };
+
+    json encoded = check encodeV03Message(original);
+    map<json> m = check encoded.ensureType();
+    test:assertEquals(m["referenceTaskIds"], ["task-1", "task-2"]);
+    test:assertEquals(m["extensions"], ["https://example.com/ext-a"]);
+
+    Message decoded = check parseV03Message(encoded);
+    test:assertEquals(decoded.referenceTaskIds, ["task-1", "task-2"]);
+    test:assertEquals(decoded.extensions, ["https://example.com/ext-a"]);
+}
+
+@test:Config {}
+function testParseV03MessageDefaultsReferenceTaskIdsAndExtensionsWhenAbsent() returns error? {
+    Message msg = check parseV03Message({
+        "messageId": "msg-7",
+        "role": "user",
+        "parts": [{"kind": "text", "text": "hi"}]
+    });
+    test:assertEquals(msg.referenceTaskIds, []);
+    test:assertEquals(msg.extensions, []);
+}
+
+@test:Config {}
+function testParseV03ArtifactCarriesExtensions() returns error? {
+    Artifact artifact = check parseV03Artifact({
+        "artifactId": "art-2",
+        "parts": [{"kind": "text", "text": "hi"}],
+        "extensions": ["https://example.com/ext-b"]
+    });
+    test:assertEquals(artifact.extensions, ["https://example.com/ext-b"]);
+}
+
+@test:Config {}
+function testEncodeV03SendConfigurationInvertsReturnImmediatelyToBlocking() returns error? {
+    SendMessageConfiguration nonBlocking = {returnImmediately: true};
+    json nonBlockingResult = encodeV03SendConfiguration(nonBlocking);
+    map<json> nb = check nonBlockingResult.ensureType();
+    test:assertEquals(nb["blocking"], false, "returnImmediately:true must encode as blocking:false");
+
+    SendMessageConfiguration blocking = {returnImmediately: false};
+    json blockingResult = encodeV03SendConfiguration(blocking);
+    map<json> b = check blockingResult.ensureType();
+    test:assertEquals(b["blocking"], true, "returnImmediately:false must encode as blocking:true");
+}
+
+@test:Config {}
+function testEncodeV03SendConfigurationPassesThroughOutputModesAndHistoryLength() returns error? {
+    SendMessageConfiguration config = {
+        acceptedOutputModes: ["text", "image/png"],
+        historyLength: 5
+    };
+    json result = encodeV03SendConfiguration(config);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["acceptedOutputModes"], ["text", "image/png"]);
+    test:assertEquals(m["historyLength"], 5);
+}
+
+@test:Config {}
+function testEncodeV03SendConfigurationRenamesPushNotificationConfigAndDropsTaskId() returns error? {
+    SendMessageConfiguration config = {
+        taskPushNotificationConfig: {
+            url: "https://example.com/webhook",
+            id: "config-1",
+            taskId: "task-should-be-dropped",
+            token: "secret-token"
+        }
+    };
+    json result = encodeV03SendConfiguration(config);
+    map<json> m = check result.ensureType();
+    test:assertTrue(!m.hasKey("taskPushNotificationConfig"), "the v1.0 field name must not appear on the wire");
+    test:assertTrue(m.hasKey("pushNotificationConfig"), "pushNotificationConfig must be present under its v0.3 name");
+    map<json> wireConfig = check m["pushNotificationConfig"].ensureType();
+    test:assertEquals(wireConfig["url"], "https://example.com/webhook");
+    test:assertEquals(wireConfig["id"], "config-1");
+    test:assertEquals(wireConfig["token"], "secret-token");
+    test:assertTrue(!wireConfig.hasKey("taskId"), "the v1.0-only taskId sub-field must be dropped when encoding for v0.3");
+}
+
+@test:Config {}
+function testEncodeV03SendConfigurationOmitsPushNotificationConfigWhenUnset() returns error? {
+    SendMessageConfiguration config = {};
+    json result = encodeV03SendConfiguration(config);
+    map<json> m = check result.ensureType();
+    test:assertTrue(!m.hasKey("pushNotificationConfig"), "pushNotificationConfig should be absent when the caller didn't set it");
 }
