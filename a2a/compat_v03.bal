@@ -25,3 +25,80 @@ public isolated function detectProtocolMode(AgentCard card) returns ProtocolMode
     string? v = card?.protocolVersion;
     return (v is string && !v.startsWith("0.")) ? "V1_0" : "V0_3";
 }
+
+# Translates a v1.0 PascalCase JSON-RPC method name to its v0.3 equivalent.
+#
+# + v1Method - the method name this client already builds for v1.0
+# + return - the v0.3 wire method name
+isolated function v03MethodName(string v1Method) returns string {
+    match v1Method {
+        "SendMessage" => {
+            return "message/send";
+        }
+        "SendStreamingMessage" => {
+            return "message/stream";
+        }
+        "GetTask" => {
+            return "tasks/get";
+        }
+        "CancelTask" => {
+            return "tasks/cancel";
+        }
+        "SubscribeToTask" => {
+            return "tasks/resubscribe";
+        }
+        _ => {
+            return v1Method;
+        }
+    }
+}
+
+# + role - the v0.3 wire role string ("user"/"agent")
+# + return - the equivalent v1.0 Role, or an error if unrecognized
+isolated function mapV03Role(string role) returns Role|error {
+    match role {
+        "user" => {
+            return ROLE_USER;
+        }
+        "agent" => {
+            return ROLE_AGENT;
+        }
+        _ => {
+            return error(string `Unrecognized v0.3 role: ${role}`);
+        }
+    }
+}
+
+# + state - the v0.3 wire state string (e.g. "completed", "input-required")
+# + return - the equivalent v1.0 TaskState, or an error if unrecognized
+isolated function mapV03State(string state) returns TaskState|error {
+    match state {
+        "submitted" => {
+            return TASK_STATE_SUBMITTED;
+        }
+        "working" => {
+            return TASK_STATE_WORKING;
+        }
+        "completed" => {
+            return TASK_STATE_COMPLETED;
+        }
+        "failed" => {
+            return TASK_STATE_FAILED;
+        }
+        "canceled" => {
+            return TASK_STATE_CANCELED;
+        }
+        "rejected" => {
+            return TASK_STATE_REJECTED;
+        }
+        "input-required" => {
+            return TASK_STATE_INPUT_REQUIRED;
+        }
+        "auth-required" => {
+            return TASK_STATE_AUTH_REQUIRED;
+        }
+        _ => {
+            return error(string `Unrecognized v0.3 task state: ${state}`);
+        }
+    }
+}

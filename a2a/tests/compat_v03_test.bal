@@ -57,3 +57,36 @@ function testDetectProtocolModeLegacyCardWithNonV03ProtocolVersionToV1() returns
     };
     test:assertEquals(detectProtocolMode(legacyV1Card), "V1_0");
 }
+
+@test:Config {}
+function testV03MethodNameTranslation() returns error? {
+    test:assertEquals(v03MethodName("SendMessage"), "message/send");
+    test:assertEquals(v03MethodName("SendStreamingMessage"), "message/stream");
+    test:assertEquals(v03MethodName("GetTask"), "tasks/get");
+    test:assertEquals(v03MethodName("CancelTask"), "tasks/cancel");
+    test:assertEquals(v03MethodName("SubscribeToTask"), "tasks/resubscribe");
+}
+
+@test:Config {}
+function testMapV03Role() returns error? {
+    test:assertEquals(check mapV03Role("user"), ROLE_USER);
+    test:assertEquals(check mapV03Role("agent"), ROLE_AGENT);
+
+    Role|error result = mapV03Role("nonsense");
+    test:assertTrue(result is error, "an unrecognized v0.3 role should surface as an error, not silently default");
+}
+
+@test:Config {}
+function testMapV03State() returns error? {
+    test:assertEquals(check mapV03State("submitted"), TASK_STATE_SUBMITTED);
+    test:assertEquals(check mapV03State("working"), TASK_STATE_WORKING);
+    test:assertEquals(check mapV03State("completed"), TASK_STATE_COMPLETED);
+    test:assertEquals(check mapV03State("failed"), TASK_STATE_FAILED);
+    test:assertEquals(check mapV03State("canceled"), TASK_STATE_CANCELED);
+    test:assertEquals(check mapV03State("rejected"), TASK_STATE_REJECTED);
+    test:assertEquals(check mapV03State("input-required"), TASK_STATE_INPUT_REQUIRED);
+    test:assertEquals(check mapV03State("auth-required"), TASK_STATE_AUTH_REQUIRED);
+
+    TaskState|error result = mapV03State("nonsense");
+    test:assertTrue(result is error, "an unrecognized v0.3 state should surface as an error, not silently default");
+}
