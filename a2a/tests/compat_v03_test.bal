@@ -295,3 +295,34 @@ function testDecodeV03StreamEventIgnoresFinalField() returns error? {
     TaskStatusUpdateEvent update = <TaskStatusUpdateEvent>event?.statusUpdate;
     test:assertEquals(update.status.state, TASK_STATE_WORKING, "final:true on a non-terminal state must not change the decoded TaskState");
 }
+
+@test:Config {}
+function testDecodeV03StreamEventTask() returns error? {
+    StreamResponse event = check decodeV03StreamEvent({
+        "kind": "task",
+        "id": "task-1",
+        "status": {"state": "completed"}
+    });
+    Task? task = event?.task;
+    test:assertTrue(task is Task, "kind:task should decode into StreamResponse.task");
+    test:assertEquals((<Task>task).id, "task-1");
+    test:assertEquals((<Task>task).status.state, TASK_STATE_COMPLETED);
+}
+
+@test:Config {}
+function testDecodeV03StreamEventMessage() returns error? {
+    StreamResponse event = check decodeV03StreamEvent({
+        "kind": "message",
+        "messageId": "msg-1", "role": "agent",
+        "parts": [{"kind": "text", "text": "hi"}]
+    });
+    Message? message = event?.message;
+    test:assertTrue(message is Message, "kind:message should decode into StreamResponse.message");
+    test:assertEquals((<Message>message).role, ROLE_AGENT);
+}
+
+@test:Config {}
+function testDecodeV03StreamEventRejectsUnrecognizedKind() returns error? {
+    StreamResponse|error result = decodeV03StreamEvent({"kind": "something-else"});
+    test:assertTrue(result is error, "an unrecognized stream event kind should surface as an error");
+}
