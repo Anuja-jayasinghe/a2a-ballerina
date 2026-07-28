@@ -1,0 +1,2 @@
+# Local git worktrees used for isolated subagent-driven development.
+.worktrees/
