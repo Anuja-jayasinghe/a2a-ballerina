@@ -1,3 +1,4 @@
+import ballerina/lang.array;
 import ballerina/test;
 
 @test:Config {}
@@ -325,4 +326,93 @@ function testDecodeV03StreamEventMessage() returns error? {
 function testDecodeV03StreamEventRejectsUnrecognizedKind() returns error? {
     StreamResponse|error result = decodeV03StreamEvent({"kind": "something-else"});
     test:assertTrue(result is error, "an unrecognized stream event kind should surface as an error");
+}
+
+@test:Config {}
+function testEncodeV03PartText() returns error? {
+    Part part = {text: "hello"};
+    json result = encodeV03Part(part);
+    test:assertEquals(result, {"kind": "text", "text": "hello"});
+}
+
+@test:Config {}
+function testEncodeV03PartFileWithBytes() returns error? {
+    byte[] rawBytes = "hello".toBytes();
+    Part part = {raw: rawBytes, filename: "report.pdf", mediaType: "application/pdf"};
+    json result = encodeV03Part(part);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["kind"], "file");
+    map<json> file = check m["file"].ensureType();
+    byte[] decoded = check array:fromBase64(check file["bytes"].ensureType());
+    test:assertEquals(decoded, rawBytes);
+    test:assertEquals(file["name"], "report.pdf");
+    test:assertEquals(file["mimeType"], "application/pdf");
+}
+
+@test:Config {}
+function testEncodeV03PartFileWithUrl() returns error? {
+    Part part = {url: "https://example.com/report.pdf", filename: "report.pdf", mediaType: "application/pdf"};
+    json result = encodeV03Part(part);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["kind"], "file");
+    map<json> file = check m["file"].ensureType();
+    test:assertEquals(file["uri"], "https://example.com/report.pdf");
+}
+
+@test:Config {}
+function testEncodeV03PartData() returns error? {
+    Part part = {data: {"amount": 100, "currency": "USD"}};
+    json result = encodeV03Part(part);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["kind"], "data");
+    test:assertEquals(m["data"], {"amount": 100, "currency": "USD"});
+}
+
+@test:Config {}
+function testEncodeV03MessageUserRole() returns error? {
+    Message msg = {
+        messageId: "msg-1",
+        role: ROLE_USER,
+        parts: [{text: "Convert 100 USD to EUR"}]
+    };
+    json result = encodeV03Message(msg);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["role"], "user");
+    test:assertEquals(m["kind"], "message");
+    test:assertEquals(m["messageId"], "msg-1");
+    json[] parts = check m["parts"].ensureType();
+    test:assertEquals(parts.length(), 1);
+    test:assertEquals(parts[0], {"kind": "text", "text": "Convert 100 USD to EUR"});
+}
+
+@test:Config {}
+function testEncodeV03MessageAgentRole() returns error? {
+    Message msg = {
+        messageId: "msg-2",
+        role: ROLE_AGENT,
+        parts: [{text: "100 USD is equal to 87.80 EUR."}, {data: {"amount": 87.80, "currency": "EUR"}}]
+    };
+    json result = encodeV03Message(msg);
+    map<json> m = check result.ensureType();
+    test:assertEquals(m["role"], "agent");
+    test:assertEquals(m["kind"], "message");
+    json[] parts = check m["parts"].ensureType();
+    test:assertEquals(parts.length(), 2);
+    test:assertEquals(parts[0], {"kind": "text", "text": "100 USD is equal to 87.80 EUR."});
+    test:assertEquals(parts[1], {"kind": "data", "data": {"amount": 87.80, "currency": "EUR"}});
+}
+
+@test:Config {}
+function testEncodeV03MessageOmitsUnsetOptionalFields() returns error? {
+    Message msg = {
+        messageId: "msg-3",
+        role: ROLE_USER,
+        parts: [{text: "hi"}]
+    };
+    json result = encodeV03Message(msg);
+    map<json> m = check result.ensureType();
+    test:assertTrue(m.hasKey("messageId"), "messageId should be present");
+    test:assertTrue(!m.hasKey("contextId"), "contextId should be absent, not present-but-null, when unset");
+    test:assertTrue(!m.hasKey("taskId"), "taskId should be absent, not present-but-null, when unset");
+    test:assertTrue(!m.hasKey("metadata"), "metadata should be absent, not present-but-null, when unset");
 }
