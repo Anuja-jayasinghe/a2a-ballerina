@@ -268,6 +268,89 @@ isolated function parseV03Task(json taskJson) returns Task|error {
     return check v1Shape.cloneWithType(Task);
 }
 
+# Encodes an outbound v1.0-shaped Part into the v0.3 kind-discriminated
+# wire shape, the mirror image of parseV03Part.
+#
+# + part - the outbound Part, in v1.0 field-presence-discriminated shape
+# + return - the equivalent v0.3 Part JSON
+isolated function encodeV03Part(Part part) returns json {
+    map<json> result = {};
+    string? partText = part?.text;
+    byte[]? raw = part?.raw;
+    string? url = part?.url;
+    json? data = part?.data;
+    if partText is string {
+        result["kind"] = "text";
+        result["text"] = partText;
+    } else if raw is byte[] {
+        map<json> file = {bytes: array:toBase64(raw)};
+        string? filename = part?.filename;
+        string? mediaType = part?.mediaType;
+        if filename is string {
+            file["name"] = filename;
+        }
+        if mediaType is string {
+            file["mimeType"] = mediaType;
+        }
+        result["kind"] = "file";
+        result["file"] = file;
+    } else if url is string {
+        map<json> file = {uri: url};
+        string? filename = part?.filename;
+        string? mediaType = part?.mediaType;
+        if filename is string {
+            file["name"] = filename;
+        }
+        if mediaType is string {
+            file["mimeType"] = mediaType;
+        }
+        result["kind"] = "file";
+        result["file"] = file;
+    } else if data is json {
+        result["kind"] = "data";
+        result["data"] = data;
+    }
+    map<json>? partMetadata = part?.metadata;
+    if partMetadata is map<json> {
+        result["metadata"] = partMetadata;
+    }
+    return result;
+}
+
+# Encodes an outbound v1.0-shaped Message into the v0.3 wire shape, the
+# mirror image of parseV03Message: role becomes lowercase "user"/"agent",
+# every Part gets its "kind" discriminator, and the message itself is
+# tagged "kind":"message" per the wire evidence in
+# servers/adk_currency_agent/findings.md (a2a-interop-tests).
+#
+# + message - the outbound Message, in v1.0 shape as built by the caller
+# + return - the equivalent v0.3 Message JSON to send on the wire
+isolated function encodeV03Message(Message message) returns json {
+    json[] parts = [];
+    foreach Part p in message.parts {
+        parts.push(encodeV03Part(p));
+    }
+    map<json> result = {
+        messageId: message.messageId,
+        role: message.role == ROLE_AGENT ? "agent" : "user",
+        parts: parts,
+        kind: "message"
+    };
+    string? contextId = message?.contextId;
+    string? taskId = message?.taskId;
+    map<json>? metadata = message?.metadata;
+    if contextId is string {
+        result["contextId"] = contextId;
+    }
+    if taskId is string {
+        result["taskId"] = taskId;
+    }
+    if metadata is map<json> {
+        result["metadata"] = metadata;
+    }
+    return result;
+}
+
 # Decodes a v0.3 sendMessage/message-send result, which is unwrapped and
 # kind-tagged (unlike v1.0's {"task":...}/{"message":...} wrapper).
 #
