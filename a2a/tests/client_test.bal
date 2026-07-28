@@ -574,3 +574,25 @@ function testV03CancelTaskDecodesUnwrappedTask() returns error? {
 
     test:assertEquals(task.status.state, TASK_STATE_CANCELED);
 }
+
+@test:Config {}
+function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error? {
+    Client c = check v03Client();
+    setNextSseResponse([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"artifact-update","taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"kind":"text","text":"100 USD is equal to 87.80 EUR."}]}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
+    ]);
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert 100 USD to EUR"}]};
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(events.next());
+    test:assertEquals(extractArtifactText((<TaskArtifactUpdateEvent>second?.artifactUpdate).artifact), "100 USD is equal to 87.80 EUR.");
+
+    StreamResponse third = check expectValue(events.next());
+    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+}

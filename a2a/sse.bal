@@ -14,11 +14,13 @@ import ballerina/http;
 # terminal task status is reached.
 #
 # + resp - the HTTP response opened with `Accept: text/event-stream`
+# + mode - which wire dialect to decode events as; defaults to V1_0,
+#          preserving every existing caller's behavior unchanged
 # + return - a stream of decoded StreamResponse values
-isolated function readSseStream(http:Response resp)
+isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0")
         returns stream<StreamResponse, error?>|error {
     stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
-    A2AStreamGenerator generator = new (sseStream);
+    A2AStreamGenerator generator = new (sseStream, mode);
     stream<StreamResponse, error?> result = new (generator);
     return result;
 }
@@ -30,9 +32,11 @@ isolated function readSseStream(http:Response resp)
 class A2AStreamGenerator {
     private stream<http:SseEvent, error?> sseStream;
     private boolean closed = false;
+    private ProtocolMode mode;
 
-    isolated function init(stream<http:SseEvent, error?> sseStream) {
+    isolated function init(stream<http:SseEvent, error?> sseStream, ProtocolMode mode = "V1_0") {
         self.sseStream = sseStream;
+        self.mode = mode;
     }
 
     public isolated function next() returns record {| StreamResponse value; |}|error? {
@@ -87,7 +91,7 @@ class A2AStreamGenerator {
                 message = "SSE event contained neither result nor error"
             );
         }
-        return check result.cloneWithType(StreamResponse);
+        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check result.cloneWithType(StreamResponse);
     }
 
     public isolated function close() returns error? {

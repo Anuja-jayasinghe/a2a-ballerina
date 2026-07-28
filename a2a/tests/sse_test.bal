@@ -64,9 +64,9 @@ class TestSseSource {
     }
 }
 
-isolated function newGenerator((http:SseEvent|error)[] events) returns A2AStreamGenerator {
+isolated function newGenerator((http:SseEvent|error)[] events, ProtocolMode mode = "V1_0") returns A2AStreamGenerator {
     stream<http:SseEvent, error?> sseStream = new (new TestSseSource(events));
-    return new A2AStreamGenerator(sseStream);
+    return new A2AStreamGenerator(sseStream, mode);
 }
 
 @test:Config {}
@@ -153,4 +153,42 @@ function testA2AStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
     // The generator should close after surfacing the error.
     record {| StreamResponse value; |}|error? next = generator.next();
     test:assertTrue(next is (), "generator should be closed after a decode error");
+}
+
+@test:Config {}
+function testA2AStreamGeneratorDecodesV03StatusUpdate() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"}}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
+    ], "V0_3");
+
+    StreamResponse first = check expectValue(generator.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    StreamResponse second = check expectValue(generator.next());
+    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+
+    record {| StreamResponse value; |}|error? third = generator.next();
+    test:assertTrue(third is (), "stream should close after the v0.3 terminal status, same as v1.0");
+}
+
+# Confirms end-to-end (not just decodeV03StreamEvent in isolation) that
+# final:true on a non-terminal v0.3 state does not close the stream —
+# terminal-ness must come only from the translated TaskState.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testA2AStreamGeneratorIgnoresV03FinalFieldOnNonTerminalState() returns error? {
+    A2AStreamGenerator generator = newGenerator([
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"},"final":true}}`},
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
+    ], "V0_3");
+
+    StreamResponse first = check expectValue(generator.next());
+    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+
+    // If final:true had closed the stream despite the non-terminal state,
+    // this would return () instead of the second event.
+    StreamResponse second = check expectValue(generator.next());
+    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED);
 }

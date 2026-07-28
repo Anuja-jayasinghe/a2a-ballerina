@@ -208,9 +208,10 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - a stream of StreamResponse values, or an error
     private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
-            method: method,
+            method: wireMethod,
             params: params
         };
         map<string> headers = self.buildHeaders();
@@ -244,7 +245,7 @@ public isolated client class Client {
             );
         }
 
-        return readSseStream(resp);
+        return readSseStream(resp, self.mode);
     }
 
     # Sends a message and receives updates in real time over SSE.
