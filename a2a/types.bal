@@ -131,6 +131,13 @@ public type AgentCard record {|
     string description;
     # Agent's own version, not the protocol version
     string version;
+    # Legacy top-level protocol version field, from before v1.0 moved this
+    # into each AgentInterface.protocolVersion. A card with no
+    # supportedInterfaces (see url below) is a legacy card; this field
+    # helps detectProtocolMode (compat_v03.bal) confirm which dialect it
+    # declares. v1.0-native cards omit this and set
+    # supportedInterfaces[0].protocolVersion instead.
+    string? protocolVersion?;
     # Legacy primary service URL. Removed as a required field in v1.0 —
     # servers now publish the primary endpoint as supportedInterfaces[0].url
     # instead. Kept optional here only for servers still sending it; use

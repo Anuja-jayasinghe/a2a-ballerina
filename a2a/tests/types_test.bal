@@ -317,6 +317,40 @@ function testAgentCardRoundTripWithoutLegacyUrl() returns error? {
 }
 
 @test:Config {}
+function testAgentCardRoundTripWithProtocolVersion() returns error? {
+    AgentCard original = {
+        name: "Legacy Agent",
+        description: "A v0.3-style agent",
+        version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+
+    AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
+
+    test:assertEquals(decoded?.protocolVersion, "0.3.0");
+}
+
+@test:Config {}
+function testAgentCardToleratesMissingProtocolVersion() returns error? {
+    json payload = {
+        name: "v1.0 Agent",
+        description: "A v1.0 agent that omits the legacy field",
+        version: "1.0.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+
+    AgentCard decoded = check payload.cloneWithType(AgentCard);
+
+    test:assertTrue(decoded?.protocolVersion is (), "protocolVersion should be nil, not defaulted, when the server never sent it");
+}
+
+@test:Config {}
 function testAgentCardToleratesUnrecognizedField() returns error? {
     json payload = {
         name: "Weather Agent",
