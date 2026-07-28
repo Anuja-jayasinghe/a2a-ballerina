@@ -226,3 +226,72 @@ function testParseV03TaskFromRealCurrencyAgentResponse() returns error? {
     test:assertEquals(task.artifacts.length(), 1);
     test:assertEquals(task.artifacts[0].parts[0]?.text, "100 USD is equal to 87.80 EUR.");
 }
+
+@test:Config {}
+function testDecodeV03SendResultTask() returns error? {
+    Task|Message result = check decodeV03SendResult({
+        "id": "task-1", "kind": "task",
+        "status": {"state": "completed"}
+    });
+    test:assertTrue(result is Task, "kind:task should decode as a Task");
+}
+
+@test:Config {}
+function testDecodeV03SendResultMessage() returns error? {
+    Task|Message result = check decodeV03SendResult({
+        "messageId": "msg-1", "kind": "message", "role": "agent",
+        "parts": [{"kind": "text", "text": "hi"}]
+    });
+    test:assertTrue(result is Message, "kind:message should decode as a Message");
+}
+
+@test:Config {}
+function testDecodeV03SendResultRejectsUnrecognizedKind() returns error? {
+    Task|Message|error result = decodeV03SendResult({"kind": "artifact-update"});
+    test:assertTrue(result is error, "an unrecognized top-level kind should surface as an error");
+}
+
+@test:Config {}
+function testDecodeV03StreamEventStatusUpdate() returns error? {
+    StreamResponse event = check decodeV03StreamEvent({
+        "kind": "status-update",
+        "taskId": "task-1", "contextId": "ctx-1",
+        "status": {"state": "working"},
+        "final": false
+    });
+    TaskStatusUpdateEvent? update = event?.statusUpdate;
+    test:assertTrue(update is TaskStatusUpdateEvent, "status-update should decode into StreamResponse.statusUpdate");
+    test:assertEquals((<TaskStatusUpdateEvent>update).status.state, TASK_STATE_WORKING);
+}
+
+@test:Config {}
+function testDecodeV03StreamEventArtifactUpdate() returns error? {
+    StreamResponse event = check decodeV03StreamEvent({
+        "kind": "artifact-update",
+        "taskId": "task-1", "contextId": "ctx-1",
+        "artifact": {"artifactId": "art-1", "parts": [{"kind": "text", "text": "partial"}]},
+        "lastChunk": true
+    });
+    TaskArtifactUpdateEvent? update = event?.artifactUpdate;
+    test:assertTrue(update is TaskArtifactUpdateEvent, "artifact-update should decode into StreamResponse.artifactUpdate");
+    test:assertEquals((<TaskArtifactUpdateEvent>update).lastChunk, true);
+}
+
+# Confirms the client ignores v0.3's redundant "final" field entirely and
+# derives terminal-ness solely from the translated TaskState, matching the
+# reference SDK's own v0.3->v1.0 conversion behavior (see design spec).
+# final:true here is deliberately paired with a non-terminal state
+# ("working") to prove it has no effect on the decoded event.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testDecodeV03StreamEventIgnoresFinalField() returns error? {
+    StreamResponse event = check decodeV03StreamEvent({
+        "kind": "status-update",
+        "taskId": "task-1", "contextId": "ctx-1",
+        "status": {"state": "working"},
+        "final": true
+    });
+    TaskStatusUpdateEvent update = <TaskStatusUpdateEvent>event?.statusUpdate;
+    test:assertEquals(update.status.state, TASK_STATE_WORKING, "final:true on a non-terminal state must not change the decoded TaskState");
+}

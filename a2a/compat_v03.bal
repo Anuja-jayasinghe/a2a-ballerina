@@ -267,3 +267,83 @@ isolated function parseV03Task(json taskJson) returns Task|error {
 
     return check v1Shape.cloneWithType(Task);
 }
+
+# Decodes a v0.3 sendMessage/message-send result, which is unwrapped and
+# kind-tagged (unlike v1.0's {"task":...}/{"message":...} wrapper).
+#
+# + result - the raw JSON-RPC result field
+# + return - the equivalent Task or Message, or an error
+isolated function decodeV03SendResult(json result) returns Task|Message|error {
+    map<json> m = check result.ensureType();
+    string kind = check m["kind"].ensureType();
+    match kind {
+        "task" => {
+            return parseV03Task(result);
+        }
+        "message" => {
+            return parseV03Message(result);
+        }
+        _ => {
+            return error(string `Unrecognized v0.3 sendMessage result kind: ${kind}`);
+        }
+    }
+}
+
+# Decodes one v0.3 stream event (kind-discriminated) into the same
+# StreamResponse shape v1.0 streams already produce.
+#
+# + result - the raw JSON-RPC result field for one SSE event
+# + return - the equivalent StreamResponse, or an error
+isolated function decodeV03StreamEvent(json result) returns StreamResponse|error {
+    map<json> m = check result.ensureType();
+    string kind = check m["kind"].ensureType();
+
+    match kind {
+        "task" => {
+            Task t = check parseV03Task(result);
+            return {task: t};
+        }
+        "message" => {
+            Message msg = check parseV03Message(result);
+            return {message: msg};
+        }
+        "status-update" => {
+            TaskStatus status = check parseV03TaskStatus(m["status"]);
+            map<json> v1Shape = {
+                taskId: check m["taskId"].ensureType(),
+                contextId: check m["contextId"].ensureType(),
+                status: status.toJson()
+            };
+            if m.hasKey("metadata") {
+                v1Shape["metadata"] = m["metadata"];
+            }
+            // "final" (v0.3-only) is deliberately not copied across — see
+            // the design spec's evidence that it's pure derived redundancy
+            // and testDecodeV03StreamEventIgnoresFinalField above.
+            TaskStatusUpdateEvent event = check v1Shape.cloneWithType(TaskStatusUpdateEvent);
+            return {statusUpdate: event};
+        }
+        "artifact-update" => {
+            Artifact artifact = check parseV03Artifact(m["artifact"]);
+            map<json> v1Shape = {
+                taskId: check m["taskId"].ensureType(),
+                contextId: check m["contextId"].ensureType(),
+                artifact: artifact.toJson()
+            };
+            if m.hasKey("append") {
+                v1Shape["append"] = m["append"];
+            }
+            if m.hasKey("lastChunk") {
+                v1Shape["lastChunk"] = m["lastChunk"];
+            }
+            if m.hasKey("metadata") {
+                v1Shape["metadata"] = m["metadata"];
+            }
+            TaskArtifactUpdateEvent event = check v1Shape.cloneWithType(TaskArtifactUpdateEvent);
+            return {artifactUpdate: event};
+        }
+        _ => {
+            return error(string `Unrecognized v0.3 stream event kind: ${kind}`);
+        }
+    }
+}
