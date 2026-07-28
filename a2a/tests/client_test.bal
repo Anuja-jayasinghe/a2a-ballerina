@@ -383,6 +383,59 @@ function testTenantPropagatesOnEveryMethod() returns error? {
     check closeIfStream(subscribeToTaskResult);
 }
 
+# Confirms method-name translation actually happens on the wire, not just
+# that decoding tolerates it — asserts what the mock server actually
+# received via getLastRequestBody(), the same pattern
+# testTenantPropagatesOnEveryMethod already uses.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03ModeTranslatesSendMessageMethodName() returns error? {
+    // sendMessage's own response decoding doesn't branch on mode until
+    // Task 8 — this test only proves the wire method name is translated,
+    // so it deliberately scripts the ordinary v1.0-wrapped mock response
+    // (which the client's current, still-unconditional
+    // SendMessageResult.cloneWithType happily accepts regardless of what
+    // method name was actually sent). Task 8 adds the response-shape
+    // coverage for the v0.3 unwrapped case separately.
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "message/send");
+}
+
+@test:Config {}
+function testV1ModeStillSendsPascalCaseMethodNameByDefault() returns error? {
+    // No agentCard passed at all — confirms omitting the new parameter
+    // preserves today's exact v1.0-only behavior.
+    Client c = check new (getServerBaseUrl());
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "SendMessage");
+}
+
 # Drains and closes a possibly-opened SSE stream so the mock server isn't
 # left trying to write to an abandoned connection between tests.
 #

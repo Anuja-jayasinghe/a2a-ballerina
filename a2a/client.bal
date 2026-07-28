@@ -55,6 +55,7 @@ public isolated client class Client {
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;
     private final string? tenant;
+    private final ProtocolMode mode;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -69,27 +70,36 @@ public isolated client class Client {
     #            AgentInterface in the Agent Card declares a tenant value,
     #            that value must be supplied here so it is sent with every
     #            operation. Leave unset for single-tenant agents.
+    # + agentCard - The card previously fetched via resolveAgentCard, if
+    #               any. When given, its declared protocol version is used
+    #               to auto-detect whether to speak v1.0 or v0.3 wire
+    #               format to this server. Omitting it (the default)
+    #               preserves today's v1.0-only behavior exactly.
     # + return - error if the underlying http:Client cannot be created
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
-            string? tenant = ()) returns error? {
+            string? tenant = (),
+            AgentCard? agentCard = ()) returns error? {
         self.httpClient = check new (serviceUrl, clientConfig);
         self.defaultHeaders = headers.cloneReadOnly();
         self.tenant = tenant;
+        self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
     # is mandatory on every request per specification section 3.6.1; an
     # agent receiving an empty value assumes protocol version 0.3, which
-    # would silently downgrade the interaction.
+    # would silently downgrade the interaction. Sends "0.3" instead of
+    # "1.0" when this Client was constructed for a v0.3 server, per the
+    # spec's per-interface header-negotiation guidance.
     #
     # + return - the headers to send with the request
     private isolated function buildHeaders() returns map<string> {
         map<string> headers = {
             "Content-Type": "application/json",
-            "A2A-Version": "1.0"
+            "A2A-Version": self.mode == "V0_3" ? "0.3" : "1.0"
         };
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
@@ -103,9 +113,10 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - the unwrapped result, or an error
     private isolated function rpcCall(string method, map<json> params) returns json|error {
+        string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
-            method: method,
+            method: wireMethod,
             params: params
         };
         http:Response resp = check self.httpClient->post(
