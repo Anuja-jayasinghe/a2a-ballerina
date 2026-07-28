@@ -90,3 +90,45 @@ function testMapV03State() returns error? {
     TaskState|error result = mapV03State("nonsense");
     test:assertTrue(result is error, "an unrecognized v0.3 state should surface as an error, not silently default");
 }
+
+@test:Config {}
+function testParseV03PartText() returns error? {
+    Part part = check parseV03Part({"kind": "text", "text": "hello"});
+    test:assertEquals(part?.text, "hello");
+}
+
+@test:Config {}
+function testParseV03PartFileWithUri() returns error? {
+    Part part = check parseV03Part({
+        "kind": "file",
+        "file": {"uri": "https://example.com/report.pdf", "mime_type": "application/pdf", "name": "report.pdf"}
+    });
+    test:assertEquals(part?.url, "https://example.com/report.pdf");
+    test:assertEquals(part?.mediaType, "application/pdf");
+    test:assertEquals(part?.filename, "report.pdf");
+}
+
+@test:Config {}
+function testParseV03PartFileWithBytes() returns error? {
+    // "aGVsbG8=" base64-decodes to "hello"
+    Part part = check parseV03Part({
+        "kind": "file",
+        "file": {"bytes": "aGVsbG8=", "mime_type": "text/plain"}
+    });
+    byte[]? raw = part?.raw;
+    test:assertTrue(raw is byte[], "file-with-bytes should decode into Part.raw");
+    test:assertEquals(string:fromBytes(<byte[]>raw), "hello");
+}
+
+@test:Config {}
+function testParseV03PartData() returns error? {
+    Part part = check parseV03Part({"kind": "data", "data": {"amount": 100, "currency": "USD"}});
+    json? data = part?.data;
+    test:assertEquals(data, {"amount": 100, "currency": "USD"});
+}
+
+@test:Config {}
+function testParseV03PartRejectsUnrecognizedKind() returns error? {
+    Part|error result = parseV03Part({"kind": "video", "url": "x"});
+    test:assertTrue(result is error, "an unrecognized v0.3 Part kind should surface as an error");
+}
