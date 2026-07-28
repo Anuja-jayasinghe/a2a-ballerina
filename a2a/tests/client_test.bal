@@ -391,13 +391,12 @@ function testTenantPropagatesOnEveryMethod() returns error? {
 # + return - an error if any step other than the assertions themselves fails
 @test:Config {}
 function testV03ModeTranslatesSendMessageMethodName() returns error? {
-    // sendMessage's own response decoding doesn't branch on mode until
-    // Task 8 — this test only proves the wire method name is translated,
-    // so it deliberately scripts the ordinary v1.0-wrapped mock response
-    // (which the client's current, still-unconditional
-    // SendMessageResult.cloneWithType happily accepts regardless of what
-    // method name was actually sent). Task 8 adds the response-shape
-    // coverage for the v0.3 unwrapped case separately.
+    // Since Task 8, sendMessage's response decoding branches on mode, so a
+    // V0_3 client now goes through decodeV03SendResult, which expects the
+    // unwrapped {"kind": "task", ...} shape rather than the v1.0
+    // {"task": {...}} wrapper. This test only cares about the wire method
+    // name, so the response body just needs to be shaped so decoding
+    // succeeds.
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
         protocolVersion: "0.3.0",
@@ -408,7 +407,7 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
 
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
-        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
     });
 
     Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
@@ -499,4 +498,79 @@ function testClientConfigTimeoutPassthrough() returns error? {
 
     test:assertTrue(result is error, "a client configured with a 0.1s timeout should time out against a slow mock response");
     test:assertTrue(elapsed < 2d, string `expected the timeout to fire well under the mock's 3s delay, took ${elapsed}s`);
+}
+
+isolated function v03Client() returns Client|error {
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+    return new (getServerBaseUrl(), agentCard = legacyCard);
+}
+
+@test:Config {}
+function testV03SendMessageDecodesUnwrappedTaskResponse() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            id: "task-1", kind: "task",
+            status: {state: "completed"},
+            artifacts: [{artifactId: "art-1", parts: [{kind: "text", text: "100 USD is equal to 87.80 EUR."}]}]
+        }
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert 100 USD to EUR"}]};
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Task, "an unwrapped kind:task v0.3 result should decode as a Task");
+    Task task = <Task>result;
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+    test:assertEquals(extractArtifactText(task.artifacts[0]), "100 USD is equal to 87.80 EUR.");
+}
+
+@test:Config {}
+function testV03SendMessageDecodesUnwrappedMessageResponse() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            messageId: "reply-1", kind: "message", role: "agent",
+            parts: [{kind: "text", text: "Sure, what currency?"}]
+        }
+    });
+
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert some money"}]};
+    Task|Message result = check c->sendMessage(msg);
+
+    test:assertTrue(result is Message, "an unwrapped kind:message v0.3 result should decode as a Message");
+    test:assertEquals((<Message>result).role, ROLE_AGENT);
+}
+
+@test:Config {}
+function testV03GetTaskDecodesUnwrappedTask() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
+    });
+
+    Task task = check c->getTask("task-1");
+
+    test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
+}
+
+@test:Config {}
+function testV03CancelTaskDecodesUnwrappedTask() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "canceled"}}
+    });
+
+    Task task = check c->cancelTask("task-1");
+
+    test:assertEquals(task.status.state, TASK_STATE_CANCELED);
 }

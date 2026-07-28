@@ -169,6 +169,10 @@ public isolated client class Client {
 
         json result = check self.rpcCall("SendMessage", params);
 
+        if self.mode == "V0_3" {
+            return check decodeV03SendResult(result);
+        }
+
         // The wire response wraps the payload — {"task": {...}} or
         // {"message": {...}} — rather than returning either one flat.
         SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);
@@ -297,7 +301,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("GetTask", params);
-        return check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
     }
 
     # Requests cancellation of an in-progress task.
@@ -322,7 +326,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("CancelTask", params);
-        return check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
     }
 
     # Opens a stream on an existing task.
