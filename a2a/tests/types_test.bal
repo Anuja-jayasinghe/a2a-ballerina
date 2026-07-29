@@ -813,3 +813,83 @@ function testOAuthFlowsToleratesAllFieldsUnset() returns error? {
     test:assertTrue(decoded?.implicit is (), "implicit should be nil");
     test:assertTrue(decoded?.password is (), "password should be nil");
 }
+
+@test:Config {}
+function testApiKeySecuritySchemeRoundTrip() returns error? {
+    ApiKeySecurityScheme original = {
+        description: "API key passed as a header",
+        'in: "header",
+        name: "X-API-Key"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is ApiKeySecurityScheme, "should decode as ApiKeySecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testHttpAuthSecuritySchemeRoundTrip() returns error? {
+    HttpAuthSecurityScheme original = {
+        scheme: "bearer",
+        bearerFormat: "JWT"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is HttpAuthSecurityScheme, "should decode as HttpAuthSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuth2SecuritySchemeRoundTrip() returns error? {
+    OAuth2SecurityScheme original = {
+        flows: {
+            clientCredentials: {
+                tokenUrl: "https://auth.example.com/token",
+                scopes: {"read": "Read access"}
+            }
+        }
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is OAuth2SecurityScheme, "should decode as OAuth2SecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOpenIdConnectSecuritySchemeRoundTrip() returns error? {
+    OpenIdConnectSecurityScheme original = {
+        openIdConnectUrl: "https://auth.example.com/.well-known/openid-configuration"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is OpenIdConnectSecurityScheme, "should decode as OpenIdConnectSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testMutualTlsSecuritySchemeRoundTrip() returns error? {
+    MutualTlsSecurityScheme original = {
+        description: "Mutual TLS required"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is MutualTlsSecurityScheme, "should decode as MutualTlsSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testApiKeySecuritySchemeToleratesUnrecognizedField() returns error? {
+    json payload = {
+        'in: "query",
+        name: "api_key",
+        'type: "apiKey",
+        futureField: "some value from a newer spec revision"
+    };
+
+    SecurityScheme decoded = check payload.cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is ApiKeySecurityScheme, "should decode as ApiKeySecurityScheme");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}

@@ -428,3 +428,63 @@ public type OAuthFlows record {|
     PasswordOAuthFlow? password?;
     json...;
 |};
+
+# A security scheme using an API key, per OpenAPI 3.0's Security Scheme
+# Object.
+public type ApiKeySecurityScheme record {|
+    string? description?;
+    # Where the API key is sent
+    "query"|"header"|"cookie" 'in;
+    # The header, query, or cookie parameter name
+    string name;
+    "apiKey" 'type = "apiKey";
+    json...;
+|};
+
+# A security scheme using HTTP authentication (e.g. Bearer, Basic), per
+# OpenAPI 3.0's Security Scheme Object.
+public type HttpAuthSecurityScheme record {|
+    string? description?;
+    # The IANA HTTP Authentication Scheme name, e.g. "Bearer"
+    string scheme;
+    # Hint for how the bearer token is formatted, e.g. "JWT"
+    string? bearerFormat?;
+    "http" 'type = "http";
+    json...;
+|};
+
+# A security scheme using OAuth 2.0, per OpenAPI 3.0's Security Scheme
+# Object.
+public type OAuth2SecurityScheme record {|
+    string? description?;
+    # The OAuth 2.0 flows this scheme supports
+    OAuthFlows flows;
+    # URL to the OAuth2 authorization server's RFC 8414 metadata
+    string? oauth2MetadataUrl?;
+    "oauth2" 'type = "oauth2";
+    json...;
+|};
+
+# A security scheme using OpenID Connect, per OpenAPI 3.0's Security
+# Scheme Object.
+public type OpenIdConnectSecurityScheme record {|
+    string? description?;
+    # The OpenID Connect Discovery URL for the provider's metadata
+    string openIdConnectUrl;
+    "openIdConnect" 'type = "openIdConnect";
+    json...;
+|};
+
+# A security scheme using mutual TLS authentication, per OpenAPI 3.0's
+# Security Scheme Object.
+public type MutualTlsSecurityScheme record {|
+    string? description?;
+    "mutualTLS" 'type = "mutualTLS";
+    json...;
+|};
+
+# A security scheme an agent declares as available to authorize requests.
+# Discriminated by the `type` field's literal value; cloneWithType against
+# this union selects the one variant whose `type` literal matches the JSON.
+public type SecurityScheme ApiKeySecurityScheme|HttpAuthSecurityScheme|OAuth2SecurityScheme
+    |OpenIdConnectSecurityScheme|MutualTlsSecurityScheme;
