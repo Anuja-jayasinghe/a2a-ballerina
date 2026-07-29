@@ -712,3 +712,104 @@ function testListTaskPushNotificationConfigsResultRoundTrip() returns error? {
 
     test:assertEquals(decoded, original);
 }
+
+@test:Config {}
+function testAuthorizationCodeOAuthFlowRoundTrip() returns error? {
+    AuthorizationCodeOAuthFlow original = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        refreshUrl: "https://auth.example.com/refresh",
+        scopes: {"read": "Read access", "write": "Write access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    AuthorizationCodeOAuthFlow decoded = check original.toJson().cloneWithType(AuthorizationCodeOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAuthorizationCodeOAuthFlowToleratesUnrecognizedField() returns error? {
+    json payload = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AuthorizationCodeOAuthFlow decoded = check payload.cloneWithType(AuthorizationCodeOAuthFlow);
+
+    test:assertTrue(decoded?.refreshUrl is (), "refreshUrl should be nil");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testClientCredentialsOAuthFlowRoundTrip() returns error? {
+    ClientCredentialsOAuthFlow original = {
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    ClientCredentialsOAuthFlow decoded = check original.toJson().cloneWithType(ClientCredentialsOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testImplicitOAuthFlowRoundTrip() returns error? {
+    ImplicitOAuthFlow original = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        scopes: {"read": "Read access"}
+    };
+    ImplicitOAuthFlow decoded = check original.toJson().cloneWithType(ImplicitOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testPasswordOAuthFlowRoundTrip() returns error? {
+    PasswordOAuthFlow original = {
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    PasswordOAuthFlow decoded = check original.toJson().cloneWithType(PasswordOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuthFlowsRoundTripWithAllFourFlows() returns error? {
+    OAuthFlows original = {
+        authorizationCode: {
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        },
+        clientCredentials: {
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        },
+        implicit: {
+            authorizationUrl: "https://auth.example.com/authorize",
+            scopes: {"read": "Read access"}
+        },
+        password: {
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        }
+    };
+    OAuthFlows decoded = check original.toJson().cloneWithType(OAuthFlows);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuthFlowsToleratesAllFieldsUnset() returns error? {
+    json payload = {};
+
+    OAuthFlows decoded = check payload.cloneWithType(OAuthFlows);
+
+    test:assertTrue(decoded?.authorizationCode is (), "authorizationCode should be nil");
+    test:assertTrue(decoded?.clientCredentials is (), "clientCredentials should be nil");
+    test:assertTrue(decoded?.implicit is (), "implicit should be nil");
+    test:assertTrue(decoded?.password is (), "password should be nil");
+}

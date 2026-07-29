@@ -372,3 +372,59 @@ public type ListTaskPushNotificationConfigsResult record {|
     string nextPageToken;
     json...;
 |};
+
+# Configuration for one OAuth 2.0 Authorization Code flow.
+public type AuthorizationCodeOAuthFlow record {|
+    # The authorization URL for this flow
+    string authorizationUrl;
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Client Credentials flow.
+public type ClientCredentialsOAuthFlow record {|
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Implicit flow.
+public type ImplicitOAuthFlow record {|
+    # The authorization URL for this flow
+    string authorizationUrl;
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Resource Owner Password flow.
+public type PasswordOAuthFlow record {|
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# The set of OAuth 2.0 flows an OAuth2SecurityScheme supports. Each is
+# independently optional; a scheme may support one or several.
+public type OAuthFlows record {|
+    AuthorizationCodeOAuthFlow? authorizationCode?;
+    ClientCredentialsOAuthFlow? clientCredentials?;
+    ImplicitOAuthFlow? implicit?;
+    PasswordOAuthFlow? password?;
+    json...;
+|};
