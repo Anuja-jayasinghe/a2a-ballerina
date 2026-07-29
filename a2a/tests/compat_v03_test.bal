@@ -598,3 +598,116 @@ function testV03MessageRoundTripsWithNoOptionalFields() returns error? {
 
     test:assertEquals(decoded, original, "a Message with no optional fields set should round-trip exactly, including empty referenceTaskIds/extensions defaults");
 }
+
+@test:Config {}
+function testParseV03TaskPushNotificationConfig() returns error? {
+    TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
+        "url": "https://client.example.com/webhooks/a2a",
+        "id": "webhook-1",
+        "taskId": "task-1",
+        "token": "correlation-token",
+        "authentication": {"scheme": "Bearer", "credentials": "eyJhbGciOiJIUzI1NiIs..."},
+        "tenant": "acme-corp"
+    });
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(config?.id, "webhook-1");
+    test:assertEquals(config?.taskId, "task-1");
+    test:assertEquals(config?.token, "correlation-token");
+    AuthenticationInfo? auth = config?.authentication;
+    test:assertTrue(auth is AuthenticationInfo, "authentication should be parsed, not dropped");
+    test:assertEquals((<AuthenticationInfo>auth).scheme, "Bearer");
+    test:assertEquals(config?.tenant, "acme-corp");
+}
+
+@test:Config {}
+function testParseV03TaskPushNotificationConfigOmitsUnsetOptionalFields() returns error? {
+    TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
+        "url": "https://client.example.com/webhooks/a2a"
+    });
+
+    test:assertTrue(config?.id is (), "id should be nil when absent on the wire");
+    test:assertTrue(config?.taskId is (), "taskId should be nil when absent on the wire");
+    test:assertTrue(config?.authentication is (), "authentication should be nil when absent on the wire");
+}
+
+@test:Config {}
+function testEncodeV03TaskPushNotificationConfig() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://client.example.com/webhooks/a2a",
+        id: "webhook-1",
+        taskId: "task-1",
+        token: "correlation-token",
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."},
+        tenant: "acme-corp"
+    };
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    map<json> m = check encoded.ensureType();
+
+    test:assertEquals(m["url"], "https://client.example.com/webhooks/a2a");
+    test:assertEquals(m["id"], "webhook-1");
+    test:assertEquals(m["taskId"], "task-1");
+    test:assertEquals(m["token"], "correlation-token");
+    map<json> auth = check m["authentication"].ensureType();
+    test:assertEquals(auth["scheme"], "Bearer");
+    test:assertEquals(m["tenant"], "acme-corp");
+}
+
+@test:Config {}
+function testEncodeV03TaskPushNotificationConfigOmitsUnsetOptionalFields() returns error? {
+    TaskPushNotificationConfig original = {url: "https://client.example.com/webhooks/a2a"};
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    map<json> m = check encoded.ensureType();
+
+    test:assertFalse(m.hasKey("id"), "id should be absent when unset");
+    test:assertFalse(m.hasKey("taskId"), "taskId should be absent when unset");
+    test:assertFalse(m.hasKey("authentication"), "authentication should be absent when unset");
+}
+
+# Round-trip: encoding then parsing a TaskPushNotificationConfig must
+# reproduce it exactly, the same guard the Message encode/decode pair
+# already has.
+#
+# + return - an error if any step other than the assertion itself fails
+@test:Config {}
+function testTaskPushNotificationConfigRoundTripsThroughEncodeAndParse() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://client.example.com/webhooks/a2a",
+        id: "webhook-1",
+        taskId: "task-1",
+        token: "correlation-token",
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."},
+        tenant: "acme-corp"
+    };
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    TaskPushNotificationConfig decoded = check parseV03TaskPushNotificationConfig(encoded);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult({
+        "configs": [
+            {"url": "https://client.example.com/webhooks/a2a", "id": "webhook-1"}
+        ],
+        "nextPageToken": "cursor-ghi"
+    });
+
+    test:assertEquals(result.configs.length(), 1);
+    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(result.nextPageToken, "cursor-ghi");
+}
+
+@test:Config {}
+function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenWhenAbsent() returns error? {
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult({
+        "configs": []
+    });
+
+    test:assertEquals(result.configs.length(), 0);
+    test:assertEquals(result.nextPageToken, "");
+}

@@ -513,3 +513,82 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
         }
     }
 }
+
+# Converts a v0.3 TaskPushNotificationConfig into the v1.0 shape. Field
+# names are assumed identical between versions (no v0.3 payload for this
+# type has been observed against a real server — neither reference agent
+# tested in this project supports push notifications — so this follows
+# the same "field names carry over unless documented otherwise" pattern
+# every other parse function in this file already relies on).
+#
+# + configJson - the raw v0.3 TaskPushNotificationConfig JSON
+# + return - the equivalent v1.0 TaskPushNotificationConfig, or an error if malformed
+isolated function parseV03TaskPushNotificationConfig(json configJson) returns TaskPushNotificationConfig|error {
+    map<json> m = check configJson.ensureType();
+    map<json> v1Shape = {
+        url: check m["url"].ensureType()
+    };
+    if m.hasKey("id") {
+        v1Shape["id"] = m["id"];
+    }
+    if m.hasKey("taskId") {
+        v1Shape["taskId"] = m["taskId"];
+    }
+    if m.hasKey("token") {
+        v1Shape["token"] = m["token"];
+    }
+    if m.hasKey("authentication") {
+        v1Shape["authentication"] = m["authentication"];
+    }
+    if m.hasKey("tenant") {
+        v1Shape["tenant"] = m["tenant"];
+    }
+    return check v1Shape.cloneWithType(TaskPushNotificationConfig);
+}
+
+# Mirror image of parseV03TaskPushNotificationConfig. Returns map<json>
+# rather than the bare json most other encodeV03* functions return,
+# because this one is used as the ENTIRE outbound params map (the spec's
+# request IS a TaskPushNotificationConfig, no wrapper) rather than
+# nested under a key the way encodeV03Message is under "message" —
+# callers need an assignable map<json>, not a widened json value.
+#
+# + config - the outbound TaskPushNotificationConfig, in v1.0 shape
+# + return - the equivalent v0.3 TaskPushNotificationConfig JSON
+isolated function encodeV03TaskPushNotificationConfig(TaskPushNotificationConfig config) returns map<json> {
+    map<json> result = {url: config.url};
+    string? id = config?.id;
+    string? taskId = config?.taskId;
+    string? token = config?.token;
+    AuthenticationInfo? authentication = config?.authentication;
+    string? tenant = config?.tenant;
+    if id is string {
+        result["id"] = id;
+    }
+    if taskId is string {
+        result["taskId"] = taskId;
+    }
+    if token is string {
+        result["token"] = token;
+    }
+    if authentication is AuthenticationInfo {
+        result["authentication"] = authentication.toJson();
+    }
+    if tenant is string {
+        result["tenant"] = tenant;
+    }
+    return result;
+}
+
+# + resultJson - the raw v0.3 ListTaskPushNotificationConfigs result JSON
+# + return - the equivalent v1.0 ListTaskPushNotificationConfigsResult, or an error if malformed
+isolated function parseV03ListTaskPushNotificationConfigsResult(json resultJson) returns ListTaskPushNotificationConfigsResult|error {
+    map<json> m = check resultJson.ensureType();
+    json[] rawConfigs = check m["configs"].ensureType();
+    TaskPushNotificationConfig[] configs = [];
+    foreach json c in rawConfigs {
+        configs.push(check parseV03TaskPushNotificationConfig(c));
+    }
+    string nextPageToken = m.hasKey("nextPageToken") ? check m["nextPageToken"].ensureType() : "";
+    return {configs, nextPageToken};
+}
