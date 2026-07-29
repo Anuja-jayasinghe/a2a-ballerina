@@ -459,4 +459,49 @@ public isolated client class Client {
         json result = check self.rpcCall("ListTasks", params);
         return check result.cloneWithType(ListTasksResult);
     }
+
+    # Registers a webhook to receive updates for a task.
+    #
+    # + config - The webhook configuration; config.taskId identifies the task
+    # + tenant - Optional per-call tenant override
+    # + return - The created config as the server persisted it, or an error
+    #            (PushNotificationNotSupportedError if capabilities.pushNotifications is false)
+    isolated remote function createTaskPushNotificationConfig(
+            TaskPushNotificationConfig config,
+            string? tenant = ()) returns TaskPushNotificationConfig|error {
+        map<json> params = self.mode == "V0_3"
+            ? encodeV03TaskPushNotificationConfig(config)
+            : check config.toJson().ensureType();
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("CreateTaskPushNotificationConfig", params);
+        return self.mode == "V0_3"
+            ? check parseV03TaskPushNotificationConfig(result)
+            : check result.cloneWithType(TaskPushNotificationConfig);
+    }
+
+    # Retrieves a previously registered push-notification webhook config.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier, from its creation response
+    # + tenant - Optional per-call tenant override
+    # + return - The config, or an error
+    isolated remote function getTaskPushNotificationConfig(
+            string taskId,
+            string id,
+            string? tenant = ()) returns TaskPushNotificationConfig|error {
+        map<json> params = {taskId, id};
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("GetTaskPushNotificationConfig", params);
+        return self.mode == "V0_3"
+            ? check parseV03TaskPushNotificationConfig(result)
+            : check result.cloneWithType(TaskPushNotificationConfig);
+    }
 }

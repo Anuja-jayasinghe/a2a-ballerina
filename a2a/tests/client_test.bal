@@ -811,3 +811,86 @@ function testListTasksErrorsImmediatelyInV03Mode() returns error? {
     test:assertTrue(result is error, "listTasks should fail in V0_3 mode, not attempt a network call");
     test:assertTrue(result is VersionNotSupportedError, "should map specifically to VersionNotSupportedError, not a generic error");
 }
+
+@test:Config {}
+function testCreateTaskPushNotificationConfigHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    TaskPushNotificationConfig config = check c->createTaskPushNotificationConfig({
+        url: "https://client.example.com/webhooks/a2a",
+        taskId: "task-1"
+    });
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(config?.id, "webhook-1");
+}
+
+@test:Config {}
+function testGetTaskPushNotificationConfigHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    TaskPushNotificationConfig config = check c->getTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.taskId, "task-1");
+    test:assertEquals(check params.id, "webhook-1");
+}
+
+@test:Config {}
+function testCreateTaskPushNotificationConfigNotSupportedErrorMapping() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        'error: {code: -32003, message: "Push notifications not supported"}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    TaskPushNotificationConfig|error result = c->createTaskPushNotificationConfig({
+        url: "https://client.example.com/webhooks/a2a",
+        taskId: "task-1"
+    });
+
+    test:assertTrue(result is PushNotificationNotSupportedError, "code -32003 should map to PushNotificationNotSupportedError");
+}
+
+@test:Config {}
+function testV03CreateTaskPushNotificationConfigTranslatesMethodAndBody() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+    });
+
+    TaskPushNotificationConfig config = check c->createTaskPushNotificationConfig({
+        url: "https://client.example.com/webhooks/a2a",
+        taskId: "task-1"
+    });
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/set");
+}
+
+@test:Config {}
+function testV03GetTaskPushNotificationConfigTranslatesMethod() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+    });
+
+    TaskPushNotificationConfig config = check c->getTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/get");
+}
