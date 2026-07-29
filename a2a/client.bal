@@ -399,4 +399,64 @@ public isolated client class Client {
         }
         return self.openSseStream("SubscribeToTask", params);
     }
+
+    # Lists tasks matching an optional filter, with cursor-based pagination.
+    #
+    # Has no equivalent in A2A protocol v0.3 (confirmed new in v1.0) — a
+    # Client detected as V0_3 fails immediately with
+    # VersionNotSupportedError rather than sending a request the server
+    # can't possibly understand.
+    #
+    # + filter - Optional filter/pagination parameters
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching tasks, or an error
+    isolated remote function listTasks(
+            ListTasksFilter? filter = (),
+            string? tenant = ()) returns ListTasksResult|error {
+        if self.mode == "V0_3" {
+            return error VersionNotSupportedError(
+                "ListTasks has no equivalent in A2A protocol v0.3",
+                message = "ListTasks has no equivalent in A2A protocol v0.3"
+            );
+        }
+
+        map<json> params = {};
+        if filter is ListTasksFilter {
+            string? contextId = filter?.contextId;
+            TaskState? status = filter?.status;
+            int? pageSize = filter?.pageSize;
+            string? pageToken = filter?.pageToken;
+            int? historyLength = filter?.historyLength;
+            string? statusTimestampAfter = filter?.statusTimestampAfter;
+            boolean? includeArtifacts = filter?.includeArtifacts;
+            if contextId is string {
+                params["contextId"] = contextId;
+            }
+            if status is TaskState {
+                params["status"] = status;
+            }
+            if pageSize is int {
+                params["pageSize"] = pageSize;
+            }
+            if pageToken is string {
+                params["pageToken"] = pageToken;
+            }
+            if historyLength is int {
+                params["historyLength"] = historyLength;
+            }
+            if statusTimestampAfter is string {
+                params["statusTimestampAfter"] = statusTimestampAfter;
+            }
+            if includeArtifacts is boolean {
+                params["includeArtifacts"] = includeArtifacts;
+            }
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("ListTasks", params);
+        return check result.cloneWithType(ListTasksResult);
+    }
 }

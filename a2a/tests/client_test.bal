@@ -729,3 +729,85 @@ function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error
     StreamResponse third = check expectValue(events.next());
     test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
 }
+
+@test:Config {}
+function testListTasksHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            tasks: [{id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}],
+            nextPageToken: "cursor-abc",
+            pageSize: 20,
+            totalSize: 1
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    ListTasksResult result = check c->listTasks();
+
+    test:assertEquals(result.tasks.length(), 1);
+    test:assertEquals(result.tasks[0].id, "task-1");
+    test:assertEquals(result.nextPageToken, "cursor-abc");
+    test:assertEquals(result.totalSize, 1);
+}
+
+# Confirms filter fields actually reach the wire — checks the mock's
+# received request body, the same pattern testTenantPropagatesOnEveryMethod
+# already uses via getLastRequestBody().
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testListTasksSendsFilterFieldsOnWire() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {tasks: [], nextPageToken: "", pageSize: 20, totalSize: 0}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    ListTasksResult _ = check c->listTasks({
+        contextId: "ctx-1",
+        status: TASK_STATE_COMPLETED,
+        pageSize: 20,
+        pageToken: "cursor-abc",
+        includeArtifacts: true
+    });
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.contextId, "ctx-1");
+    test:assertEquals(check params.status, "TASK_STATE_COMPLETED");
+    test:assertEquals(check params.pageSize, 20);
+    test:assertEquals(check params.pageToken, "cursor-abc");
+    test:assertEquals(check params.includeArtifacts, true);
+}
+
+@test:Config {}
+function testListTasksOmitsUnsetFilterFields() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {tasks: [], nextPageToken: "", pageSize: 20, totalSize: 0}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    ListTasksResult _ = check c->listTasks();
+
+    json params = check getLastRequestBody().params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertFalse(paramsMap.hasKey("contextId"), "contextId should be absent when no filter is passed");
+    test:assertFalse(paramsMap.hasKey("pageSize"), "pageSize should be absent when no filter is passed");
+}
+
+# ListTasks has no v0.3 equivalent (confirmed "(NEW)" in the migration
+# table) — a V0_3-mode Client must fail client-side with
+# VersionNotSupportedError before making any network call, per §3.6.3's
+# principle against silent automatic fallback.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testListTasksErrorsImmediatelyInV03Mode() returns error? {
+    Client c = check v03Client();
+
+    ListTasksResult|error result = c->listTasks();
+
+    test:assertTrue(result is error, "listTasks should fail in V0_3 mode, not attempt a network call");
+    test:assertTrue(result is VersionNotSupportedError, "should map specifically to VersionNotSupportedError, not a generic error");
+}
