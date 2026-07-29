@@ -509,3 +509,23 @@ public type AgentCardSignature record {|
     string signature;
     json...;
 |};
+
+# Parses each entry of a raw securitySchemes JSON object independently,
+# silently omitting entries that don't match any known SecurityScheme
+# variant (unrecognized `type`, or otherwise malformed) rather than
+# failing the whole AgentCard parse. This keeps AgentCard parsing
+# forward-compatible with scheme kinds a server might add in the future.
+#
+# + raw - the raw JSON value of the AgentCard's `securitySchemes` field
+# + return - a map containing only the entries that parsed successfully
+public isolated function parseSecuritySchemes(json raw) returns map<SecurityScheme>|error {
+    map<json> rawMap = check raw.ensureType();
+    map<SecurityScheme> result = {};
+    foreach [string, json] [name, schemeJson] in rawMap.entries() {
+        SecurityScheme|error scheme = schemeJson.cloneWithType(SecurityScheme);
+        if scheme is SecurityScheme {
+            result[name] = scheme;
+        }
+    }
+    return result;
+}

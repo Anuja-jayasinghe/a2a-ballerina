@@ -958,3 +958,55 @@ function testAgentCardWithTypedSecurityFieldsRoundTrip() returns error? {
 
     test:assertEquals(decoded, original);
 }
+
+@test:Config {}
+function testParseSecuritySchemesKeepsValidEntriesOfDifferentTypes() returns error? {
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 2);
+    test:assertTrue(result.get("bearerAuth") is HttpAuthSecurityScheme);
+    test:assertTrue(result.get("apiKeyAuth") is ApiKeySecurityScheme);
+}
+
+@test:Config {}
+function testParseSecuritySchemesDropsUnrecognizedType() returns error? {
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "quantumAuth": {"type": "quantumEntanglement", "someField": "value"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertTrue(result.hasKey("bearerAuth"));
+    test:assertFalse(result.hasKey("quantumAuth"));
+}
+
+@test:Config {}
+function testParseSecuritySchemesDropsMalformedEntry() returns error? {
+    // apiKey scheme missing the required "name" field
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "brokenApiKey": {"type": "apiKey", "in": "header"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertTrue(result.hasKey("bearerAuth"));
+    test:assertFalse(result.hasKey("brokenApiKey"));
+}
+
+@test:Config {}
+function testParseSecuritySchemesOnEmptyMap() returns error? {
+    json raw = {};
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 0);
+}
