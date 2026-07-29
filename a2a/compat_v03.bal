@@ -49,6 +49,21 @@ isolated function v03MethodName(string v1Method) returns string {
         "SubscribeToTask" => {
             return "tasks/resubscribe";
         }
+        "CreateTaskPushNotificationConfig" => {
+            return "tasks/pushNotificationConfig/set";
+        }
+        "GetTaskPushNotificationConfig" => {
+            return "tasks/pushNotificationConfig/get";
+        }
+        "ListTaskPushNotificationConfigs" => {
+            return "tasks/pushNotificationConfig/list";
+        }
+        "DeleteTaskPushNotificationConfig" => {
+            return "tasks/pushNotificationConfig/delete";
+        }
+        "GetExtendedAgentCard" => {
+            return "agent/getAuthenticatedExtendedCard";
+        }
         _ => {
             return v1Method;
         }

@@ -711,3 +711,23 @@ function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenW
     test:assertEquals(result.configs.length(), 0);
     test:assertEquals(result.nextPageToken, "");
 }
+
+@test:Config {}
+function testV03MethodNameTranslatesRemainingOperations() returns error? {
+    test:assertEquals(v03MethodName("CreateTaskPushNotificationConfig"), "tasks/pushNotificationConfig/set");
+    test:assertEquals(v03MethodName("GetTaskPushNotificationConfig"), "tasks/pushNotificationConfig/get");
+    test:assertEquals(v03MethodName("ListTaskPushNotificationConfigs"), "tasks/pushNotificationConfig/list");
+    test:assertEquals(v03MethodName("DeleteTaskPushNotificationConfig"), "tasks/pushNotificationConfig/delete");
+    test:assertEquals(v03MethodName("GetExtendedAgentCard"), "agent/getAuthenticatedExtendedCard");
+}
+
+# ListTasks has no v0.3 equivalent at all (confirmed "(NEW)" in the v0.3
+# to v1.0 migration table) — v03MethodName's fallthrough passes it
+# through unchanged rather than mapping it to something invented. This
+# doesn't matter in practice since listTasks() short-circuits with a
+# client-side error before ever calling rpcCall in V0_3 mode (Task 4),
+# but pins down the fallthrough behavior explicitly.
+@test:Config {}
+function testV03MethodNamePassesThroughListTasksUnchanged() returns error? {
+    test:assertEquals(v03MethodName("ListTasks"), "ListTasks");
+}
