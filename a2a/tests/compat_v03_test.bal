@@ -598,3 +598,139 @@ function testV03MessageRoundTripsWithNoOptionalFields() returns error? {
 
     test:assertEquals(decoded, original, "a Message with no optional fields set should round-trip exactly, including empty referenceTaskIds/extensions defaults");
 }
+
+@test:Config {}
+function testParseV03TaskPushNotificationConfig() returns error? {
+    TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
+        "taskId": "task-1",
+        "pushNotificationConfig": {
+            "url": "https://client.example.com/webhooks/a2a",
+            "id": "webhook-1",
+            "token": "correlation-token",
+            "authentication": {"scheme": "Bearer", "credentials": "eyJhbGciOiJIUzI1NiIs..."}
+        }
+    });
+
+    test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(config?.id, "webhook-1");
+    test:assertEquals(config?.taskId, "task-1");
+    test:assertEquals(config?.token, "correlation-token");
+    AuthenticationInfo? auth = config?.authentication;
+    test:assertTrue(auth is AuthenticationInfo, "authentication should be parsed, not dropped");
+    test:assertEquals((<AuthenticationInfo>auth).scheme, "Bearer");
+}
+
+@test:Config {}
+function testParseV03TaskPushNotificationConfigOmitsUnsetOptionalFields() returns error? {
+    TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
+        "pushNotificationConfig": {
+            "url": "https://client.example.com/webhooks/a2a"
+        }
+    });
+
+    test:assertTrue(config?.id is (), "id should be nil when absent on the wire");
+    test:assertTrue(config?.taskId is (), "taskId should be nil when absent on the wire");
+    test:assertTrue(config?.authentication is (), "authentication should be nil when absent on the wire");
+}
+
+@test:Config {}
+function testEncodeV03TaskPushNotificationConfig() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://client.example.com/webhooks/a2a",
+        id: "webhook-1",
+        taskId: "task-1",
+        token: "correlation-token",
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."},
+        tenant: "acme-corp"
+    };
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    map<json> m = check encoded.ensureType();
+
+    test:assertEquals(m["taskId"], "task-1");
+    test:assertFalse(m.hasKey("tenant"), "tenant is a v1.0-only concept and must never be sent on the v0.3 wire");
+    map<json> wireConfig = check m["pushNotificationConfig"].ensureType();
+    test:assertEquals(wireConfig["url"], "https://client.example.com/webhooks/a2a");
+    test:assertEquals(wireConfig["id"], "webhook-1");
+    test:assertEquals(wireConfig["token"], "correlation-token");
+    map<json> auth = check wireConfig["authentication"].ensureType();
+    test:assertEquals(auth["scheme"], "Bearer");
+}
+
+@test:Config {}
+function testEncodeV03TaskPushNotificationConfigOmitsUnsetOptionalFields() returns error? {
+    TaskPushNotificationConfig original = {url: "https://client.example.com/webhooks/a2a"};
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    map<json> m = check encoded.ensureType();
+
+    test:assertFalse(m.hasKey("taskId"), "taskId should be absent when unset");
+    map<json> wireConfig = check m["pushNotificationConfig"].ensureType();
+    test:assertFalse(wireConfig.hasKey("id"), "id should be absent when unset");
+    test:assertFalse(wireConfig.hasKey("authentication"), "authentication should be absent when unset");
+}
+
+# Round-trip: encoding then parsing a TaskPushNotificationConfig must
+# reproduce it exactly, the same guard the Message encode/decode pair
+# already has. tenant is intentionally excluded from `original` here since
+# it's never round-trippable through the v0.3 wire (v0.3 has no wire
+# concept of tenant at all).
+#
+# + return - an error if any step other than the assertion itself fails
+@test:Config {}
+function testTaskPushNotificationConfigRoundTripsThroughEncodeAndParse() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://client.example.com/webhooks/a2a",
+        id: "webhook-1",
+        taskId: "task-1",
+        token: "correlation-token",
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."}
+    };
+
+    json encoded = encodeV03TaskPushNotificationConfig(original);
+    TaskPushNotificationConfig decoded = check parseV03TaskPushNotificationConfig(encoded);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([
+        {
+            "taskId": "task-1",
+            "pushNotificationConfig": {"url": "https://client.example.com/webhooks/a2a", "id": "webhook-1"}
+        }
+    ]);
+
+    test:assertEquals(result.configs.length(), 1);
+    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(result.nextPageToken, "", "v0.3 has no pagination concept for this operation, so nextPageToken is always synthesized empty");
+}
+
+@test:Config {}
+function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenWhenAbsent() returns error? {
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([]);
+
+    test:assertEquals(result.configs.length(), 0);
+    test:assertEquals(result.nextPageToken, "");
+}
+
+@test:Config {}
+function testV03MethodNameTranslatesRemainingOperations() returns error? {
+    test:assertEquals(v03MethodName("CreateTaskPushNotificationConfig"), "tasks/pushNotificationConfig/set");
+    test:assertEquals(v03MethodName("GetTaskPushNotificationConfig"), "tasks/pushNotificationConfig/get");
+    test:assertEquals(v03MethodName("ListTaskPushNotificationConfigs"), "tasks/pushNotificationConfig/list");
+    test:assertEquals(v03MethodName("DeleteTaskPushNotificationConfig"), "tasks/pushNotificationConfig/delete");
+    test:assertEquals(v03MethodName("GetExtendedAgentCard"), "agent/getAuthenticatedExtendedCard");
+}
+
+# ListTasks has no v0.3 equivalent at all (confirmed "(NEW)" in the v0.3
+# to v1.0 migration table) — v03MethodName's fallthrough passes it
+# through unchanged rather than mapping it to something invented. This
+# doesn't matter in practice since listTasks() short-circuits with a
+# client-side error before ever calling rpcCall in V0_3 mode (Task 4),
+# but pins down the fallthrough behavior explicitly.
+@test:Config {}
+function testV03MethodNamePassesThroughListTasksUnchanged() returns error? {
+    test:assertEquals(v03MethodName("ListTasks"), "ListTasks");
+}

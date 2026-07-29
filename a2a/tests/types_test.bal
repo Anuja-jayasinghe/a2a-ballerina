@@ -656,3 +656,59 @@ function testSendMessageConfigurationToleratesUnrecognizedField() returns error?
     json reserialized = decoded.toJson();
     test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
 }
+
+@test:Config {}
+function testListTasksFilterRoundTrip() returns error? {
+    ListTasksFilter original = {
+        contextId: "ctx-1",
+        status: TASK_STATE_COMPLETED,
+        pageSize: 20,
+        pageToken: "cursor-abc",
+        historyLength: 10,
+        statusTimestampAfter: "2026-07-29T00:00:00Z",
+        includeArtifacts: true
+    };
+    ListTasksFilter decoded = check original.toJson().cloneWithType(ListTasksFilter);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testListTasksFilterToleratesUnrecognizedField() returns error? {
+    json payload = {futureField: "some value from a newer spec revision"};
+
+    ListTasksFilter decoded = check payload.cloneWithType(ListTasksFilter);
+
+    test:assertTrue(decoded?.contextId is (), "contextId should be nil, not defaulted");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testListTasksResultRoundTrip() returns error? {
+    ListTasksResult original = {
+        tasks: [
+            {id: "task-1", status: {state: TASK_STATE_COMPLETED}}
+        ],
+        nextPageToken: "cursor-def",
+        pageSize: 20,
+        totalSize: 1
+    };
+    ListTasksResult decoded = check original.toJson().cloneWithType(ListTasksResult);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testListTaskPushNotificationConfigsResultRoundTrip() returns error? {
+    ListTaskPushNotificationConfigsResult original = {
+        configs: [
+            {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
+        ],
+        nextPageToken: "cursor-ghi"
+    };
+    ListTaskPushNotificationConfigsResult decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResult);
+
+    test:assertEquals(decoded, original);
+}

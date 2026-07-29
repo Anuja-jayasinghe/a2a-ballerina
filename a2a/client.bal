@@ -399,4 +399,222 @@ public isolated client class Client {
         }
         return self.openSseStream("SubscribeToTask", params);
     }
+
+    # Lists tasks matching an optional filter, with cursor-based pagination.
+    #
+    # Has no equivalent in A2A protocol v0.3 (confirmed new in v1.0) — a
+    # Client detected as V0_3 fails immediately with
+    # VersionNotSupportedError rather than sending a request the server
+    # can't possibly understand.
+    #
+    # + filter - Optional filter/pagination parameters
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching tasks, or an error
+    isolated remote function listTasks(
+            ListTasksFilter? filter = (),
+            string? tenant = ()) returns ListTasksResult|error {
+        if self.mode == "V0_3" {
+            return error VersionNotSupportedError(
+                "ListTasks has no equivalent in A2A protocol v0.3",
+                message = "ListTasks has no equivalent in A2A protocol v0.3"
+            );
+        }
+
+        map<json> params = {};
+        if filter is ListTasksFilter {
+            string? contextId = filter?.contextId;
+            TaskState? status = filter?.status;
+            int? pageSize = filter?.pageSize;
+            string? pageToken = filter?.pageToken;
+            int? historyLength = filter?.historyLength;
+            string? statusTimestampAfter = filter?.statusTimestampAfter;
+            boolean? includeArtifacts = filter?.includeArtifacts;
+            if contextId is string {
+                params["contextId"] = contextId;
+            }
+            if status is TaskState {
+                params["status"] = status;
+            }
+            if pageSize is int {
+                params["pageSize"] = pageSize;
+            }
+            if pageToken is string {
+                params["pageToken"] = pageToken;
+            }
+            if historyLength is int {
+                params["historyLength"] = historyLength;
+            }
+            if statusTimestampAfter is string {
+                params["statusTimestampAfter"] = statusTimestampAfter;
+            }
+            if includeArtifacts is boolean {
+                params["includeArtifacts"] = includeArtifacts;
+            }
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("ListTasks", params);
+        return check result.cloneWithType(ListTasksResult);
+    }
+
+    # Registers a webhook to receive updates for a task.
+    #
+    # + config - The webhook configuration; config.taskId identifies the task
+    # + tenant - Optional per-call tenant override
+    # + return - The created config as the server persisted it, or an error
+    #            (PushNotificationNotSupportedError if capabilities.pushNotifications is false)
+    isolated remote function createTaskPushNotificationConfig(
+            TaskPushNotificationConfig config,
+            string? tenant = ()) returns TaskPushNotificationConfig|error {
+        map<json> params = self.mode == "V0_3"
+            ? encodeV03TaskPushNotificationConfig(config)
+            : check config.toJson().ensureType();
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("CreateTaskPushNotificationConfig", params);
+        return self.mode == "V0_3"
+            ? check parseV03TaskPushNotificationConfig(result)
+            : check result.cloneWithType(TaskPushNotificationConfig);
+    }
+
+    # Retrieves a previously registered push-notification webhook config.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier, from its creation response
+    # + tenant - Optional per-call tenant override
+    # + return - The config, or an error
+    isolated remote function getTaskPushNotificationConfig(
+            string taskId,
+            string id,
+            string? tenant = ()) returns TaskPushNotificationConfig|error {
+        // v0.3's GetTaskPushNotificationConfigParams is {id: <taskId>,
+        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
+        // per a2a-sdk 0.3.23's GetTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3"
+            ? {id: taskId, pushNotificationConfigId: id}
+            : {taskId, id};
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("GetTaskPushNotificationConfig", params);
+        return self.mode == "V0_3"
+            ? check parseV03TaskPushNotificationConfig(result)
+            : check result.cloneWithType(TaskPushNotificationConfig);
+    }
+
+    # Lists all push-notification webhook configs registered for a task.
+    #
+    # + taskId - The task to list configs for
+    # + pageSize - Maximum results per page
+    # + pageToken - Opaque cursor from a previous result's nextPageToken
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching configs, or an error
+    isolated remote function listTaskPushNotificationConfigs(
+            string taskId,
+            int? pageSize = (),
+            string? pageToken = (),
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
+        // v0.3's ListTaskPushNotificationConfigParams is {id: <taskId>}
+        // only — no pageSize/pageToken, since v0.3 has no pagination
+        // concept for this operation — per a2a-sdk 0.3.23's
+        // ListTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3" ? {id: taskId} : {taskId};
+        if self.mode == "V1_0" {
+            if pageSize is int {
+                params["pageSize"] = pageSize;
+            }
+            if pageToken is string {
+                params["pageToken"] = pageToken;
+            }
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("ListTaskPushNotificationConfigs", params);
+        return self.mode == "V0_3"
+            ? check parseV03ListTaskPushNotificationConfigsResult(result)
+            : check result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    }
+
+    # Deletes a push-notification webhook config. Idempotent per
+    # specification section 3.1.10 — deleting an already-deleted or
+    # nonexistent config is not an error.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier
+    # + tenant - Optional per-call tenant override
+    # + return - nil on success, or an error
+    isolated remote function deleteTaskPushNotificationConfig(
+            string taskId,
+            string id,
+            string? tenant = ()) returns error? {
+        // v0.3's DeleteTaskPushNotificationConfigParams is {id: <taskId>,
+        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
+        // per a2a-sdk 0.3.23's DeleteTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3"
+            ? {id: taskId, pushNotificationConfigId: id}
+            : {taskId, id};
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
+    }
+
+    # Retrieves the agent's extended AgentCard, available after client
+    # authentication (via the same http:ClientConfiguration.auth every
+    # other operation already uses — no separate auth wiring needed).
+    #
+    # Requires capabilities.extendedAgentCard to be true; otherwise the
+    # agent returns UnsupportedOperationError, or
+    # ExtendedAgentCardNotConfiguredError if the capability is on but no
+    # extended card is actually configured.
+    #
+    # + tenant - Optional per-call tenant override
+    # + return - The extended AgentCard, or an error
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
+        map<json> params = {};
+        string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("GetExtendedAgentCard", params);
+        return check result.cloneWithType(AgentCard);
+    }
 }

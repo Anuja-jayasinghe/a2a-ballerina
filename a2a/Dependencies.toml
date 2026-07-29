@@ -16,7 +16,6 @@ dependencies = [
 	{org = "ballerina", name = "io"},
 	{org = "ballerina", name = "lang.array"},
 	{org = "ballerina", name = "lang.runtime"},
-	{org = "ballerina", name = "os"},
 	{org = "ballerina", name = "test"},
 	{org = "ballerina", name = "time"},
 	{org = "ballerina", name = "uuid"},
@@ -291,9 +290,6 @@ version = "1.10.1"
 dependencies = [
 	{org = "ballerina", name = "io"},
 	{org = "ballerina", name = "jballerina.java"}
-]
-modules = [
-	{org = "ballerina", packageName = "os", moduleName = "os"}
 ]
 
 [[package]]
