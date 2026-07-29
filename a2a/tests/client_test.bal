@@ -383,6 +383,33 @@ function testTenantPropagatesOnEveryMethod() returns error? {
     check closeIfStream(subscribeToTaskResult);
 }
 
+# tenant is a v1.0-only concept (a per-AgentInterface routing value); v0.3
+# has no wire counterpart, so a Client configured with a tenant must not
+# send it when talking to a v0.3 server.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testTenantOmittedInV03Mode() returns error? {
+    AgentCard legacyCard = {
+        name: "x", description: "x", version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), tenant = "acme-corp", agentCard = legacyCard);
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-tenant-v03", kind: "task", status: {state: "completed"}}
+    });
+
+    Task _ = check c->getTask("task-tenant-v03");
+
+    json params = check getLastRequestBody().params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertFalse(paramsMap.hasKey("tenant"), "tenant should be omitted from v0.3 requests, not sent as an unrecognized param");
+}
+
 # Confirms method-name translation actually happens on the wire, not just
 # that decoding tolerates it — asserts what the mock server actually
 # received via getLastRequestBody(), the same pattern

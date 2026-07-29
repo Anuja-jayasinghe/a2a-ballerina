@@ -164,7 +164,11 @@ public isolated client class Client {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
 
@@ -273,7 +277,11 @@ public isolated client class Client {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
         return self.openSseStream("SendStreamingMessage", params);
@@ -300,7 +308,11 @@ public isolated client class Client {
             params["historyLength"] = historyLength;
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("GetTask", params);
@@ -325,7 +337,11 @@ public isolated client class Client {
             params["metadata"] = metadata;
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("CancelTask", params);
@@ -351,7 +367,11 @@ public isolated client class Client {
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
         map<json> params = {"id": taskId};
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
         return self.openSseStream("SubscribeToTask", params);
