@@ -250,6 +250,46 @@ existing v1.0 types:
 after translation, so it always sees v1.0-shaped `TaskState` values
 regardless of which wire dialect produced the event.
 
+**Outbound encoding** (`compat_v03.bal`) — added after the initial
+implementation, once a real interop test against a live v0.3 server
+(`adk_currency_agent`) revealed this half was never covered by the
+original design: the sections above only addressed translating a v0.3
+server's *responses* back into v1.0 types. Nothing addressed translating
+the *caller's* v1.0-shaped `Message`/`SendMessageConfiguration` into v0.3
+wire shape before sending it. Without this, `sendMessage`/
+`sendMessageStream` would combine a correctly-translated method name with
+a body a v0.3 server's schema likely rejects or misparses. The mirror
+image of the inbound functions above, all converting v1.0 → v0.3:
+
+- `encodeV03Role(Role) returns string|error` — exhaustive `match` mirroring
+  `mapV03Role`; errors on `ROLE_UNSPECIFIED` rather than silently
+  defaulting to `"user"`.
+- `encodeV03Part(Part) returns json|error` — dispatches on which field is
+  set (`text`/`raw`/`url`/`data`), tags the result with the matching
+  `"kind"`; errors if none of the four are set rather than silently
+  fabricating a `{"kind":"data","data":null}`.
+- `encodeV03Message(Message) returns json|error` — tags the result
+  `"kind":"message"`, includes `referenceTaskIds`/`extensions` only when
+  non-empty (symmetric with how `parseV03Message` populates them).
+- `encodeV03SendConfiguration(SendMessageConfiguration) returns json` —
+  `returnImmediately` inverts to v0.3's `blocking` (opposite sense),
+  `taskPushNotificationConfig` renames to `pushNotificationConfig`
+  (dropping the v1.0-only `taskId` sub-field), `acceptedOutputModes`/
+  `historyLength` pass through unchanged.
+
+`sendMessage` and `sendMessageStream` call `encodeV03Message`/
+`encodeV03SendConfiguration` when `self.mode == "V0_3"`, mirroring exactly
+how the inbound decode functions are already gated. `getTask`/`cancelTask`/
+`subscribeToTask`/`cancelTask`'s other params (`id`, `historyLength`,
+`metadata`) are plain scalars/opaque values with identical field names in
+both dialects, so they need no translation — confirmed during the final
+whole-branch review, not assumed.
+
+**`tenant` routing**: sent only in `V1_0` mode. It's a v1.0-only concept
+(a per-`AgentInterface` value); v0.3 has no wire counterpart, so it's
+omitted rather than sent as an unrecognized param a strict v0.3 server
+might reject.
+
 ## Error handling
 
 No new `A2AError` subtypes. `-32601 Method not found` already falls through
@@ -296,3 +336,37 @@ succeeds, `sendMessage` fails with `Method not found` → `A2AInternalError`).
   new interop tests exercising `sendMessage`/`sendMessageStream` end-to-end
   against the real running agent — this is what actually proves the
   compat layer works, beyond mocks.
+- **Round-trip property tests** (`compat_v03_test.bal`):
+  `parseV03Message(check encodeV03Message(m)) == m`, over both a Message
+  exercising every Part variant and every optional field, and a minimal
+  Message with none of them set. The cheapest ongoing guard against the
+  encode and decode halves of this file drifting apart from each other as
+  either changes independently in the future — added after the final
+  review recommended it, not part of the original plan.
+
+## Known limitations
+
+Two wire-shape assumptions in the outbound encoding functions remain
+unverified against a live v0.3 server, because no recorded interop finding
+exercises these specific fields:
+
+- **`TaskPushNotificationConfig`'s shape under the renamed
+  `pushNotificationConfig` field.** `encodeV03SendConfiguration` assumes
+  `url`/`id`/`token`/`authentication` forward unchanged and `taskId` is
+  dropped, based only on that field's own doc comment ("Leave unset in a
+  sendMessage request") — no observed v0.3 payload for it exists anywhere
+  in this repo or `a2a-interop-tests`, since neither reference agent
+  tested so far declares `capabilities.pushNotifications: true`.
+- **`Message.referenceTaskIds`/`extensions` and `Artifact.extensions`
+  field names.** Assumed identical to v1.0 by extrapolation from the
+  pattern this whole file already relies on for `contextId`/`taskId`/
+  `metadata` (field names carry over unless a discriminator/enum/nesting
+  difference is specifically documented) — neither the `helloworld` nor
+  `adk_currency_agent` findings exercise these two fields either way.
+
+Both are reasonable, low-risk extrapolations consistent with how the rest
+of this file already treats untested field-name symmetry, confirmed as
+such during the final whole-branch review — not a new departure from the
+file's established pattern. Closing them for real requires a reference
+agent that actually uses push notifications or cross-task references,
+which neither `helloworld` nor `adk_currency_agent` do.

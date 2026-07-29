@@ -544,3 +544,57 @@ function testEncodeV03SendConfigurationOmitsPushNotificationConfigWhenUnset() re
     map<json> m = check result.ensureType();
     test:assertTrue(!m.hasKey("pushNotificationConfig"), "pushNotificationConfig should be absent when the caller didn't set it");
 }
+
+// ---- Round-trip property tests ----------------------------------------
+//
+// encodeV03Message/parseV03Message are meant to be exact mirror images of
+// each other. Every other test in this file exercises one direction at a
+// time; these two exist as the cheapest ongoing guard against the two
+// halves silently drifting apart from each other as either one changes
+// independently in the future.
+
+# Full round-trip: every Part variant, every optional Message field set.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03MessageRoundTripsThroughEncodeAndParse() returns error? {
+    Message original = {
+        messageId: "round-trip-1",
+        role: ROLE_USER,
+        parts: [
+            {text: "hello"},
+            {raw: "hello".toBytes(), filename: "greeting.txt", mediaType: "text/plain"},
+            {url: "https://example.com/report.pdf", filename: "report.pdf", mediaType: "application/pdf"},
+            {data: {"amount": 100, "currency": "USD"}}
+        ],
+        contextId: "ctx-1",
+        taskId: "task-1",
+        referenceTaskIds: ["task-0"],
+        extensions: ["https://example.com/ext/v1"],
+        metadata: {"note": "round-trip"}
+    };
+
+    json encoded = check encodeV03Message(original);
+    Message decoded = check parseV03Message(encoded);
+
+    test:assertEquals(decoded, original, "encoding then parsing a v1.0 Message should reproduce it exactly");
+}
+
+# Minimal round-trip: no optional fields set at all, proving omission on
+# encode and defaulting-to-empty on decode agree with each other rather
+# than one side leaving a stray null/empty value the other doesn't expect.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03MessageRoundTripsWithNoOptionalFields() returns error? {
+    Message original = {
+        messageId: "round-trip-2",
+        role: ROLE_AGENT,
+        parts: [{text: "hi"}]
+    };
+
+    json encoded = check encodeV03Message(original);
+    Message decoded = check parseV03Message(encoded);
+
+    test:assertEquals(decoded, original, "a Message with no optional fields set should round-trip exactly, including empty referenceTaskIds/extensions defaults");
+}
