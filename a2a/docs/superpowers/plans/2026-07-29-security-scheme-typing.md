@@ -1059,3 +1059,262 @@ stays as-is — signature verification is still out of scope; the field is now t
 git add a2a/docs/A2A_Technical_Design.md
 git commit -m "docs: update A2A_Technical_Design.md for SecurityScheme/AgentCardSignature typing"
 ```
+
+---
+
+### Task 8: Tolerant parsing for `securityRequirements` (AgentCard and AgentSkill) and `signatures`
+
+**Added after the final whole-branch review of Tasks 1-7.** That review found: only `securitySchemes` got tolerant per-entry parsing (Task 4/6); `AgentCard.securityRequirements`, `AgentSkill.securityRequirements`, and `AgentCard.signatures` moved from fully-permissive `json[]` to strict typed arrays with no equivalent tolerance path. A single malformed entry in any of these three now fails the *entire* `AgentCard` parse — a real regression from pre-branch behavior (where the data just sat inert in an untyped rest-field bucket), and in tension with this library's forward-compatibility tolerance guarantees, particularly relevant since the Java reference server (`A2A_Technical_Design.md` §11.3's stated rich-field-tolerance target) is known to emit populated `signatures` and `security`-family fields. This task closes that gap using the same drop-the-bad-entry pattern already established for `securitySchemes`.
+
+**Files:**
+- Modify: `a2a/types.bal` (two new helper functions)
+- Modify: `a2a/client.bal` (`parseAgentCardBody`)
+- Test: `a2a/tests/types_test.bal`, `a2a/tests/client_test.bal`
+
+**Interfaces:**
+- Consumes: `SecurityRequirement`, `AgentCardSignature` (Task 3), `parseAgentCardBody` (Task 6, being extended here).
+- Produces: `parseSecurityRequirements(json raw) returns SecurityRequirement[]|error`, `parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `a2a/tests/types_test.bal`:
+
+```ballerina
+@test:Config {}
+function testParseSecurityRequirementsKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"oauth": ["read"]},
+        {"apiKey": "not-an-array"}
+    ];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0], {"oauth": ["read"]});
+}
+
+@test:Config {}
+function testParseSecurityRequirementsOnEmptyArray() returns error? {
+    json raw = [];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 0);
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"protected": "eyJhbGciOiJSUzI1NiJ9", "signature": "dGhpcyBpcyBhIHNpZ25hdHVyZQ"},
+        {"header": {"alg": "RS256"}}
+    ];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesOnEmptyArray() returns error? {
+    json raw = [];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 0);
+}
+```
+
+Append to `a2a/tests/client_test.bal` (uses `setWellKnownOverride`/`getServerBaseUrl`, same as Task 6's tests — remember the `setWellKnownOverride(())` reset convention this file uses):
+
+```ballerina
+@test:Config {}
+function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntries() returns error? {
+    setWellKnownOverride({
+        name: "Agent With Some Malformed Security Data",
+        description: "Has one good and one bad entry in signatures, securityRequirements, and a skill's securityRequirements",
+        version: "1.0.0",
+        capabilities: {},
+        securityRequirements: [
+            {"oauth": ["read"]},
+            {"apiKey": "not-an-array"}
+        ],
+        signatures: [
+            {"protected": "eyJhbGciOiJSUzI1NiJ9", "signature": "dGhpcyBpcyBhIHNpZ25hdHVyZQ"},
+            {"header": {"alg": "RS256"}}
+        ],
+        skills: [
+            {
+                id: "skill-1",
+                name: "Skill One",
+                description: "Has a mix of good and bad securityRequirements entries",
+                securityRequirements: [
+                    {"oauth": ["write"]},
+                    {"broken": "not-an-array"}
+                ]
+            }
+        ]
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securityRequirements.length(), 1);
+    test:assertEquals(card.securityRequirements[0], {"oauth": ["read"]});
+    test:assertEquals(card.signatures.length(), 1);
+    test:assertEquals(card.signatures[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+    test:assertEquals(card.skills[0].securityRequirements.length(), 1);
+    test:assertEquals(card.skills[0].securityRequirements[0], {"oauth": ["write"]});
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run the full suite. Expected: compile error — `parseSecurityRequirements`/`parseAgentCardSignatures` undefined; once those compile, the `client_test.bal` test should still fail at runtime since `parseAgentCardBody` doesn't yet apply tolerant parsing to these 3 fields (a malformed entry currently fails the whole card parse).
+
+- [ ] **Step 3: Add the two helper functions**
+
+Append to `a2a/types.bal`:
+
+```ballerina
+# Parses a raw JSON array into a list of SecurityRequirement values,
+# silently dropping any entry that doesn't clone into map<string[]>.
+# Used for both AgentCard.securityRequirements and each AgentSkill's
+# securityRequirements, so one malformed entry can't fail the whole
+# AgentCard parse.
+#
+# + raw - the raw JSON value of a securityRequirements field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseSecurityRequirements(json raw) returns SecurityRequirement[]|error {
+    json[] rawArray = check raw.ensureType();
+    SecurityRequirement[] result = [];
+    foreach json entry in rawArray {
+        SecurityRequirement|error req = entry.cloneWithType(SecurityRequirement);
+        if req is SecurityRequirement {
+            result.push(req);
+        }
+    }
+    return result;
+}
+
+# Parses a raw JSON array into a list of AgentCardSignature values,
+# silently dropping any entry that doesn't match the AgentCardSignature
+# shape, rather than failing the whole AgentCard parse over one
+# malformed signature.
+#
+# + raw - the raw JSON value of the AgentCard's `signatures` field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error {
+    json[] rawArray = check raw.ensureType();
+    AgentCardSignature[] result = [];
+    foreach json entry in rawArray {
+        AgentCardSignature|error sig = entry.cloneWithType(AgentCardSignature);
+        if sig is AgentCardSignature {
+            result.push(sig);
+        }
+    }
+    return result;
+}
+```
+
+- [ ] **Step 4: Extend `parseAgentCardBody` in `a2a/client.bal`**
+
+Replace the current body of `parseAgentCardBody`:
+
+```ballerina
+isolated function parseAgentCardBody(json body) returns AgentCard|error {
+    json renamed = renameV03SecurityField(body);
+    map<json> cardMap = check renamed.ensureType();
+
+    boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
+    json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
+
+    AgentCard card = check cardMap.cloneWithType(AgentCard);
+
+    if hasSecuritySchemes {
+        card.securitySchemes = check parseSecuritySchemes(securitySchemesJson);
+    }
+
+    return card;
+}
+```
+
+with:
+
+```ballerina
+isolated function parseAgentCardBody(json body) returns AgentCard|error {
+    json renamed = renameV03SecurityField(body);
+    map<json> cardMap = check renamed.ensureType();
+
+    boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
+    json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
+
+    boolean hasSecurityRequirements = cardMap.hasKey("securityRequirements");
+    json securityRequirementsJson = hasSecurityRequirements ? cardMap.remove("securityRequirements") : [];
+
+    boolean hasSignatures = cardMap.hasKey("signatures");
+    json signaturesJson = hasSignatures ? cardMap.remove("signatures") : [];
+
+    // Skill-level securityRequirements needs the same tolerant treatment,
+    // but every other AgentSkill field should still be strictly validated
+    // by the main clone below -- so only that one sub-field is pulled out
+    // of each skill first, not the whole skill.
+    json? skillsField = cardMap["skills"];
+    SecurityRequirement[][] perSkillSecurityRequirements = [];
+    if skillsField is json[] {
+        json[] strippedSkills = [];
+        foreach json skillJson in skillsField {
+            if skillJson is map<json> {
+                map<json> skillMap = skillJson.clone();
+                json skillSecurityRequirementsJson = skillMap.hasKey("securityRequirements")
+                    ? skillMap.remove("securityRequirements") : [];
+                perSkillSecurityRequirements.push(check parseSecurityRequirements(skillSecurityRequirementsJson));
+                strippedSkills.push(skillMap);
+            } else {
+                perSkillSecurityRequirements.push([]);
+                strippedSkills.push(skillJson);
+            }
+        }
+        cardMap["skills"] = strippedSkills;
+    }
+
+    AgentCard card = check cardMap.cloneWithType(AgentCard);
+
+    if hasSecuritySchemes {
+        card.securitySchemes = check parseSecuritySchemes(securitySchemesJson);
+    }
+    if hasSecurityRequirements {
+        card.securityRequirements = check parseSecurityRequirements(securityRequirementsJson);
+    }
+    if hasSignatures {
+        card.signatures = check parseAgentCardSignatures(signaturesJson);
+    }
+    foreach int i in 0 ..< card.skills.length() {
+        if i < perSkillSecurityRequirements.length() {
+            card.skills[i].securityRequirements = perSkillSecurityRequirements[i];
+        }
+    }
+
+    return card;
+}
+```
+
+Also update this function's doc comment to mention all 3 now-tolerant fields, not just `securitySchemes`.
+
+If any of this doesn't compile exactly as written (e.g. array-of-array mutation syntax, or index-based `card.skills[i].securityRequirements = ...` assignment behaving unexpectedly), you have latitude to restructure as long as the net behavior is preserved: explain any deviation in your report, same as Task 6.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run the full suite. Expected: all new tests pass, full suite still 0 failing overall (baseline before this task: 195 passing / 0 failing in `a2a`, 3 passing / 0 failing in `a2a.transport`).
+
+- [ ] **Step 6: Update the doc comment in `A2A_Technical_Design.md`'s §12.1**
+
+Task 7 already updated this section's securitySchemes-typing bullet to say securityRequirements/signatures are "now modelled" with a general framing. Find that bullet and add one clause noting all four fields (`securitySchemes`, both `securityRequirements` fields, `signatures`) now share the same tolerant, entry-dropping parsing behavior — not just `securitySchemes`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add a2a/types.bal a2a/client.bal a2a/tests/types_test.bal a2a/tests/client_test.bal a2a/docs/A2A_Technical_Design.md
+git commit -m "feat: extend tolerant parsing to securityRequirements and signatures"
+```
