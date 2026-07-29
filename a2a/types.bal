@@ -334,3 +334,41 @@ public type SendMessageConfiguration record {|
     TaskPushNotificationConfig? taskPushNotificationConfig = ();
     json...;
 |};
+
+# Filter and pagination parameters for a listTasks call.
+public type ListTasksFilter record {|
+    # Restrict to tasks in this context
+    string? contextId?;
+    # Restrict to tasks in this lifecycle state
+    TaskState? status?;
+    # Maximum results per page
+    int? pageSize?;
+    # Opaque cursor from a previous ListTasksResult.nextPageToken
+    string? pageToken?;
+    # Same semantics as getTask's historyLength
+    int? historyLength?;
+    # ISO 8601 — only tasks whose status changed after this timestamp
+    string? statusTimestampAfter?;
+    # Whether to include each task's artifacts in the response
+    boolean? includeArtifacts?;
+    json...;
+|};
+
+# Paginated result of a listTasks call.
+public type ListTasksResult record {|
+    Task[] tasks;
+    # Opaque cursor for the next page; empty when there are no more results
+    string nextPageToken;
+    # Echoes the effective page size used
+    int pageSize;
+    # Total matching tasks across all pages
+    int totalSize;
+    json...;
+|};
+
+# Paginated result of a listTaskPushNotificationConfigs call.
+public type ListTaskPushNotificationConfigsResult record {|
+    TaskPushNotificationConfig[] configs;
+    string nextPageToken;
+    json...;
+|};
