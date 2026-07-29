@@ -4,6 +4,31 @@ import ballerina/a2a.transport;
 import ballerina/http;
 import ballerina/uuid;
 
+# Parses a raw AgentCard JSON body into a typed AgentCard, applying the
+# v0.3 security field-name rename and the tolerant securitySchemes parse
+# before the main typed clone, so neither a v0.3-dialect card nor a card
+# advertising an unrecognized security scheme fails to parse entirely.
+#
+# + body - the raw JSON AgentCard body, straight off the wire
+# + return - the parsed AgentCard, or an error if the remainder of the
+#            card (everything but securitySchemes) doesn't match the
+#            AgentCard shape
+isolated function parseAgentCardBody(json body) returns AgentCard|error {
+    json renamed = renameV03SecurityField(body);
+    map<json> cardMap = check renamed.ensureType();
+
+    boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
+    json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
+
+    AgentCard card = check cardMap.cloneWithType(AgentCard);
+
+    if hasSecuritySchemes {
+        card.securitySchemes = check parseSecuritySchemes(securitySchemesJson);
+    }
+
+    return card;
+}
+
 # Fetches and parses a remote agent's Agent Card from its well-known
 # endpoint.
 #
@@ -30,7 +55,7 @@ public isolated function resolveAgentCard(
         );
     }
     json body = check resp.getJsonPayload();
-    return check body.cloneWithType(AgentCard);
+    return check parseAgentCardBody(body);
 }
 
 # Resolves the URL to construct a Client against, per v1.0's removal of
@@ -615,6 +640,6 @@ public isolated client class Client {
         }
 
         json result = check self.rpcCall("GetExtendedAgentCard", params);
-        return check result.cloneWithType(AgentCard);
+        return check parseAgentCardBody(result);
     }
 }

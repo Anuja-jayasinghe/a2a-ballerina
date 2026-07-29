@@ -1154,3 +1154,82 @@ function testV03GetExtendedAgentCardTranslatesMethodName() returns error? {
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "agent/getAuthenticatedExtendedCard");
 }
+
+@test:Config {}
+function testResolveAgentCardParsesRichFieldSetWithTypedSecurity() returns error? {
+    setWellKnownOverride({
+        name: "Rich Agent",
+        description: "An agent with a full field set",
+        version: "2.0.0",
+        provider: {organization: "Acme Corp", url: "https://acme.example.com"},
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+        ],
+        securitySchemes: {
+            "bearerAuth": {"type": "http", "scheme": "bearer"},
+            "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+        },
+        securityRequirements: [{"bearerAuth": []}],
+        signatures: [
+            {protected: "eyJhbGciOiJSUzI1NiJ9", signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"}
+        ],
+        skills: []
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    AgentCard card = check result;
+    test:assertEquals(card.securitySchemes.length(), 2);
+    test:assertTrue(card.securitySchemes.get("bearerAuth") is HttpAuthSecurityScheme);
+    test:assertTrue(card.securitySchemes.get("apiKeyAuth") is ApiKeySecurityScheme);
+    test:assertEquals(card.securityRequirements, [{"bearerAuth": []}]);
+    test:assertEquals(card.signatures.length(), 1);
+    test:assertEquals(card?.provider?.organization, "Acme Corp");
+}
+
+@test:Config {}
+function testResolveAgentCardDropsUnrecognizedSecuritySchemeEntry() returns error? {
+    setWellKnownOverride({
+        name: "Agent With Unknown Scheme",
+        description: "Advertises a scheme type this client doesn't know",
+        version: "1.0.0",
+        capabilities: {},
+        securitySchemes: {
+            "bearerAuth": {"type": "http", "scheme": "bearer"},
+            "quantumAuth": {"type": "quantumEntanglement", "someField": "value"}
+        },
+        skills: []
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    AgentCard card = check result;
+    test:assertEquals(card.securitySchemes.length(), 1);
+    test:assertTrue(card.securitySchemes.hasKey("bearerAuth"));
+    test:assertFalse(card.securitySchemes.hasKey("quantumAuth"));
+}
+
+@test:Config {}
+function testResolveAgentCardTranslatesV03SecurityField() returns error? {
+    setWellKnownOverride({
+        name: "v0.3 Agent",
+        description: "Uses the v0.3 dialect's security field name",
+        version: "1.0.0",
+        protocolVersion: "0.3.0",
+        capabilities: {},
+        security: [{"oauth": ["read"]}],
+        skills: []
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    AgentCard card = check result;
+    test:assertEquals(card.securityRequirements, [{"oauth": ["read"]}]);
+}
