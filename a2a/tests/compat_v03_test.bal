@@ -734,3 +734,66 @@ function testV03MethodNameTranslatesRemainingOperations() returns error? {
 function testV03MethodNamePassesThroughListTasksUnchanged() returns error? {
     test:assertEquals(v03MethodName("ListTasks"), "ListTasks");
 }
+
+@test:Config {}
+function testRenameV03SecurityFieldRenamesTopLevelAndSkillLevel() returns error? {
+    json v03Card = {
+        name: "Legacy Agent",
+        description: "A v0.3-style agent",
+        version: "1.0.0",
+        security: [{"oauth": ["read"]}],
+        skills: [
+            {
+                id: "skill-1",
+                name: "Skill One",
+                description: "Does a thing",
+                security: [{"apiKey": []}]
+            }
+        ]
+    };
+
+    json renamed = renameV03SecurityField(v03Card);
+    map<json> renamedMap = check renamed.ensureType();
+
+    test:assertFalse(renamedMap.hasKey("security"), "top-level security key should be gone");
+    test:assertTrue(renamedMap.hasKey("securityRequirements"), "top-level securityRequirements key should exist");
+
+    json[] skills = check renamedMap.skills.ensureType();
+    map<json> firstSkill = check skills[0].ensureType();
+    test:assertFalse(firstSkill.hasKey("security"), "skill-level security key should be gone");
+    test:assertTrue(firstSkill.hasKey("securityRequirements"), "skill-level securityRequirements key should exist");
+}
+
+@test:Config {}
+function testRenameV03SecurityFieldIsNoOpWhenV1FieldAlreadyPresent() returns error? {
+    json v1Card = {
+        name: "v1.0 Agent",
+        description: "A v1.0 agent",
+        version: "1.0.0",
+        securityRequirements: [{"bearerAuth": []}],
+        skills: []
+    };
+
+    json renamed = renameV03SecurityField(v1Card);
+    map<json> renamedMap = check renamed.ensureType();
+
+    test:assertFalse(renamedMap.hasKey("security"), "no stray security key should appear");
+    json[] requirements = check renamedMap.securityRequirements.ensureType();
+    test:assertEquals(requirements.length(), 1);
+}
+
+@test:Config {}
+function testRenameV03SecurityFieldIsNoOpWhenNeitherKeyPresent() returns error? {
+    json card = {
+        name: "Bare Agent",
+        description: "No security fields at all",
+        version: "1.0.0",
+        skills: []
+    };
+
+    json renamed = renameV03SecurityField(card);
+    map<json> renamedMap = check renamed.ensureType();
+
+    test:assertFalse(renamedMap.hasKey("security"));
+    test:assertFalse(renamedMap.hasKey("securityRequirements"));
+}
