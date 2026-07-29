@@ -1233,3 +1233,43 @@ function testResolveAgentCardTranslatesV03SecurityField() returns error? {
     AgentCard card = check result;
     test:assertEquals(card.securityRequirements, [{"oauth": ["read"]}]);
 }
+
+@test:Config {}
+function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntries() returns error? {
+    setWellKnownOverride({
+        name: "Agent With Some Malformed Security Data",
+        description: "Has one good and one bad entry in signatures, securityRequirements, and a skill's securityRequirements",
+        version: "1.0.0",
+        capabilities: {},
+        securityRequirements: [
+            {"oauth": ["read"]},
+            {"apiKey": "not-an-array"}
+        ],
+        signatures: [
+            {"protected": "eyJhbGciOiJSUzI1NiJ9", "signature": "dGhpcyBpcyBhIHNpZ25hdHVyZQ"},
+            {"header": {"alg": "RS256"}}
+        ],
+        skills: [
+            {
+                id: "skill-1",
+                name: "Skill One",
+                description: "Has a mix of good and bad securityRequirements entries",
+                securityRequirements: [
+                    {"oauth": ["write"]},
+                    {"broken": "not-an-array"}
+                ]
+            }
+        ]
+    });
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securityRequirements.length(), 1);
+    test:assertEquals(card.securityRequirements[0], {"oauth": ["read"]});
+    test:assertEquals(card.signatures.length(), 1);
+    test:assertEquals(card.signatures[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+    test:assertEquals(card.skills[0].securityRequirements.length(), 1);
+    test:assertEquals(card.skills[0].securityRequirements[0], {"oauth": ["write"]});
+}

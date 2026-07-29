@@ -529,3 +529,42 @@ public isolated function parseSecuritySchemes(json raw) returns map<SecuritySche
     }
     return result;
 }
+
+# Parses a raw JSON array into a list of SecurityRequirement values,
+# silently dropping any entry that doesn't clone into map<string[]>.
+# Used for both AgentCard.securityRequirements and each AgentSkill's
+# securityRequirements, so one malformed entry can't fail the whole
+# AgentCard parse.
+#
+# + raw - the raw JSON value of a securityRequirements field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseSecurityRequirements(json raw) returns SecurityRequirement[]|error {
+    json[] rawArray = check raw.ensureType();
+    SecurityRequirement[] result = [];
+    foreach json entry in rawArray {
+        SecurityRequirement|error req = entry.cloneWithType(SecurityRequirement);
+        if req is SecurityRequirement {
+            result.push(req);
+        }
+    }
+    return result;
+}
+
+# Parses a raw JSON array into a list of AgentCardSignature values,
+# silently dropping any entry that doesn't match the AgentCardSignature
+# shape, rather than failing the whole AgentCard parse over one
+# malformed signature.
+#
+# + raw - the raw JSON value of the AgentCard's `signatures` field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error {
+    json[] rawArray = check raw.ensureType();
+    AgentCardSignature[] result = [];
+    foreach json entry in rawArray {
+        AgentCardSignature|error sig = entry.cloneWithType(AgentCardSignature);
+        if sig is AgentCardSignature {
+            result.push(sig);
+        }
+    }
+    return result;
+}

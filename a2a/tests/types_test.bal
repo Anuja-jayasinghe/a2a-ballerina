@@ -1010,3 +1010,47 @@ function testParseSecuritySchemesOnEmptyMap() returns error? {
 
     test:assertEquals(result.length(), 0);
 }
+
+@test:Config {}
+function testParseSecurityRequirementsKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"oauth": ["read"]},
+        {"apiKey": "not-an-array"}
+    ];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0], {"oauth": ["read"]});
+}
+
+@test:Config {}
+function testParseSecurityRequirementsOnEmptyArray() returns error? {
+    json raw = [];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 0);
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"protected": "eyJhbGciOiJSUzI1NiJ9", "signature": "dGhpcyBpcyBhIHNpZ25hdHVyZQ"},
+        {"header": {"alg": "RS256"}}
+    ];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesOnEmptyArray() returns error? {
+    json raw = [];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 0);
+}
