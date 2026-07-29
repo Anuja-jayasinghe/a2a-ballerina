@@ -483,6 +483,8 @@ The parser is tested in isolation against synthetic byte streams, since these ed
 
 These are the tests that actually validate specification compliance. Testing only against our own mocks would validate our own misreadings of the specification, so the primary targets are third-party reference implementations.
 
+**These tests now live in the separate [a2a-interop-tests](https://github.com/Anuja-jayasinghe/a2a-interop-tests) repo**, which consumes `ballerina/a2a` as a packed dependency and runs against real reference servers directly, rather than living inside this repo's own test suite. This repo's `tests/` directory is mock-only from here on — see section 11.1 — and validates wire-format, type, and error-mapping behavior against a scripted server, not third-party spec compliance. The table below is retained as the planning record of what was (and continues to be) covered.
+
 | Scenario | Reference server | Validates |
 | :---- | :---- | :---- |
 | Card discovery | Python hello-world | well-known path, card parsing |
@@ -1115,7 +1117,7 @@ public type MtlsConfig record {|
 
 * Agent Card validation test: validate manually constructed AgentCards from representative sample agents against the A2A AgentCard JSON Schema directly — confirms that hand-authored cards are spec-compliant and that all required fields are present and correctly typed. Also verifies that capabilities flags set to true are backed by corresponding listener behavior.
 
-* Interop tests: point a2a:Client at one of the public A2A reference sample agents (e.g. the Python SDK's sample agents) and vice versa — host a Ballerina agent and call it from the reference Python client. This is the real test of spec compliance; testing only against ourselves would let us validate our own misreadings of the spec.
+* Interop tests: point a2a:Client at one of the public A2A reference sample agents (e.g. the Python SDK's sample agents) and vice versa — host a Ballerina agent and call it from the reference Python client. This is the real test of spec compliance; testing only against ourselves would let us validate our own misreadings of the spec. **These now live in the separate [a2a-interop-tests](https://github.com/Anuja-jayasinghe/a2a-interop-tests) repo, not in this repo's test suite.**
 
 * Streaming/cancellation tests run against a slow fake handler to exercise input-required and cancel-mid-task paths, which are easy to under-test otherwise.
 
