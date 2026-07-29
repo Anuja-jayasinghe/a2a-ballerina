@@ -980,3 +980,56 @@ function testV03DeleteTaskPushNotificationConfigTranslatesMethod() returns error
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/delete");
 }
+
+@test:Config {}
+function testGetExtendedAgentCardHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Mock Weather Agent (extended)",
+            description: "A scripted mock agent used by Client tests",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: true},
+            skills: [{id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city"}]
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Mock Weather Agent (extended)");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardNotConfiguredErrorMapping() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        'error: {code: -32007, message: "Extended agent card not configured"}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    AgentCard|error result = c->getExtendedAgentCard();
+
+    test:assertTrue(result is ExtendedAgentCardNotConfiguredError, "code -32007 should map to ExtendedAgentCardNotConfiguredError");
+}
+
+@test:Config {}
+function testV03GetExtendedAgentCardTranslatesMethodName() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Legacy Agent (extended)",
+            description: "x",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: true},
+            skills: []
+        }
+    });
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Legacy Agent (extended)");
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "agent/getAuthenticatedExtendedCard");
+}

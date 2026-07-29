@@ -555,4 +555,26 @@ public isolated client class Client {
 
         json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
     }
+
+    # Retrieves the agent's extended AgentCard, available after client
+    # authentication (via the same http:ClientConfiguration.auth every
+    # other operation already uses — no separate auth wiring needed).
+    #
+    # Requires capabilities.extendedAgentCard to be true; otherwise the
+    # agent returns UnsupportedOperationError, or
+    # ExtendedAgentCardNotConfiguredError if the capability is on but no
+    # extended card is actually configured.
+    #
+    # + tenant - Optional per-call tenant override
+    # + return - The extended AgentCard, or an error
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
+        map<json> params = {};
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("GetExtendedAgentCard", params);
+        return check result.cloneWithType(AgentCard);
+    }
 }
