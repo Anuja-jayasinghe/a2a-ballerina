@@ -4,6 +4,73 @@ import ballerina/a2a.transport;
 import ballerina/http;
 import ballerina/uuid;
 
+# Parses a raw AgentCard JSON body into a typed AgentCard, applying the
+# v0.3 security field-name rename and the tolerant parsing of
+# securitySchemes, securityRequirements, signatures, and each skill's
+# securityRequirements before the main typed clone, so neither a
+# v0.3-dialect card nor a card carrying one malformed entry in any of
+# those four fields fails to parse entirely.
+#
+# + body - the raw JSON AgentCard body, straight off the wire
+# + return - the parsed AgentCard, or an error if the remainder of the
+#            card (everything but the four tolerantly-parsed fields)
+#            doesn't match the AgentCard shape
+isolated function parseAgentCardBody(json body) returns AgentCard|error {
+    json renamed = renameV03SecurityField(body);
+    map<json> cardMap = check renamed.ensureType();
+
+    boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
+    json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
+
+    boolean hasSecurityRequirements = cardMap.hasKey("securityRequirements");
+    json securityRequirementsJson = hasSecurityRequirements ? cardMap.remove("securityRequirements") : [];
+
+    boolean hasSignatures = cardMap.hasKey("signatures");
+    json signaturesJson = hasSignatures ? cardMap.remove("signatures") : [];
+
+    // Skill-level securityRequirements needs the same tolerant treatment,
+    // but every other AgentSkill field should still be strictly validated
+    // by the main clone below -- so only that one sub-field is pulled out
+    // of each skill first, not the whole skill.
+    json? skillsField = cardMap["skills"];
+    SecurityRequirement[][] perSkillSecurityRequirements = [];
+    if skillsField is json[] {
+        json[] strippedSkills = [];
+        foreach json skillJson in skillsField {
+            if skillJson is map<json> {
+                map<json> skillMap = skillJson.clone();
+                json skillSecurityRequirementsJson = skillMap.hasKey("securityRequirements")
+                    ? skillMap.remove("securityRequirements") : [];
+                perSkillSecurityRequirements.push(check parseSecurityRequirements(skillSecurityRequirementsJson));
+                strippedSkills.push(skillMap);
+            } else {
+                perSkillSecurityRequirements.push([]);
+                strippedSkills.push(skillJson);
+            }
+        }
+        cardMap["skills"] = strippedSkills;
+    }
+
+    AgentCard card = check cardMap.cloneWithType(AgentCard);
+
+    if hasSecuritySchemes {
+        card.securitySchemes = check parseSecuritySchemes(securitySchemesJson);
+    }
+    if hasSecurityRequirements {
+        card.securityRequirements = check parseSecurityRequirements(securityRequirementsJson);
+    }
+    if hasSignatures {
+        card.signatures = check parseAgentCardSignatures(signaturesJson);
+    }
+    foreach int i in 0 ..< card.skills.length() {
+        if i < perSkillSecurityRequirements.length() {
+            card.skills[i].securityRequirements = perSkillSecurityRequirements[i];
+        }
+    }
+
+    return card;
+}
+
 # Fetches and parses a remote agent's Agent Card from its well-known
 # endpoint.
 #
@@ -30,7 +97,7 @@ public isolated function resolveAgentCard(
         );
     }
     json body = check resp.getJsonPayload();
-    return check body.cloneWithType(AgentCard);
+    return check parseAgentCardBody(body);
 }
 
 # Resolves the URL to construct a Client against, per v1.0's removal of
@@ -615,6 +682,6 @@ public isolated client class Client {
         }
 
         json result = check self.rpcCall("GetExtendedAgentCard", params);
-        return check result.cloneWithType(AgentCard);
+        return check parseAgentCardBody(result);
     }
 }

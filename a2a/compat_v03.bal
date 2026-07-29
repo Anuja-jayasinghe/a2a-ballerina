@@ -619,3 +619,46 @@ isolated function parseV03ListTaskPushNotificationConfigsResult(json resultJson)
     }
     return {configs, nextPageToken: ""};
 }
+
+# Renames the v0.3-dialect `security` key to the v1.0 field name
+# `securityRequirements`, at the AgentCard's top level and within each
+# element of `skills`, so a v0.3 server's security-requirement data
+# populates the typed field instead of falling into the open record's
+# untyped rest fields. Presence-based rather than mode-based: this must
+# run before an AgentCard is typed-parsed at all, before the protocol
+# dialect can be detected from the parsed card, so it looks at the raw
+# JSON shape directly instead. A no-op when `securityRequirements` is
+# already present (v1.0 cards) or `security` is absent (cards with no
+# security fields at all).
+#
+# + raw - the raw JSON AgentCard body, before typed parsing
+# + return - the body with `security` renamed to `securityRequirements`
+#            wherever applicable
+isolated function renameV03SecurityField(json raw) returns json {
+    if raw !is map<json> {
+        return raw;
+    }
+    map<json> cardMap = raw.clone();
+    if cardMap.hasKey("security") && !cardMap.hasKey("securityRequirements") {
+        cardMap["securityRequirements"] = cardMap.remove("security");
+    }
+
+    json? skillsField = cardMap["skills"];
+    if skillsField is json[] {
+        json[] renamedSkills = [];
+        foreach json skillJson in skillsField {
+            if skillJson is map<json> {
+                map<json> skillMap = skillJson.clone();
+                if skillMap.hasKey("security") && !skillMap.hasKey("securityRequirements") {
+                    skillMap["securityRequirements"] = skillMap.remove("security");
+                }
+                renamedSkills.push(skillMap);
+            } else {
+                renamedSkills.push(skillJson);
+            }
+        }
+        cardMap["skills"] = renamedSkills;
+    }
+
+    return cardMap;
+}

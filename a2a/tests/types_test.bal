@@ -276,7 +276,7 @@ function testAgentCardCompositeRoundTrip() returns error? {
             {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"},
             {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
         ],
-        securitySchemes: {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+        securitySchemes: {"bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer"}},
         securityRequirements: [{"bearerAuth": []}],
         skills: [
             {
@@ -711,4 +711,346 @@ function testListTaskPushNotificationConfigsResultRoundTrip() returns error? {
     ListTaskPushNotificationConfigsResult decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResult);
 
     test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAuthorizationCodeOAuthFlowRoundTrip() returns error? {
+    AuthorizationCodeOAuthFlow original = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        refreshUrl: "https://auth.example.com/refresh",
+        scopes: {"read": "Read access", "write": "Write access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    AuthorizationCodeOAuthFlow decoded = check original.toJson().cloneWithType(AuthorizationCodeOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAuthorizationCodeOAuthFlowToleratesUnrecognizedField() returns error? {
+    json payload = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AuthorizationCodeOAuthFlow decoded = check payload.cloneWithType(AuthorizationCodeOAuthFlow);
+
+    test:assertTrue(decoded?.refreshUrl is (), "refreshUrl should be nil");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testClientCredentialsOAuthFlowRoundTrip() returns error? {
+    ClientCredentialsOAuthFlow original = {
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    ClientCredentialsOAuthFlow decoded = check original.toJson().cloneWithType(ClientCredentialsOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testImplicitOAuthFlowRoundTrip() returns error? {
+    ImplicitOAuthFlow original = {
+        authorizationUrl: "https://auth.example.com/authorize",
+        scopes: {"read": "Read access"}
+    };
+    ImplicitOAuthFlow decoded = check original.toJson().cloneWithType(ImplicitOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testPasswordOAuthFlowRoundTrip() returns error? {
+    PasswordOAuthFlow original = {
+        scopes: {"read": "Read access"},
+        tokenUrl: "https://auth.example.com/token"
+    };
+    PasswordOAuthFlow decoded = check original.toJson().cloneWithType(PasswordOAuthFlow);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuthFlowsRoundTripWithAllFourFlows() returns error? {
+    OAuthFlows original = {
+        authorizationCode: {
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        },
+        clientCredentials: {
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        },
+        implicit: {
+            authorizationUrl: "https://auth.example.com/authorize",
+            scopes: {"read": "Read access"}
+        },
+        password: {
+            tokenUrl: "https://auth.example.com/token",
+            scopes: {"read": "Read access"}
+        }
+    };
+    OAuthFlows decoded = check original.toJson().cloneWithType(OAuthFlows);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuthFlowsToleratesAllFieldsUnset() returns error? {
+    json payload = {};
+
+    OAuthFlows decoded = check payload.cloneWithType(OAuthFlows);
+
+    test:assertTrue(decoded?.authorizationCode is (), "authorizationCode should be nil");
+    test:assertTrue(decoded?.clientCredentials is (), "clientCredentials should be nil");
+    test:assertTrue(decoded?.implicit is (), "implicit should be nil");
+    test:assertTrue(decoded?.password is (), "password should be nil");
+}
+
+@test:Config {}
+function testApiKeySecuritySchemeRoundTrip() returns error? {
+    ApiKeySecurityScheme original = {
+        description: "API key passed as a header",
+        'in: "header",
+        name: "X-API-Key"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is ApiKeySecurityScheme, "should decode as ApiKeySecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testHttpAuthSecuritySchemeRoundTrip() returns error? {
+    HttpAuthSecurityScheme original = {
+        scheme: "bearer",
+        bearerFormat: "JWT"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is HttpAuthSecurityScheme, "should decode as HttpAuthSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOAuth2SecuritySchemeRoundTrip() returns error? {
+    OAuth2SecurityScheme original = {
+        flows: {
+            clientCredentials: {
+                tokenUrl: "https://auth.example.com/token",
+                scopes: {"read": "Read access"}
+            }
+        }
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is OAuth2SecurityScheme, "should decode as OAuth2SecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testOpenIdConnectSecuritySchemeRoundTrip() returns error? {
+    OpenIdConnectSecurityScheme original = {
+        openIdConnectUrl: "https://auth.example.com/.well-known/openid-configuration"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is OpenIdConnectSecurityScheme, "should decode as OpenIdConnectSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testMutualTlsSecuritySchemeRoundTrip() returns error? {
+    MutualTlsSecurityScheme original = {
+        description: "Mutual TLS required"
+    };
+    SecurityScheme decoded = check original.toJson().cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is MutualTlsSecurityScheme, "should decode as MutualTlsSecurityScheme");
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testApiKeySecuritySchemeToleratesUnrecognizedField() returns error? {
+    json payload = {
+        'in: "query",
+        name: "api_key",
+        'type: "apiKey",
+        futureField: "some value from a newer spec revision"
+    };
+
+    SecurityScheme decoded = check payload.cloneWithType(SecurityScheme);
+
+    test:assertTrue(decoded is ApiKeySecurityScheme, "should decode as ApiKeySecurityScheme");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentCardSignatureRoundTrip() returns error? {
+    AgentCardSignature original = {
+        header: {"alg": "RS256", "kid": "key-1"},
+        protected: "eyJhbGciOiJSUzI1NiJ9",
+        signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"
+    };
+    AgentCardSignature decoded = check original.toJson().cloneWithType(AgentCardSignature);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCardSignatureToleratesUnrecognizedField() returns error? {
+    json payload = {
+        protected: "eyJhbGciOiJSUzI1NiJ9",
+        signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentCardSignature decoded = check payload.cloneWithType(AgentCardSignature);
+
+    test:assertTrue(decoded?.header is (), "header should be nil");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testSecurityRequirementRoundTrip() returns error? {
+    SecurityRequirement original = {"oauth": ["read", "write"], "apiKey": []};
+    SecurityRequirement decoded = check original.toJson().cloneWithType(SecurityRequirement);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCardWithTypedSecurityFieldsRoundTrip() returns error? {
+    AgentCard original = {
+        name: "Weather Agent",
+        description: "Reports current weather conditions",
+        version: "1.2.0",
+        capabilities: {},
+        securitySchemes: {
+            "bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer", bearerFormat: "JWT"},
+            "apiKeyAuth": <ApiKeySecurityScheme>{'in: "header", name: "X-API-Key"}
+        },
+        securityRequirements: [{"bearerAuth": []}, {"apiKeyAuth": []}],
+        signatures: [
+            {protected: "eyJhbGciOiJSUzI1NiJ9", signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"}
+        ],
+        skills: [
+            {
+                id: "weather-lookup",
+                name: "Weather Lookup",
+                description: "Reports current weather for a city",
+                securityRequirements: [{"bearerAuth": []}]
+            }
+        ]
+    };
+    AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testParseSecuritySchemesKeepsValidEntriesOfDifferentTypes() returns error? {
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 2);
+    test:assertTrue(result.get("bearerAuth") is HttpAuthSecurityScheme);
+    test:assertTrue(result.get("apiKeyAuth") is ApiKeySecurityScheme);
+}
+
+@test:Config {}
+function testParseSecuritySchemesDropsUnrecognizedType() returns error? {
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "quantumAuth": {"type": "quantumEntanglement", "someField": "value"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertTrue(result.hasKey("bearerAuth"));
+    test:assertFalse(result.hasKey("quantumAuth"));
+}
+
+@test:Config {}
+function testParseSecuritySchemesDropsMalformedEntry() returns error? {
+    // apiKey scheme missing the required "name" field
+    json raw = {
+        "bearerAuth": {"type": "http", "scheme": "bearer"},
+        "brokenApiKey": {"type": "apiKey", "in": "header"}
+    };
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertTrue(result.hasKey("bearerAuth"));
+    test:assertFalse(result.hasKey("brokenApiKey"));
+}
+
+@test:Config {}
+function testParseSecuritySchemesOnEmptyMap() returns error? {
+    json raw = {};
+
+    map<SecurityScheme> result = check parseSecuritySchemes(raw);
+
+    test:assertEquals(result.length(), 0);
+}
+
+@test:Config {}
+function testParseSecurityRequirementsKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"oauth": ["read"]},
+        {"apiKey": "not-an-array"}
+    ];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0], {"oauth": ["read"]});
+}
+
+@test:Config {}
+function testParseSecurityRequirementsOnEmptyArray() returns error? {
+    json raw = [];
+
+    SecurityRequirement[] result = check parseSecurityRequirements(raw);
+
+    test:assertEquals(result.length(), 0);
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesKeepsValidEntriesDropsMalformed() returns error? {
+    json raw = [
+        {"protected": "eyJhbGciOiJSUzI1NiJ9", "signature": "dGhpcyBpcyBhIHNpZ25hdHVyZQ"},
+        {"header": {"alg": "RS256"}}
+    ];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 1);
+    test:assertEquals(result[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+}
+
+@test:Config {}
+function testParseAgentCardSignaturesOnEmptyArray() returns error? {
+    json raw = [];
+
+    AgentCardSignature[] result = check parseAgentCardSignatures(raw);
+
+    test:assertEquals(result.length(), 0);
 }

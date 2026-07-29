@@ -106,9 +106,8 @@ public type AgentSkill record {|
     string[] outputModes = [];
     # Example prompts illustrating this skill
     string[] examples = [];
-    # Per-skill security override; untyped pending full SecurityRequirement
-    # modelling, same as AgentCard.securitySchemes/securityRequirements
-    json[] securityRequirements = [];
+    # Per-skill security override, following the same OR-of-ANDs semantics as AgentCard.securityRequirements
+    SecurityRequirement[] securityRequirements = [];
     json...;
 |};
 
@@ -156,19 +155,20 @@ public type AgentCard record {|
     AgentCapabilities capabilities;
     # Alternative transport bindings this agent supports, beyond `url`
     AgentInterface[] supportedInterfaces = [];
-    # Scheme shapes vary (API key, HTTP auth, OAuth2, OIDC, mTLS); untyped pending full modelling
-    map<json> securitySchemes = {};
-    # Which security schemes apply; untyped pending full SecurityRequirement
-    # modelling, same as securitySchemes
-    json[] securityRequirements = [];
+    # Security schemes available to authorize requests, keyed by scheme name
+    map<SecurityScheme> securitySchemes = {};
+    # Which security schemes apply; a logical OR across the list, each
+    # entry a logical AND of the schemes it names
+    SecurityRequirement[] securityRequirements = [];
     # Content types this agent accepts by default
     string[] defaultInputModes = ["text"];
     # Content types this agent produces by default
     string[] defaultOutputModes = ["text"];
     # Capabilities this agent exposes
     AgentSkill[] skills;
-    # JWS signatures over this card, for authenticity verification
-    json[] signatures = [];
+    # JWS signatures over this card. Captured but not verified — see
+    # AgentCardSignature's doc comment
+    AgentCardSignature[] signatures = [];
     json...;
 |};
 
@@ -372,3 +372,199 @@ public type ListTaskPushNotificationConfigsResult record {|
     string nextPageToken;
     json...;
 |};
+
+# Configuration for one OAuth 2.0 Authorization Code flow.
+public type AuthorizationCodeOAuthFlow record {|
+    # The authorization URL for this flow
+    string authorizationUrl;
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Client Credentials flow.
+public type ClientCredentialsOAuthFlow record {|
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Implicit flow.
+public type ImplicitOAuthFlow record {|
+    # The authorization URL for this flow
+    string authorizationUrl;
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    json...;
+|};
+
+# Configuration for one OAuth 2.0 Resource Owner Password flow.
+public type PasswordOAuthFlow record {|
+    # URL for obtaining refresh tokens
+    string? refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    # The token URL for this flow
+    string tokenUrl;
+    json...;
+|};
+
+# The set of OAuth 2.0 flows an OAuth2SecurityScheme supports. Each is
+# independently optional; a scheme may support one or several.
+public type OAuthFlows record {|
+    AuthorizationCodeOAuthFlow? authorizationCode?;
+    ClientCredentialsOAuthFlow? clientCredentials?;
+    ImplicitOAuthFlow? implicit?;
+    PasswordOAuthFlow? password?;
+    json...;
+|};
+
+# A security scheme using an API key, per OpenAPI 3.0's Security Scheme
+# Object.
+public type ApiKeySecurityScheme record {|
+    string? description?;
+    # Where the API key is sent
+    "query"|"header"|"cookie" 'in;
+    # The header, query, or cookie parameter name
+    string name;
+    "apiKey" 'type = "apiKey";
+    json...;
+|};
+
+# A security scheme using HTTP authentication (e.g. Bearer, Basic), per
+# OpenAPI 3.0's Security Scheme Object.
+public type HttpAuthSecurityScheme record {|
+    string? description?;
+    # The IANA HTTP Authentication Scheme name, e.g. "Bearer"
+    string scheme;
+    # Hint for how the bearer token is formatted, e.g. "JWT"
+    string? bearerFormat?;
+    "http" 'type = "http";
+    json...;
+|};
+
+# A security scheme using OAuth 2.0, per OpenAPI 3.0's Security Scheme
+# Object.
+public type OAuth2SecurityScheme record {|
+    string? description?;
+    # The OAuth 2.0 flows this scheme supports
+    OAuthFlows flows;
+    # URL to the OAuth2 authorization server's RFC 8414 metadata
+    string? oauth2MetadataUrl?;
+    "oauth2" 'type = "oauth2";
+    json...;
+|};
+
+# A security scheme using OpenID Connect, per OpenAPI 3.0's Security
+# Scheme Object.
+public type OpenIdConnectSecurityScheme record {|
+    string? description?;
+    # The OpenID Connect Discovery URL for the provider's metadata
+    string openIdConnectUrl;
+    "openIdConnect" 'type = "openIdConnect";
+    json...;
+|};
+
+# A security scheme using mutual TLS authentication, per OpenAPI 3.0's
+# Security Scheme Object.
+public type MutualTlsSecurityScheme record {|
+    string? description?;
+    "mutualTLS" 'type = "mutualTLS";
+    json...;
+|};
+
+# A security scheme an agent declares as available to authorize requests.
+# Discriminated by the `type` field's literal value; cloneWithType against
+# this union selects the one variant whose `type` literal matches the JSON.
+public type SecurityScheme ApiKeySecurityScheme|HttpAuthSecurityScheme|OAuth2SecurityScheme
+    |OpenIdConnectSecurityScheme|MutualTlsSecurityScheme;
+
+# One security requirement: a set of scheme names that must all be
+# satisfied together (an AND), with each scheme's required OAuth scopes
+# (empty for scheme types that don't use scopes). AgentCard/AgentSkill
+# express a list of these, which is an OR across the list — "either this
+# whole requirement, or that one."
+public type SecurityRequirement map<string[]>;
+
+# A JSON Web Signature (RFC 7515) computed over an AgentCard, for
+# authenticity verification. This library captures the signature's shape
+# but does not verify it — see the design spec for why verification is
+# out of scope.
+public type AgentCardSignature record {|
+    # Unprotected JWS header values
+    map<json>? header?;
+    # Base64url-encoded protected JWS header
+    string protected;
+    # Base64url-encoded computed signature
+    string signature;
+    json...;
+|};
+
+# Parses each entry of a raw securitySchemes JSON object independently,
+# silently omitting entries that don't match any known SecurityScheme
+# variant (unrecognized `type`, or otherwise malformed) rather than
+# failing the whole AgentCard parse. This keeps AgentCard parsing
+# forward-compatible with scheme kinds a server might add in the future.
+#
+# + raw - the raw JSON value of the AgentCard's `securitySchemes` field
+# + return - a map containing only the entries that parsed successfully
+public isolated function parseSecuritySchemes(json raw) returns map<SecurityScheme>|error {
+    map<json> rawMap = check raw.ensureType();
+    map<SecurityScheme> result = {};
+    foreach [string, json] [name, schemeJson] in rawMap.entries() {
+        SecurityScheme|error scheme = schemeJson.cloneWithType(SecurityScheme);
+        if scheme is SecurityScheme {
+            result[name] = scheme;
+        }
+    }
+    return result;
+}
+
+# Parses a raw JSON array into a list of SecurityRequirement values,
+# silently dropping any entry that doesn't clone into map<string[]>.
+# Used for both AgentCard.securityRequirements and each AgentSkill's
+# securityRequirements, so one malformed entry can't fail the whole
+# AgentCard parse.
+#
+# + raw - the raw JSON value of a securityRequirements field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseSecurityRequirements(json raw) returns SecurityRequirement[]|error {
+    json[] rawArray = check raw.ensureType();
+    SecurityRequirement[] result = [];
+    foreach json entry in rawArray {
+        SecurityRequirement|error req = entry.cloneWithType(SecurityRequirement);
+        if req is SecurityRequirement {
+            result.push(req);
+        }
+    }
+    return result;
+}
+
+# Parses a raw JSON array into a list of AgentCardSignature values,
+# silently dropping any entry that doesn't match the AgentCardSignature
+# shape, rather than failing the whole AgentCard parse over one
+# malformed signature.
+#
+# + raw - the raw JSON value of the AgentCard's `signatures` field
+# + return - a list containing only the entries that parsed successfully
+public isolated function parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error {
+    json[] rawArray = check raw.ensureType();
+    AgentCardSignature[] result = [];
+    foreach json entry in rawArray {
+        AgentCardSignature|error sig = entry.cloneWithType(AgentCardSignature);
+        if sig is AgentCardSignature {
+            result.push(sig);
+        }
+    }
+    return result;
+}
