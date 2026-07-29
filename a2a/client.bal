@@ -504,4 +504,55 @@ public isolated client class Client {
             ? check parseV03TaskPushNotificationConfig(result)
             : check result.cloneWithType(TaskPushNotificationConfig);
     }
+
+    # Lists all push-notification webhook configs registered for a task.
+    #
+    # + taskId - The task to list configs for
+    # + pageSize - Maximum results per page
+    # + pageToken - Opaque cursor from a previous result's nextPageToken
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching configs, or an error
+    isolated remote function listTaskPushNotificationConfigs(
+            string taskId,
+            int? pageSize = (),
+            string? pageToken = (),
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
+        map<json> params = {taskId};
+        if pageSize is int {
+            params["pageSize"] = pageSize;
+        }
+        if pageToken is string {
+            params["pageToken"] = pageToken;
+        }
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json result = check self.rpcCall("ListTaskPushNotificationConfigs", params);
+        return self.mode == "V0_3"
+            ? check parseV03ListTaskPushNotificationConfigsResult(result)
+            : check result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    }
+
+    # Deletes a push-notification webhook config. Idempotent per
+    # specification section 3.1.10 — deleting an already-deleted or
+    # nonexistent config is not an error.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier
+    # + tenant - Optional per-call tenant override
+    # + return - nil on success, or an error
+    isolated remote function deleteTaskPushNotificationConfig(
+            string taskId,
+            string id,
+            string? tenant = ()) returns error? {
+        map<json> params = {taskId, id};
+        string? effectiveTenant = tenant ?: self.tenant;
+        if effectiveTenant is string && self.mode == "V1_0" {
+            params["tenant"] = effectiveTenant;
+        }
+
+        json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
+    }
 }

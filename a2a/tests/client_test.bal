@@ -894,3 +894,89 @@ function testV03GetTaskPushNotificationConfigTranslatesMethod() returns error? {
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/get");
 }
+
+@test:Config {}
+function testListTaskPushNotificationConfigsHappyPath() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            configs: [{url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}],
+            nextPageToken: "cursor-abc"
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    ListTaskPushNotificationConfigsResult result = check c->listTaskPushNotificationConfigs("task-1");
+
+    test:assertEquals(result.configs.length(), 1);
+    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(result.nextPageToken, "cursor-abc");
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.taskId, "task-1");
+}
+
+@test:Config {}
+function testListTaskPushNotificationConfigsSendsPaginationFieldsWhenSet() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {configs: [], nextPageToken: ""}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1", pageSize = 10, pageToken = "cursor-abc");
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.pageSize, 10);
+    test:assertEquals(check params.pageToken, "cursor-abc");
+}
+
+@test:Config {}
+function testDeleteTaskPushNotificationConfigHappyPathReturnsNil() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    error? result = c->deleteTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertTrue(result is (), "a successful delete should return nil, not an error");
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.taskId, "task-1");
+    test:assertEquals(check params.id, "webhook-1");
+}
+
+@test:Config {}
+function testV03ListTaskPushNotificationConfigsTranslatesMethodAndDecodesUnwrappedResult() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            configs: [{url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}],
+            nextPageToken: "cursor-abc"
+        }
+    });
+
+    ListTaskPushNotificationConfigsResult result = check c->listTaskPushNotificationConfigs("task-1");
+
+    test:assertEquals(result.configs.length(), 1);
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/list");
+}
+
+@test:Config {}
+function testV03DeleteTaskPushNotificationConfigTranslatesMethod() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {}
+    });
+
+    error? result = c->deleteTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertTrue(result is (), "a successful delete should return nil in v0.3 mode too");
+    json lastRequest = getLastRequestBody();
+    test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/delete");
+}
