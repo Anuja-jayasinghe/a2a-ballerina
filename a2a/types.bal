@@ -106,9 +106,8 @@ public type AgentSkill record {|
     string[] outputModes = [];
     # Example prompts illustrating this skill
     string[] examples = [];
-    # Per-skill security override; untyped pending full SecurityRequirement
-    # modelling, same as AgentCard.securitySchemes/securityRequirements
-    json[] securityRequirements = [];
+    # Per-skill security override, following the same OR-of-ANDs semantics as AgentCard.securityRequirements
+    SecurityRequirement[] securityRequirements = [];
     json...;
 |};
 
@@ -156,19 +155,20 @@ public type AgentCard record {|
     AgentCapabilities capabilities;
     # Alternative transport bindings this agent supports, beyond `url`
     AgentInterface[] supportedInterfaces = [];
-    # Scheme shapes vary (API key, HTTP auth, OAuth2, OIDC, mTLS); untyped pending full modelling
-    map<json> securitySchemes = {};
-    # Which security schemes apply; untyped pending full SecurityRequirement
-    # modelling, same as securitySchemes
-    json[] securityRequirements = [];
+    # Security schemes available to authorize requests, keyed by scheme name
+    map<SecurityScheme> securitySchemes = {};
+    # Which security schemes apply; a logical OR across the list, each
+    # entry a logical AND of the schemes it names
+    SecurityRequirement[] securityRequirements = [];
     # Content types this agent accepts by default
     string[] defaultInputModes = ["text"];
     # Content types this agent produces by default
     string[] defaultOutputModes = ["text"];
     # Capabilities this agent exposes
     AgentSkill[] skills;
-    # JWS signatures over this card, for authenticity verification
-    json[] signatures = [];
+    # JWS signatures over this card. Captured but not verified — see
+    # AgentCardSignature's doc comment
+    AgentCardSignature[] signatures = [];
     json...;
 |};
 
@@ -488,3 +488,24 @@ public type MutualTlsSecurityScheme record {|
 # this union selects the one variant whose `type` literal matches the JSON.
 public type SecurityScheme ApiKeySecurityScheme|HttpAuthSecurityScheme|OAuth2SecurityScheme
     |OpenIdConnectSecurityScheme|MutualTlsSecurityScheme;
+
+# One security requirement: a set of scheme names that must all be
+# satisfied together (an AND), with each scheme's required OAuth scopes
+# (empty for scheme types that don't use scopes). AgentCard/AgentSkill
+# express a list of these, which is an OR across the list — "either this
+# whole requirement, or that one."
+public type SecurityRequirement map<string[]>;
+
+# A JSON Web Signature (RFC 7515) computed over an AgentCard, for
+# authenticity verification. This library captures the signature's shape
+# but does not verify it — see the design spec for why verification is
+# out of scope.
+public type AgentCardSignature record {|
+    # Unprotected JWS header values
+    map<json>? header?;
+    # Base64url-encoded protected JWS header
+    string protected;
+    # Base64url-encoded computed signature
+    string signature;
+    json...;
+|};

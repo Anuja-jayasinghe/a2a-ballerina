@@ -276,7 +276,7 @@ function testAgentCardCompositeRoundTrip() returns error? {
             {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"},
             {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
         ],
-        securitySchemes: {"bearerAuth": {"type": "http", "scheme": "bearer"}},
+        securitySchemes: {"bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer"}},
         securityRequirements: [{"bearerAuth": []}],
         skills: [
             {
@@ -892,4 +892,69 @@ function testApiKeySecuritySchemeToleratesUnrecognizedField() returns error? {
 
     json reserialized = decoded.toJson();
     test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testAgentCardSignatureRoundTrip() returns error? {
+    AgentCardSignature original = {
+        header: {"alg": "RS256", "kid": "key-1"},
+        protected: "eyJhbGciOiJSUzI1NiJ9",
+        signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"
+    };
+    AgentCardSignature decoded = check original.toJson().cloneWithType(AgentCardSignature);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCardSignatureToleratesUnrecognizedField() returns error? {
+    json payload = {
+        protected: "eyJhbGciOiJSUzI1NiJ9",
+        signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ",
+        futureField: "some value from a newer spec revision"
+    };
+
+    AgentCardSignature decoded = check payload.cloneWithType(AgentCardSignature);
+
+    test:assertTrue(decoded?.header is (), "header should be nil");
+
+    json reserialized = decoded.toJson();
+    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+}
+
+@test:Config {}
+function testSecurityRequirementRoundTrip() returns error? {
+    SecurityRequirement original = {"oauth": ["read", "write"], "apiKey": []};
+    SecurityRequirement decoded = check original.toJson().cloneWithType(SecurityRequirement);
+
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {}
+function testAgentCardWithTypedSecurityFieldsRoundTrip() returns error? {
+    AgentCard original = {
+        name: "Weather Agent",
+        description: "Reports current weather conditions",
+        version: "1.2.0",
+        capabilities: {},
+        securitySchemes: {
+            "bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer", bearerFormat: "JWT"},
+            "apiKeyAuth": <ApiKeySecurityScheme>{'in: "header", name: "X-API-Key"}
+        },
+        securityRequirements: [{"bearerAuth": []}, {"apiKeyAuth": []}],
+        signatures: [
+            {protected: "eyJhbGciOiJSUzI1NiJ9", signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"}
+        ],
+        skills: [
+            {
+                id: "weather-lookup",
+                name: "Weather Lookup",
+                description: "Reports current weather for a city",
+                securityRequirements: [{"bearerAuth": []}]
+            }
+        ]
+    };
+    AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
+
+    test:assertEquals(decoded, original);
 }
