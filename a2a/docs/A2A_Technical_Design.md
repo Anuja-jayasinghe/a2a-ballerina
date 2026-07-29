@@ -181,7 +181,7 @@ Accepting the type directly, rather than wrapping or including it, has three adv
 
 # **6\. Client methods**
 
-All five methods are isolated remote functions. Each accepts an optional tenant override; when omitted, the client-level tenant supplied at construction is used. Every request carries the mandatory A2A-Version: 1.0 header.
+All eleven methods are isolated remote functions. Each accepts an optional tenant override; when omitted, the client-level tenant supplied at construction is used. Every request carries the mandatory A2A-Version: 1.0 header.
 
 ## **6.1 sendMessage**
 
@@ -466,7 +466,7 @@ Phase 1 types securitySchemes as map\<json\> rather than a fully modelled union 
 > * **Open-record tolerance.** Each type is deserialized from JSON containing additional unrecognised fields. The test asserts no error is raised, known fields are populated correctly, and unknown fields survive a re-serialization round trip.  
 > * **Part variant detection.** Each of the four Part variants is round-tripped, asserting that exactly one content field is non-nil and the others remain nil.  
 > * **Error code mapping.** A synthetic JSON-RPC error response is produced for every code in the section 4.1 table, asserting the correct typed error is returned and the original code is preserved.  
-> * **Header injection.** Every one of the five methods plus resolveAgentCard is invoked against a mock server that asserts A2A-Version: 1.0 is present.  
+> * **Header injection.** Every one of the eleven methods plus resolveAgentCard is invoked against a mock server that asserts A2A-Version: 1.0 is present.  
 > * **Tenant propagation.** Tests cover client-level default applied, per-call override taking precedence, and absence of the field when no tenant is configured.
 
 ## **11.2 SSE parser tests**
@@ -530,7 +530,6 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 > * TaskStore interface and in-memory default  
 > * Agent Card and skills authoring guide  
 > * Push notification webhook receiver  
-> * extendedAgentCard retrieval  
 > * A Ballerina-native equivalent of the emitter pattern for server-side streaming
 
 ---
