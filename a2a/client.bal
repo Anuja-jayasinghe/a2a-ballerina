@@ -36,18 +36,27 @@ public isolated function resolveAgentCard(
 # Resolves the URL to construct a Client against, per v1.0's removal of
 # AgentCard.url as a required field.
 #
+# This Client only ever speaks the JSON-RPC binding on the wire, so among
+# supportedInterfaces it looks specifically for a "JSONRPC" entry rather
+# than blindly taking index 0 — a card listing e.g. a GRPC interface first
+# would otherwise resolve to an endpoint this Client can't actually talk
+# to, then fail non-obviously on the first request instead of here.
+#
 # + card - the agent card to read the endpoint from
-# + return - supportedInterfaces[0].url if present, the legacy url field
-#            if that's unset but url is, or an error if neither is present
+# + return - the first supportedInterfaces entry declaring the "JSONRPC"
+#            protocolBinding, the legacy url field if no such entry
+#            exists, or an error if neither is present
 public isolated function primaryUrl(AgentCard card) returns string|error {
-    if card.supportedInterfaces.length() > 0 {
-        return card.supportedInterfaces[0].url;
+    foreach AgentInterface iface in card.supportedInterfaces {
+        if iface.protocolBinding == "JSONRPC" {
+            return iface.url;
+        }
     }
     string? legacyUrl = card?.url;
     if legacyUrl is string {
         return legacyUrl;
     }
-    return error("AgentCard has neither supportedInterfaces nor a legacy url field");
+    return error("AgentCard has no JSONRPC entry in supportedInterfaces and no legacy url field");
 }
 
 # An A2A protocol client for calling remote agents.
@@ -153,15 +162,22 @@ public isolated client class Client {
     # + message - The message to send; messageId must be set by the caller
     # + config - Optional send configuration
     # + tenant - Optional per-call tenant override
+    # + metadata - Optional request-level metadata, per SendMessageRequest
+    #              (specification section 3.2.1) — distinct from
+    #              message.metadata, which is metadata on the Message itself
     # + return - A Task or a Message on success, or an error on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
-            string? tenant = ()) returns Task|Message|error {
+            string? tenant = (),
+            map<json>? metadata = ()) returns Task|Message|error {
         json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
+        }
+        if metadata is map<json> {
+            params["metadata"] = metadata;
         }
         string? effectiveTenant = tenant ?: self.tenant;
         // tenant routing is a v1.0-only concept (per-AgentInterface tenant
@@ -266,15 +282,22 @@ public isolated client class Client {
     # + message - The message to send
     # + config - Optional send configuration
     # + tenant - Optional per-call tenant override
+    # + metadata - Optional request-level metadata, per SendMessageRequest
+    #              (specification section 3.2.1) — distinct from
+    #              message.metadata, which is metadata on the Message itself
     # + return - A stream of StreamResponse values, or an error
     isolated remote function sendMessageStream(
             Message message,
             SendMessageConfiguration? config = (),
-            string? tenant = ()) returns stream<StreamResponse, error?>|error {
+            string? tenant = (),
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
         json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
+        }
+        if metadata is map<json> {
+            params["metadata"] = metadata;
         }
         string? effectiveTenant = tenant ?: self.tenant;
         // tenant routing is a v1.0-only concept (per-AgentInterface tenant

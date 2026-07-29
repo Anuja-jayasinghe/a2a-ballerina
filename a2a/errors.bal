@@ -34,6 +34,10 @@ public type VersionNotSupportedError distinct A2AError;
 
 public type PushNotificationNotSupportedError distinct A2AError;
 
+public type ExtendedAgentCardNotConfiguredError distinct A2AError;
+
+public type ExtensionSupportRequiredError distinct A2AError;
+
 public type A2AInternalError distinct A2AError;
 
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
@@ -68,12 +72,10 @@ isolated function toA2AError(transport:JsonRpcError err) returns A2AError {
             return error InvalidAgentResponseError(err.message, message = err.message, code = err.code, data = err?.data);
         }
         -32007 => {
-            // ExtendedAgentCardNotConfiguredError has no dedicated Ballerina type
-            return error UnsupportedOperationError(err.message, message = err.message, code = err.code, data = err?.data);
+            return error ExtendedAgentCardNotConfiguredError(err.message, message = err.message, code = err.code, data = err?.data);
         }
         -32008 => {
-            // ExtensionSupportRequiredError has no dedicated Ballerina type
-            return error UnsupportedOperationError(err.message, message = err.message, code = err.code, data = err?.data);
+            return error ExtensionSupportRequiredError(err.message, message = err.message, code = err.code, data = err?.data);
         }
         -32009 => {
             return error VersionNotSupportedError(err.message, message = err.message, code = err.code, data = err?.data);

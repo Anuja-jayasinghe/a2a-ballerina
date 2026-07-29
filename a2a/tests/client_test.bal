@@ -93,6 +93,29 @@ function testPrimaryUrlPrefersSupportedInterfaces() returns error? {
     test:assertEquals(check primaryUrl(card), "https://primary.example.com");
 }
 
+# Confirms primaryUrl filters by protocolBinding rather than blindly
+# taking supportedInterfaces[0] — a card listing a binding this Client
+# doesn't speak (e.g. GRPC) before its JSONRPC entry must still resolve
+# to the JSONRPC one, not fail non-obviously on the first real request.
+#
+# + return - an error if any step other than the assertion itself fails
+@test:Config {}
+function testPrimaryUrlSkipsNonJsonRpcInterfaces() returns error? {
+    AgentCard card = {
+        name: "x",
+        description: "x",
+        version: "1.0.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "https://grpc.example.com", protocolBinding: "GRPC"},
+            {url: "https://jsonrpc.example.com", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+
+    test:assertEquals(check primaryUrl(card), "https://jsonrpc.example.com");
+}
+
 @test:Config {}
 function testPrimaryUrlFallsBackToLegacyUrl() returns error? {
     AgentCard card = {
@@ -153,6 +176,43 @@ function testSendMessageHappyPath() returns error? {
     assertValidTask(task);
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
     test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
+}
+
+# SendMessageRequest.metadata (specification section 3.2.1) is a
+# request-level field, distinct from Message.metadata — confirms it's
+# actually placed at the top level of params, not nested under "message".
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageIncludesRequestLevelMetadataWhenSet() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg, metadata = {"traceId": "abc-123"});
+
+    json lastRequest = getLastRequestBody();
+    json requestMetadata = check lastRequest.params.metadata;
+    test:assertEquals(requestMetadata, {"traceId": "abc-123"});
+}
+
+@test:Config {}
+function testSendMessageOmitsRequestLevelMetadataWhenUnset() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {task: {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    json params = check getLastRequestBody().params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertFalse(paramsMap.hasKey("metadata"), "request-level metadata should be absent when the caller didn't set it");
 }
 
 # The real reference server's SendMessage response wraps the payload —

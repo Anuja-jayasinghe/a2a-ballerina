@@ -946,7 +946,6 @@ public final a2a:AgentCard agentCard = {
     capabilities: {
         streaming: false,              // set true only if you handle sendMessageStream
         pushNotifications: false,      // leave false — not yet supported
-        stateTransitionHistory: false, // leave false — not yet supported
         extendedAgentCard: false       // leave false — not yet supported
     },
     skills: agentSkills                // reference from skills.bal — not redeclared
@@ -1005,7 +1004,6 @@ public final a2a:AgentCard agentCard = {
     capabilities: {
         streaming: false,
         pushNotifications: false,
-        stateTransitionHistory: false,
         extendedAgentCard: false
     },
     skills: agentSkills
