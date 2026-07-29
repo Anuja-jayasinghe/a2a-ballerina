@@ -37,15 +37,15 @@ function testToA2AErrorMapsInvalidAgentResponse() {
 }
 
 @test:Config {}
-function testToA2AErrorMapsExtendedAgentCardNotConfiguredToUnsupportedOperation() {
+function testToA2AErrorMapsExtendedAgentCardNotConfigured() {
     A2AError err = toA2AError({code: -32007, message: "Extended agent card not configured"});
-    test:assertTrue(err is UnsupportedOperationError, "-32007 should map to UnsupportedOperationError");
+    test:assertTrue(err is ExtendedAgentCardNotConfiguredError, "-32007 should map to its own dedicated type, per spec §5.4");
 }
 
 @test:Config {}
-function testToA2AErrorMapsExtensionSupportRequiredToUnsupportedOperation() {
+function testToA2AErrorMapsExtensionSupportRequired() {
     A2AError err = toA2AError({code: -32008, message: "Extension support required"});
-    test:assertTrue(err is UnsupportedOperationError, "-32008 should map to UnsupportedOperationError");
+    test:assertTrue(err is ExtensionSupportRequiredError, "-32008 should map to its own dedicated type, per spec §5.4");
 }
 
 @test:Config {}

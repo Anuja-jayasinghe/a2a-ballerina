@@ -72,6 +72,8 @@ public type AgentExtension record {|
     string? description?;
     # Whether a client must understand this extension to interact with the agent
     boolean required = false;
+    # Extension-specific configuration; shape is defined by the extension itself
+    map<json>? params?;
     json...;
 |};
 
@@ -81,8 +83,6 @@ public type AgentCapabilities record {|
     boolean streaming = false;
     # Whether push-notification webhooks are supported
     boolean pushNotifications = false;
-    # Whether Task.history includes intermediate state transitions
-    boolean stateTransitionHistory = false;
     # Whether the extended agent card endpoint is available
     boolean extendedAgentCard = false;
     # Protocol extensions this agent supports
@@ -106,6 +106,9 @@ public type AgentSkill record {|
     string[] outputModes = [];
     # Example prompts illustrating this skill
     string[] examples = [];
+    # Per-skill security override; untyped pending full SecurityRequirement
+    # modelling, same as AgentCard.securitySchemes/securityRequirements
+    json[] securityRequirements = [];
     json...;
 |};
 
@@ -155,8 +158,9 @@ public type AgentCard record {|
     AgentInterface[] supportedInterfaces = [];
     # Scheme shapes vary (API key, HTTP auth, OAuth2, OIDC, mTLS); untyped pending full modelling
     map<json> securitySchemes = {};
-    # Which security schemes apply, by scheme name
-    json[] security = [];
+    # Which security schemes apply; untyped pending full SecurityRequirement
+    # modelling, same as securitySchemes
+    json[] securityRequirements = [];
     # Content types this agent accepts by default
     string[] defaultInputModes = ["text"];
     # Content types this agent produces by default
@@ -310,6 +314,9 @@ public type TaskPushNotificationConfig record {|
     string? token?;
     # How the server should authenticate to this webhook
     AuthenticationInfo? authentication?;
+    # Must match the tenant value from the selected AgentInterface, when
+    # that field is set
+    string? tenant?;
     json...;
 |};
 

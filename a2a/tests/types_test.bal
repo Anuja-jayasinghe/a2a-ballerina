@@ -146,7 +146,12 @@ function testAgentProviderToleratesUnrecognizedField() returns error? {
 
 @test:Config {}
 function testAgentExtensionRoundTrip() returns error? {
-    AgentExtension original = {uri: "https://example.com/extensions/weather", description: "Weather lookups", required: true};
+    AgentExtension original = {
+        uri: "https://example.com/extensions/weather",
+        description: "Weather lookups",
+        required: true,
+        params: {"unit": "celsius"}
+    };
     AgentExtension decoded = check original.toJson().cloneWithType(AgentExtension);
 
     test:assertEquals(decoded, original);
@@ -173,7 +178,6 @@ function testAgentCapabilitiesRoundTrip() returns error? {
     AgentCapabilities original = {
         streaming: true,
         pushNotifications: true,
-        stateTransitionHistory: true,
         extendedAgentCard: true,
         extensions: [{uri: "https://example.com/extensions/weather"}]
     };
@@ -203,7 +207,8 @@ function testAgentSkillRoundTrip() returns error? {
         tags: ["weather"],
         inputModes: ["text"],
         outputModes: ["text"],
-        examples: ["What is the weather in Colombo?"]
+        examples: ["What is the weather in Colombo?"],
+        securityRequirements: [{"bearerAuth": []}]
     };
     AgentSkill decoded = check original.toJson().cloneWithType(AgentSkill);
 
@@ -272,7 +277,7 @@ function testAgentCardCompositeRoundTrip() returns error? {
             {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
         ],
         securitySchemes: {"bearerAuth": {"type": "http", "scheme": "bearer"}},
-        security: [{"bearerAuth": []}],
+        securityRequirements: [{"bearerAuth": []}],
         skills: [
             {
                 id: "weather-lookup",
@@ -591,7 +596,8 @@ function testTaskPushNotificationConfigRoundTrip() returns error? {
         url: "https://client.example.com/webhooks/a2a",
         id: "webhook-1",
         token: "correlation-token",
-        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."}
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."},
+        tenant: "acme-corp"
     };
     TaskPushNotificationConfig decoded = check original.toJson().cloneWithType(TaskPushNotificationConfig);
 
