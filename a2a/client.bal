@@ -452,7 +452,11 @@ public isolated client class Client {
             }
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        if effectiveTenant is string {
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
+        if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
 
@@ -473,6 +477,10 @@ public isolated client class Client {
             ? encodeV03TaskPushNotificationConfig(config)
             : check config.toJson().ensureType();
         string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -493,8 +501,17 @@ public isolated client class Client {
             string taskId,
             string id,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
-        map<json> params = {taskId, id};
+        // v0.3's GetTaskPushNotificationConfigParams is {id: <taskId>,
+        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
+        // per a2a-sdk 0.3.23's GetTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3"
+            ? {id: taskId, pushNotificationConfigId: id}
+            : {taskId, id};
         string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -517,14 +534,24 @@ public isolated client class Client {
             int? pageSize = (),
             string? pageToken = (),
             string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
-        map<json> params = {taskId};
-        if pageSize is int {
-            params["pageSize"] = pageSize;
-        }
-        if pageToken is string {
-            params["pageToken"] = pageToken;
+        // v0.3's ListTaskPushNotificationConfigParams is {id: <taskId>}
+        // only — no pageSize/pageToken, since v0.3 has no pagination
+        // concept for this operation — per a2a-sdk 0.3.23's
+        // ListTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3" ? {id: taskId} : {taskId};
+        if self.mode == "V1_0" {
+            if pageSize is int {
+                params["pageSize"] = pageSize;
+            }
+            if pageToken is string {
+                params["pageToken"] = pageToken;
+            }
         }
         string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -547,8 +574,17 @@ public isolated client class Client {
             string taskId,
             string id,
             string? tenant = ()) returns error? {
-        map<json> params = {taskId, id};
+        // v0.3's DeleteTaskPushNotificationConfigParams is {id: <taskId>,
+        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
+        // per a2a-sdk 0.3.23's DeleteTaskPushNotificationConfigParams.
+        map<json> params = self.mode == "V0_3"
+            ? {id: taskId, pushNotificationConfigId: id}
+            : {taskId, id};
         string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -570,6 +606,10 @@ public isolated client class Client {
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
         map<json> params = {};
         string? effectiveTenant = tenant ?: self.tenant;
+        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
+        // values); v0.3 has no wire counterpart, so it's omitted rather
+        // than sent as an unrecognized param a strict v0.3 server might
+        // reject.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }

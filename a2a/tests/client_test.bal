@@ -441,6 +441,63 @@ function testTenantPropagatesOnEveryMethod() returns error? {
     stream<StreamResponse, error?>|error subscribeToTaskResult = c->subscribeToTask("task-tenant");
     check assertLastRequestTenant(tenant, "subscribeToTask");
     check closeIfStream(subscribeToTaskResult);
+
+    // listTasks has no v0.3 equivalent, so it only works in V1_0 mode —
+    // same as the other five calls above, c is already a V1_0-mode client
+    // (no agentCard was supplied to its constructor).
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {tasks: [], nextPageToken: "", pageSize: 20, totalSize: 0}
+    });
+    ListTasksResult|error listTasksResult = c->listTasks();
+    check assertLastRequestTenant(tenant, "listTasks");
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-tenant"}
+    });
+    TaskPushNotificationConfig|error createConfigResult = c->createTaskPushNotificationConfig({
+        url: "https://client.example.com/webhooks/a2a",
+        taskId: "task-tenant"
+    });
+    check assertLastRequestTenant(tenant, "createTaskPushNotificationConfig");
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-tenant"}
+    });
+    TaskPushNotificationConfig|error getConfigResult = c->getTaskPushNotificationConfig("task-tenant", "webhook-1");
+    check assertLastRequestTenant(tenant, "getTaskPushNotificationConfig");
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            configs: [{url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}],
+            nextPageToken: ""
+        }
+    });
+    ListTaskPushNotificationConfigsResult|error listConfigsResult = c->listTaskPushNotificationConfigs("task-tenant");
+    check assertLastRequestTenant(tenant, "listTaskPushNotificationConfigs");
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {}
+    });
+    error? deleteConfigResult = c->deleteTaskPushNotificationConfig("task-tenant", "webhook-1");
+    check assertLastRequestTenant(tenant, "deleteTaskPushNotificationConfig");
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Mock Weather Agent (extended)",
+            description: "A scripted mock agent used by Client tests",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: true},
+            skills: []
+        }
+    });
+    AgentCard|error getExtendedAgentCardResult = c->getExtendedAgentCard();
+    check assertLastRequestTenant(tenant, "getExtendedAgentCard");
 }
 
 # tenant is a v1.0-only concept (a per-AgentInterface routing value); v0.3
@@ -867,7 +924,10 @@ function testV03CreateTaskPushNotificationConfigTranslatesMethodAndBody() return
     Client c = check v03Client();
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
-        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+        result: {
+            taskId: "task-1",
+            pushNotificationConfig: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
+        }
     });
 
     TaskPushNotificationConfig config = check c->createTaskPushNotificationConfig({
@@ -878,6 +938,14 @@ function testV03CreateTaskPushNotificationConfigTranslatesMethodAndBody() return
     test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/set");
+
+    // The outbound body must use v0.3's nested {taskId, pushNotificationConfig:
+    // {url, ...}} shape, not v1.0's flat record.
+    json params = check lastRequest.params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertEquals(paramsMap["taskId"], "task-1");
+    map<json> wireConfig = check paramsMap["pushNotificationConfig"].ensureType();
+    test:assertEquals(wireConfig["url"], "https://client.example.com/webhooks/a2a");
 }
 
 @test:Config {}
@@ -885,7 +953,10 @@ function testV03GetTaskPushNotificationConfigTranslatesMethod() returns error? {
     Client c = check v03Client();
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
-        result: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1", taskId: "task-1"}
+        result: {
+            taskId: "task-1",
+            pushNotificationConfig: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
+        }
     });
 
     TaskPushNotificationConfig config = check c->getTaskPushNotificationConfig("task-1", "webhook-1");
@@ -893,6 +964,14 @@ function testV03GetTaskPushNotificationConfigTranslatesMethod() returns error? {
     test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/get");
+
+    // v0.3's GetTaskPushNotificationConfigParams is {id: <taskId>,
+    // pushNotificationConfigId: <id>}, not v1.0's {taskId, id}.
+    json params = check lastRequest.params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertEquals(paramsMap["id"], "task-1");
+    test:assertEquals(paramsMap["pushNotificationConfigId"], "webhook-1");
+    test:assertFalse(paramsMap.hasKey("taskId"), "v0.3 params must not use the v1.0 field name taskId");
 }
 
 @test:Config {}
@@ -951,19 +1030,53 @@ function testDeleteTaskPushNotificationConfigHappyPathReturnsNil() returns error
 @test:Config {}
 function testV03ListTaskPushNotificationConfigsTranslatesMethodAndDecodesUnwrappedResult() returns error? {
     Client c = check v03Client();
+    // v0.3's ListTaskPushNotificationConfigSuccessResponse.result is a BARE
+    // array, not a {configs, nextPageToken} wrapper.
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
-        result: {
-            configs: [{url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}],
-            nextPageToken: "cursor-abc"
-        }
+        result: [
+            {
+                taskId: "task-1",
+                pushNotificationConfig: {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
+            }
+        ]
     });
 
     ListTaskPushNotificationConfigsResult result = check c->listTaskPushNotificationConfigs("task-1");
 
     test:assertEquals(result.configs.length(), 1);
+    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals(result.nextPageToken, "", "v0.3 has no pagination concept for this operation");
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/list");
+
+    // v0.3's ListTaskPushNotificationConfigParams is {id: <taskId>} only.
+    json params = check lastRequest.params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertEquals(paramsMap["id"], "task-1");
+    test:assertFalse(paramsMap.hasKey("taskId"), "v0.3 params must not use the v1.0 field name taskId");
+}
+
+# v0.3 has no pagination concept for this operation at all — a strict
+# server might reject unrecognized params, so pageSize/pageToken must be
+# omitted entirely rather than sent, the same gating tenant already gets
+# in every method.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03ListTaskPushNotificationConfigsOmitsPaginationFields() returns error? {
+    Client c = check v03Client();
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: []
+    });
+
+    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1", pageSize = 10, pageToken = "cursor-abc");
+
+    json params = check getLastRequestBody().params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertFalse(paramsMap.hasKey("pageSize"), "pageSize has no v0.3 wire counterpart and must be omitted");
+    test:assertFalse(paramsMap.hasKey("pageToken"), "pageToken has no v0.3 wire counterpart and must be omitted");
 }
 
 @test:Config {}
@@ -979,6 +1092,14 @@ function testV03DeleteTaskPushNotificationConfigTranslatesMethod() returns error
     test:assertTrue(result is (), "a successful delete should return nil in v0.3 mode too");
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/delete");
+
+    // v0.3's DeleteTaskPushNotificationConfigParams is {id: <taskId>,
+    // pushNotificationConfigId: <id>}, not v1.0's {taskId, id}.
+    json params = check lastRequest.params;
+    map<json> paramsMap = check params.ensureType();
+    test:assertEquals(paramsMap["id"], "task-1");
+    test:assertEquals(paramsMap["pushNotificationConfigId"], "webhook-1");
+    test:assertFalse(paramsMap.hasKey("taskId"), "v0.3 params must not use the v1.0 field name taskId");
 }
 
 @test:Config {}

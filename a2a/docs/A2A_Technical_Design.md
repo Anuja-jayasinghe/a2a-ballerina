@@ -18,7 +18,7 @@ Phase 1 is deliberately client-only. The library is built and validated against 
 
 > * Complete core data model — AgentCard, Message, Part, Task, TaskStatus, TaskState, Artifact, TaskStatusUpdateEvent, TaskArtifactUpdateEvent, StreamResponse, SendMessageConfiguration, push notification config types, and all error types  
 > * **resolveAgentCard** — discovers and parses a remote agent's Agent Card from its well-known endpoint  
-> * **isolated client class Client** — outbound connector with five remote methods: sendMessage, sendMessageStream, getTask, cancelTask, subscribeToTask  
+> * **isolated client class Client** — outbound connector with eleven remote methods: sendMessage, sendMessageStream, getTask, cancelTask, subscribeToTask, listTasks, createTaskPushNotificationConfig, getTaskPushNotificationConfig, listTaskPushNotificationConfigs, deleteTaskPushNotificationConfig, getExtendedAgentCard  
 > * JSON-RPC 2.0 request and response serialization (internal submodule)  
 > * **A2A-Version: 1.0** header on every request, per specification section 3.6.1  
 > * **tenant** parameter support on all operations for multi-tenant routing  
@@ -31,10 +31,10 @@ Phase 1 is deliberately client-only. The library is built and validated against 
 > * TaskStore interface and InMemoryTaskStore default implementation  
 > * Agent Card and skills authoring guide (server-side concern)  
 > * Push notification webhook receiver — Phase 1 only sends push config to a server, it does not host an endpoint  
-> * extendedAgentCard retrieval  
-> * listTasks operation  
 > * gRPC and HTTP+JSON/REST protocol bindings — Phase 1 implements the JSON-RPC binding only  
 > * Agent Card JWS signature verification
+>
+> (extendedAgentCard retrieval and the listTasks operation were originally deferred here but have since been implemented — see section 6.6's mapping table. The remaining real gaps are tracked in section 12.1: full SecurityScheme typing and A2A-Extensions header support are not yet implemented.)
 
 # ---
 
@@ -225,6 +225,12 @@ All five methods are isolated remote functions. Each accepts an optional tenant 
 | getTask | GetTask | POST | application/json |
 | cancelTask | CancelTask | POST | application/json |
 | subscribeToTask | SubscribeToTask | POST | text/event-stream |
+| listTasks | ListTasks | POST | application/json |
+| createTaskPushNotificationConfig | CreateTaskPushNotificationConfig | POST | application/json |
+| getTaskPushNotificationConfig | GetTaskPushNotificationConfig | POST | application/json |
+| listTaskPushNotificationConfigs | ListTaskPushNotificationConfigs | POST | application/json |
+| deleteTaskPushNotificationConfig | DeleteTaskPushNotificationConfig | POST | application/json |
+| getExtendedAgentCard | GetExtendedAgentCard | POST | application/json |
 
 # ---
 
@@ -511,10 +517,10 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 
 ## **12.1 Known simplifications**
 
-> * **securitySchemes typing.** Typed as map\<json\> rather than a modelled union of the five scheme shapes. Consequence: no automatic client configuration from a fetched Agent Card. Deferred to a follow-up.  
+> * **securitySchemes typing.** Typed as map\<json\> rather than a modelled union of the five scheme shapes. Consequence: no automatic client configuration from a fetched Agent Card. Still not implemented as of the remaining-operations branch; deferred to a follow-up.  
+> * **A2A-Extensions header support.** The specification's extension-negotiation mechanism (advertising/requesting extensions via the A2A-Extensions header) is not implemented. Still not implemented as of the remaining-operations branch; deferred to a follow-up.  
 > * **Agent Card signature verification.** The signatures field is captured but never verified. A malicious actor could serve a forged card. Deferred pending a security review and crypto integration.  
 > * **Agent Card caching.** resolveAgentCard fetches on every call with no cache and no respect for HTTP cache headers. Acceptable for Phase 1 where discovery happens once at startup; worth revisiting if discovery becomes a hot path.  
-> * **listTasks not implemented.** The specification defines a tasks/list operation with filtering and cursor pagination. Omitted from Phase 1 as it is not required for the core call-and-respond flow.  
 > * **Single protocol binding.** Only the JSON-RPC binding is implemented. Agents exposing only gRPC or HTTP+JSON/REST cannot be reached. AgentInterface.protocolBinding is captured in the data model so a client can at least detect this and fail with a clear message.  
 > * **No automatic reconnection.** subscribeToTask enables manual recovery from a dropped stream, but the client does not detect drops or reconnect on its own. The caller implements the retry policy.
 

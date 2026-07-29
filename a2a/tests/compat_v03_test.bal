@@ -602,12 +602,13 @@ function testV03MessageRoundTripsWithNoOptionalFields() returns error? {
 @test:Config {}
 function testParseV03TaskPushNotificationConfig() returns error? {
     TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
-        "url": "https://client.example.com/webhooks/a2a",
-        "id": "webhook-1",
         "taskId": "task-1",
-        "token": "correlation-token",
-        "authentication": {"scheme": "Bearer", "credentials": "eyJhbGciOiJIUzI1NiIs..."},
-        "tenant": "acme-corp"
+        "pushNotificationConfig": {
+            "url": "https://client.example.com/webhooks/a2a",
+            "id": "webhook-1",
+            "token": "correlation-token",
+            "authentication": {"scheme": "Bearer", "credentials": "eyJhbGciOiJIUzI1NiIs..."}
+        }
     });
 
     test:assertEquals(config.url, "https://client.example.com/webhooks/a2a");
@@ -617,13 +618,14 @@ function testParseV03TaskPushNotificationConfig() returns error? {
     AuthenticationInfo? auth = config?.authentication;
     test:assertTrue(auth is AuthenticationInfo, "authentication should be parsed, not dropped");
     test:assertEquals((<AuthenticationInfo>auth).scheme, "Bearer");
-    test:assertEquals(config?.tenant, "acme-corp");
 }
 
 @test:Config {}
 function testParseV03TaskPushNotificationConfigOmitsUnsetOptionalFields() returns error? {
     TaskPushNotificationConfig config = check parseV03TaskPushNotificationConfig({
-        "url": "https://client.example.com/webhooks/a2a"
+        "pushNotificationConfig": {
+            "url": "https://client.example.com/webhooks/a2a"
+        }
     });
 
     test:assertTrue(config?.id is (), "id should be nil when absent on the wire");
@@ -645,13 +647,14 @@ function testEncodeV03TaskPushNotificationConfig() returns error? {
     json encoded = encodeV03TaskPushNotificationConfig(original);
     map<json> m = check encoded.ensureType();
 
-    test:assertEquals(m["url"], "https://client.example.com/webhooks/a2a");
-    test:assertEquals(m["id"], "webhook-1");
     test:assertEquals(m["taskId"], "task-1");
-    test:assertEquals(m["token"], "correlation-token");
-    map<json> auth = check m["authentication"].ensureType();
+    test:assertFalse(m.hasKey("tenant"), "tenant is a v1.0-only concept and must never be sent on the v0.3 wire");
+    map<json> wireConfig = check m["pushNotificationConfig"].ensureType();
+    test:assertEquals(wireConfig["url"], "https://client.example.com/webhooks/a2a");
+    test:assertEquals(wireConfig["id"], "webhook-1");
+    test:assertEquals(wireConfig["token"], "correlation-token");
+    map<json> auth = check wireConfig["authentication"].ensureType();
     test:assertEquals(auth["scheme"], "Bearer");
-    test:assertEquals(m["tenant"], "acme-corp");
 }
 
 @test:Config {}
@@ -661,14 +664,17 @@ function testEncodeV03TaskPushNotificationConfigOmitsUnsetOptionalFields() retur
     json encoded = encodeV03TaskPushNotificationConfig(original);
     map<json> m = check encoded.ensureType();
 
-    test:assertFalse(m.hasKey("id"), "id should be absent when unset");
     test:assertFalse(m.hasKey("taskId"), "taskId should be absent when unset");
-    test:assertFalse(m.hasKey("authentication"), "authentication should be absent when unset");
+    map<json> wireConfig = check m["pushNotificationConfig"].ensureType();
+    test:assertFalse(wireConfig.hasKey("id"), "id should be absent when unset");
+    test:assertFalse(wireConfig.hasKey("authentication"), "authentication should be absent when unset");
 }
 
 # Round-trip: encoding then parsing a TaskPushNotificationConfig must
 # reproduce it exactly, the same guard the Message encode/decode pair
-# already has.
+# already has. tenant is intentionally excluded from `original` here since
+# it's never round-trippable through the v0.3 wire (v0.3 has no wire
+# concept of tenant at all).
 #
 # + return - an error if any step other than the assertion itself fails
 @test:Config {}
@@ -678,8 +684,7 @@ function testTaskPushNotificationConfigRoundTripsThroughEncodeAndParse() returns
         id: "webhook-1",
         taskId: "task-1",
         token: "correlation-token",
-        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."},
-        tenant: "acme-corp"
+        authentication: {scheme: "Bearer", credentials: "eyJhbGciOiJIUzI1NiIs..."}
     };
 
     json encoded = encodeV03TaskPushNotificationConfig(original);
@@ -690,23 +695,21 @@ function testTaskPushNotificationConfigRoundTripsThroughEncodeAndParse() returns
 
 @test:Config {}
 function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
-    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult({
-        "configs": [
-            {"url": "https://client.example.com/webhooks/a2a", "id": "webhook-1"}
-        ],
-        "nextPageToken": "cursor-ghi"
-    });
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([
+        {
+            "taskId": "task-1",
+            "pushNotificationConfig": {"url": "https://client.example.com/webhooks/a2a", "id": "webhook-1"}
+        }
+    ]);
 
     test:assertEquals(result.configs.length(), 1);
     test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
-    test:assertEquals(result.nextPageToken, "cursor-ghi");
+    test:assertEquals(result.nextPageToken, "", "v0.3 has no pagination concept for this operation, so nextPageToken is always synthesized empty");
 }
 
 @test:Config {}
 function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenWhenAbsent() returns error? {
-    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult({
-        "configs": []
-    });
+    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([]);
 
     test:assertEquals(result.configs.length(), 0);
     test:assertEquals(result.nextPageToken, "");

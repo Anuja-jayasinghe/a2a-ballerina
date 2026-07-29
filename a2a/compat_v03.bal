@@ -529,34 +529,35 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
     }
 }
 
-# Converts a v0.3 TaskPushNotificationConfig into the v1.0 shape. Field
-# names are assumed identical between versions (no v0.3 payload for this
-# type has been observed against a real server — neither reference agent
-# tested in this project supports push notifications — so this follows
-# the same "field names carry over unless documented otherwise" pattern
-# every other parse function in this file already relies on).
+# Converts a v0.3 TaskPushNotificationConfig into the v1.0 shape.
+#
+# Verified against a2a-sdk 0.3.23's types.py: v0.3's
+# TaskPushNotificationConfig is a NESTED wrapper with exactly two
+# top-level fields — task_id (wire "taskId") and push_notification_config
+# (wire "pushNotificationConfig", itself holding url/id/token/authentication)
+# — unlike v1.0's flat record. There is no "tenant" field in v0.3 at all
+# (per-AgentInterface tenant routing is a v1.0-only concept), so none is
+# read here.
 #
 # + configJson - the raw v0.3 TaskPushNotificationConfig JSON
 # + return - the equivalent v1.0 TaskPushNotificationConfig, or an error if malformed
 isolated function parseV03TaskPushNotificationConfig(json configJson) returns TaskPushNotificationConfig|error {
     map<json> m = check configJson.ensureType();
+    map<json> pushConfig = check m["pushNotificationConfig"].ensureType();
     map<json> v1Shape = {
-        url: check m["url"].ensureType()
+        url: check pushConfig["url"].ensureType()
     };
-    if m.hasKey("id") {
-        v1Shape["id"] = m["id"];
+    if pushConfig.hasKey("id") {
+        v1Shape["id"] = pushConfig["id"];
+    }
+    if pushConfig.hasKey("token") {
+        v1Shape["token"] = pushConfig["token"];
+    }
+    if pushConfig.hasKey("authentication") {
+        v1Shape["authentication"] = pushConfig["authentication"];
     }
     if m.hasKey("taskId") {
         v1Shape["taskId"] = m["taskId"];
-    }
-    if m.hasKey("token") {
-        v1Shape["token"] = m["token"];
-    }
-    if m.hasKey("authentication") {
-        v1Shape["authentication"] = m["authentication"];
-    }
-    if m.hasKey("tenant") {
-        v1Shape["tenant"] = m["tenant"];
     }
     return check v1Shape.cloneWithType(TaskPushNotificationConfig);
 }
@@ -568,42 +569,53 @@ isolated function parseV03TaskPushNotificationConfig(json configJson) returns Ta
 # nested under a key the way encodeV03Message is under "message" —
 # callers need an assignable map<json>, not a widened json value.
 #
+# Builds the same nested {"taskId":..., "pushNotificationConfig": {url,
+# id, token, authentication}} shape as encodeV03SendConfiguration already
+# does for SendMessageConfiguration.taskPushNotificationConfig — this is
+# that same nesting, just used as the top-level params map instead of a
+# nested field. tenant is deliberately never copied across: v0.3 has no
+# wire counterpart for it (per-AgentInterface tenant routing is a
+# v1.0-only concept), the same rule every other v0.3-mode method in this
+# codebase follows.
+#
 # + config - the outbound TaskPushNotificationConfig, in v1.0 shape
 # + return - the equivalent v0.3 TaskPushNotificationConfig JSON
 isolated function encodeV03TaskPushNotificationConfig(TaskPushNotificationConfig config) returns map<json> {
-    map<json> result = {url: config.url};
+    map<json> wirePushConfig = {url: config.url};
     string? id = config?.id;
-    string? taskId = config?.taskId;
     string? token = config?.token;
     AuthenticationInfo? authentication = config?.authentication;
-    string? tenant = config?.tenant;
     if id is string {
-        result["id"] = id;
-    }
-    if taskId is string {
-        result["taskId"] = taskId;
+        wirePushConfig["id"] = id;
     }
     if token is string {
-        result["token"] = token;
+        wirePushConfig["token"] = token;
     }
     if authentication is AuthenticationInfo {
-        result["authentication"] = authentication.toJson();
+        wirePushConfig["authentication"] = authentication.toJson();
     }
-    if tenant is string {
-        result["tenant"] = tenant;
+
+    map<json> result = {pushNotificationConfig: wirePushConfig};
+    string? taskId = config?.taskId;
+    if taskId is string {
+        result["taskId"] = taskId;
     }
     return result;
 }
 
-# + resultJson - the raw v0.3 ListTaskPushNotificationConfigs result JSON
+# Verified against a2a-sdk 0.3.23's types.py:
+# ListTaskPushNotificationConfigSuccessResponse.result is a BARE JSON
+# array of TaskPushNotificationConfig, not a {configs, nextPageToken}
+# wrapper — v0.3 has no pagination concept for this operation at all, so
+# nextPageToken is synthesized as "" here rather than read from the wire.
+#
+# + resultJson - the raw v0.3 ListTaskPushNotificationConfigs result JSON (a bare array)
 # + return - the equivalent v1.0 ListTaskPushNotificationConfigsResult, or an error if malformed
 isolated function parseV03ListTaskPushNotificationConfigsResult(json resultJson) returns ListTaskPushNotificationConfigsResult|error {
-    map<json> m = check resultJson.ensureType();
-    json[] rawConfigs = check m["configs"].ensureType();
+    json[] rawConfigs = check resultJson.ensureType();
     TaskPushNotificationConfig[] configs = [];
     foreach json c in rawConfigs {
         configs.push(check parseV03TaskPushNotificationConfig(c));
     }
-    string nextPageToken = m.hasKey("nextPageToken") ? check m["nextPageToken"].ensureType() : "";
-    return {configs, nextPageToken};
+    return {configs, nextPageToken: ""};
 }
