@@ -97,7 +97,7 @@ isolated function fetchAgentCardWithCaching(
     http:Response resp = check discoveryClient->get(
         "/.well-known/agent-card.json", reqHeaders
     );
-    if resp.statusCode == 304 {
+    if resp.statusCode == 304 && conditionalEtag is string {
         return {card: (), etag: conditionalEtag, notModified: true};
     }
     if resp.statusCode != 200 {

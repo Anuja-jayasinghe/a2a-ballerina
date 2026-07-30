@@ -1277,7 +1277,7 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
 @test:Config {}
 function testResolveAgentCardHonors304() returns error? {
     setWellKnownOverride(defaultMockAgentCard(), 200);
-    setWellKnownETag("\"default-card-v1\"");
+    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
     CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
     test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
 
@@ -1286,4 +1286,19 @@ function testResolveAgentCardHonors304() returns error? {
     test:assertEquals(second.card, first.card, "a 304 response should return the previously cached card unchanged");
 
     setWellKnownOverride(());
+}
+
+@test:Config {}
+function testResolveAgentCardReturnsErrorOn304() returns error? {
+    // Regression test: resolveAgentCard (non-cached) should never panic on 304.
+    // If a non-compliant server sends 304 to an unconditional GET, it should
+    // be treated as a non-200 error and return a typed A2AInternalError, not panic.
+    setWellKnownOverride(defaultMockAgentCard(), 304);
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    test:assertTrue(result is error, "resolveAgentCard should return an error on 304, not panic");
+    test:assertTrue(result is A2AInternalError, "304 should map to A2AInternalError for unconditional requests");
 }

@@ -23,6 +23,9 @@ public isolated function getServerBaseUrl() returns string {
 
 listener http:Listener mockListener = check new (19199);
 
+// ETag value for the default mock Agent Card
+final string DEFAULT_MOCK_CARD_ETAG = "\"default-card-v1\"";
+
 type MockRpcScript record {|
     json jsonBody = {};
     int statusCode = 200;
@@ -178,7 +181,7 @@ service / on mockListener {
         if wk.etag is string {
             etag = <string>wk.etag;
         } else if !wk.hasOverride {
-            etag = "\"default-card-v1\"";
+            etag = DEFAULT_MOCK_CARD_ETAG;
         } else {
             etag = "";
         }
