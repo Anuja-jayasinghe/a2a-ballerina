@@ -270,6 +270,27 @@ public isolated client class Client {
         }
     }
 
+    # Captures the response's X-A2A-Extensions header, if present, into
+    # self.grantedExtensions. Shared by rpcCall and openSseStream, since
+    # both read a granted-extensions header off their respective
+    # http:Response before doing anything else with it.
+    #
+    # + resp - the response just received from the remote agent
+    private isolated function captureGrantedExtensions(http:Response resp) {
+        string|error extHeader = resp.getHeader("X-A2A-Extensions");
+        if extHeader is string {
+            string[] granted = [];
+            if extHeader.length() > 0 {
+                foreach string entry in re `,`.split(extHeader) {
+                    granted.push(entry.trim());
+                }
+            }
+            lock {
+                self.grantedExtensions = granted.clone();
+            }
+        }
+    }
+
     # Performs a unary JSON-RPC call and returns the unwrapped result.
     #
     # + method - the JSON-RPC method name
@@ -285,12 +306,7 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), self.buildHeaders()
         );
-        string|error extHeader = resp.getHeader("X-A2A-Extensions");
-        if extHeader is string {
-            lock {
-                self.grantedExtensions = extHeader.length() > 0 ? re `,`.split(extHeader) : [];
-            }
-        }
+        self.captureGrantedExtensions(resp);
         json body = check resp.getJsonPayload();
         transport:JsonRpcResponse rpcResp =
             check body.cloneWithType(transport:JsonRpcResponse);
@@ -400,12 +416,7 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), headers
         );
-        string|error sseExtHeader = resp.getHeader("X-A2A-Extensions");
-        if sseExtHeader is string {
-            lock {
-                self.grantedExtensions = sseExtHeader.length() > 0 ? re `,`.split(sseExtHeader) : [];
-            }
-        }
+        self.captureGrantedExtensions(resp);
         if resp.statusCode != 200 {
             return error A2AInternalError(
                 string `Stream request failed with HTTP ${resp.statusCode}`,

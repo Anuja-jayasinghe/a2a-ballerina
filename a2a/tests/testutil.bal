@@ -242,12 +242,20 @@ service / on mockListener {
         }
 
         // Header names are case-insensitive per HTTP semantics, but this
-        // connection's actual wire casing varies with protocol negotiation
-        // (HTTP/1.1 preserves the sender's casing; an h2c-upgraded HTTP/2
-        // connection lowercases all header names per the HTTP/2 spec) --
-        // observed directly across test runs on this same mock listener.
-        // Normalizing to lowercase here makes header assertions stable
-        // regardless of which protocol a given request happened to use.
+        // connection's actual wire casing varies with protocol negotiation.
+        // Confirmed by logging req.getHeaderNames() directly: the client's
+        // http:ClientConfiguration defaults httpVersion to "2.0" with
+        // http2PriorKnowledge false (ballerina/http's own defaults -- not
+        // anything this repo configures), so the first request on a fresh
+        // connection is a plaintext HTTP/1.1 request carrying `Upgrade:
+        // h2c`/`HTTP2-Settings` and preserves the sender's original header
+        // casing (e.g. "A2A-Extensions"), while every subsequent request
+        // reusing that same pooled, now-upgraded connection is real HTTP/2
+        // framing, which came through with all-lowercase header names
+        // (e.g. "a2a-extensions") -- consistent with HTTP/2 requiring
+        // lowercase header field names on the wire. Normalizing to
+        // lowercase here makes header assertions stable regardless of
+        // which of those two cases a given test's request happens to hit.
         map<string> headers = {};
         foreach string headerName in req.getHeaderNames() {
             string|http:HeaderNotFoundError headerValue = req.getHeader(headerName);
