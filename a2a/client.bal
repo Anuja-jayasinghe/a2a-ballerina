@@ -198,6 +198,7 @@ public isolated client class Client {
     private final ProtocolMode mode;
     private final string[] & readonly requestedExtensions;
     private string[] grantedExtensions = [];
+    private final int maxReconnectAttempts;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -232,6 +233,16 @@ public isolated client class Client {
     #                 error) when agentCard is not given, so passing
     #                 credentials without a card is a silent no-op rather
     #                 than a hard failure.
+    # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
+    #                          (the default), sendMessageStream and
+    #                          subscribeToTask behave exactly as before —
+    #                          a dropped connection surfaces its error
+    #                          immediately. When positive, the returned
+    #                          stream transparently resubscribes to the
+    #                          task via subscribeToTask up to this many
+    #                          times if the underlying stream ends with an
+    #                          error (not a clean terminal-state close)
+    #                          before giving up and surfacing the error.
     # + return - error if the underlying http:Client cannot be created, or
     #            if credentials is non-empty but does not satisfy any of
     #            agentCard's declared SecurityRequirements
@@ -242,7 +253,8 @@ public isolated client class Client {
             string? tenant = (),
             AgentCard? agentCard = (),
             string[] requestedExtensions = [],
-            map<string> credentials = {}) returns error? {
+            map<string> credentials = {},
+            int maxReconnectAttempts = 0) returns error? {
         // http:ClientConfiguration isn't Cloneable (some of its fields
         // aren't pure data), so a mapping-constructor spread is used
         // instead of .clone() to shallow-copy it before mutating .auth —
@@ -267,6 +279,7 @@ public isolated client class Client {
         self.tenant = tenant;
         self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
+        self.maxReconnectAttempts = maxReconnectAttempts;
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
@@ -516,7 +529,34 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("SendStreamingMessage", params);
+        stream<StreamResponse, error?> rawStream = check self.openSseStream("SendStreamingMessage", params);
+        if self.maxReconnectAttempts <= 0 {
+            return rawStream;
+        }
+
+        // Peek the first event to find the taskId to resubscribe to on a
+        // dropped connection. A bare Message (no task) carries nothing to
+        // reconnect against, so wrapping is a no-op in that case: the raw
+        // stream is returned untouched, with the peeked value re-spliced
+        // back on as ReconnectingStreamGenerator's buffered first result
+        // (with maxAttempts 0, so it never actually attempts a reconnect)
+        // so the caller never observes that a peek happened either way.
+        record {| StreamResponse value; |}|error? peeked = rawStream.next();
+        if peeked is error {
+            return peeked;
+        }
+        if peeked is () {
+            stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0));
+            return wrapped;
+        }
+        Task? maybeTask = peeked.value?.task;
+        if maybeTask is Task {
+            stream<StreamResponse, error?> wrapped =
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked));
+            return wrapped;
+        }
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked));
+        return wrapped;
     }
 
     # Retrieves the current state of a task.
@@ -606,7 +646,12 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("SubscribeToTask", params);
+        stream<StreamResponse, error?> rawStream = check self.openSseStream("SubscribeToTask", params);
+        if self.maxReconnectAttempts <= 0 {
+            return rawStream;
+        }
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts));
+        return wrapped;
     }
 
     # Lists tasks matching an optional filter, with cursor-based pagination.

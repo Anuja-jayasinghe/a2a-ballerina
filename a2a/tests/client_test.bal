@@ -1422,3 +1422,66 @@ function testResolveAgentCardReturnsErrorOn304() returns error? {
     test:assertTrue(result is error, "resolveAgentCard should return an error on 304, not panic");
     test:assertTrue(result is A2AInternalError, "304 should map to A2AInternalError for unconditional requests");
 }
+
+@test:Config {}
+function testSendMessageStreamReconnectsOnDrop() returns error? {
+    // First script: the opening Task event (sendMessageStream's wrapping
+    // only kicks in once a task exists to resubscribe to — see Step 4 of
+    // the design), then a WORKING status, then an abrupt close — scripted
+    // via setNextSseResponseThenDrop, which ends the scripted events with
+    // a genuine stream error rather than a clean end-of-stream. A plain
+    // setNextSseResponse([...]) running out of events is NOT equivalent:
+    // that produces a normal, error-free stream close (see
+    // testSendMessageStreamPausesAtInputRequiredThenResumes), which must
+    // NOT trigger a reconnect — only a real transport error should.
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-1")},
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response (what subscribeToTask will receive)
+    // before pulling the next value — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse third = check expectValue(s.next());
+    test:assertEquals(third?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+# Regression guard: maxReconnectAttempts defaults to 0, which must preserve
+# today's exact pre-reconnect behavior — a dropped stream surfaces its
+# error immediately to the caller, with no reconnect attempted. Proves the
+# feature is truly opt-in, not silently on by default.
+@test:Config {}
+function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-1")},
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl());
+    Message msg = {messageId: "m2", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script what a reconnect *would* receive, to prove it is never called:
+    // if a reconnect happened despite maxReconnectAttempts being 0, this
+    // scripted COMPLETED event would be returned instead of the error.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_COMPLETED")}
+    ]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "with maxReconnectAttempts = 0 (the default), a dropped stream should surface its error immediately, not reconnect");
+}

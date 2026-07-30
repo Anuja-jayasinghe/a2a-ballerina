@@ -100,6 +100,66 @@ class A2AStreamGenerator {
     }
 }
 
+# Wraps an existing StreamResponse stream, transparently reconnecting via
+# subscribeToTask when the underlying stream ends with an error instead of
+# a clean terminal-state close — up to a caller-configured attempt limit.
+# Per specification section 3.1.6, a resubscription's first delivered event
+# is always the task's current state, so no event is lost across a
+# reconnect, only possibly duplicated (a status the client already saw
+# delivered again) — callers already need to tolerate duplicate/out-of-order
+# status updates per the spec's own guidance on this, so this is not a new
+# burden.
+class ReconnectingStreamGenerator {
+    private stream<StreamResponse, error?> current;
+    private final Client a2aClient;
+    private final string taskId;
+    private final int maxAttempts;
+    private int attemptsUsed = 0;
+    private boolean done = false;
+    // Wiring the taskId to resubscribe to (in sendMessageStream) requires
+    // peeking the underlying stream's first event before construction —
+    // that peeked value is buffered here and replayed as this generator's
+    // own first result, so the caller never observes that a peek happened.
+    private record {| StreamResponse value; |}? bufferedFirst;
+
+    isolated function init(stream<StreamResponse, error?> initial, Client a2aClient, string taskId, int maxAttempts, record {| StreamResponse value; |}? bufferedFirst = ()) {
+        self.current = initial;
+        self.a2aClient = a2aClient;
+        self.taskId = taskId;
+        self.maxAttempts = maxAttempts;
+        self.bufferedFirst = bufferedFirst;
+    }
+
+    public isolated function next() returns record {| StreamResponse value; |}|error? {
+        if self.done {
+            return ();
+        }
+        record {| StreamResponse value; |}? buffered = self.bufferedFirst;
+        if buffered is record {| StreamResponse value; |} {
+            self.bufferedFirst = ();
+            return buffered;
+        }
+        record {| StreamResponse value; |}|error? result = self.current.next();
+        if result is error && self.attemptsUsed < self.maxAttempts {
+            self.attemptsUsed += 1;
+            stream<StreamResponse, error?>|error reconnected = self.a2aClient->subscribeToTask(self.taskId);
+            if reconnected is stream<StreamResponse, error?> {
+                self.current = reconnected;
+                return self.next();
+            }
+        }
+        if result is () || result is error {
+            self.done = true;
+        }
+        return result;
+    }
+
+    public isolated function close() returns error? {
+        self.done = true;
+        return self.current.close();
+    }
+}
+
 # A stream terminates only on a status update carrying a terminal state.
 #
 # + event - the decoded stream event to inspect

@@ -33,6 +33,13 @@ type MockRpcScript record {|
     boolean isSse = false;
     decimal delaySeconds = 0;
     string? extensionsHeader = ();
+    // When true, the SSE response ends the scripted events with a genuine
+    // stream error instead of a clean end-of-stream — simulating a dropped
+    // connection (as opposed to sseEvents simply running out, which the
+    // underlying HTTP response framing surfaces as a normal, error-free
+    // stream end). Used to exercise ReconnectingStreamGenerator's
+    // reconnect-on-error path, which must NOT trigger on a clean close.
+    boolean simulateDropError = false;
 |};
 
 type MockWellKnownScript record {|
@@ -93,6 +100,46 @@ public isolated function setNextSseResponse(http:SseEvent[] events, string? exte
     }
 }
 
+# Scripts the next JSON-RPC request to receive an SSE stream that plays the
+# given events and then ends with a genuine stream error, simulating a
+# dropped connection — distinct from setNextSseResponse, whose events
+# simply running out produces a normal, error-free stream end (proven by
+# testSendMessageStreamPausesAtInputRequiredThenResumes). Used to exercise
+# the reconnect-on-error path of automatic SSE reconnection.
+#
+# + events - the canned SSE events to stream back before the simulated drop
+public isolated function setNextSseResponseThenDrop(http:SseEvent[] events) {
+    lock {
+        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, simulateDropError: true};
+    }
+}
+
+# A synthetic SSE source that replays a fixed list of events, then yields a
+# stream error instead of ending cleanly — used by
+# setNextSseResponseThenDrop to simulate a dropped connection at the wire
+# level, since a plain array-backed stream (events.toStream()) has no way
+# to end with anything but a clean, error-free close.
+isolated class DropAfterEventsGenerator {
+    private final http:SseEvent[] & readonly events;
+    private int idx = 0;
+
+    isolated function init(http:SseEvent[] events) {
+        self.events = events.cloneReadOnly();
+    }
+
+    public isolated function next() returns record {| http:SseEvent value; |}|error? {
+        int i;
+        lock {
+            i = self.idx;
+            self.idx += 1;
+        }
+        if i >= self.events.length() {
+            return error("simulated connection drop");
+        }
+        return {value: self.events[i]};
+    }
+}
+
 # Delays the next JSON-RPC response by the given number of seconds, to
 # exercise http:ClientConfiguration.timeout passthrough.
 #
@@ -148,6 +195,30 @@ public isolated function setWellKnownConditionalOverride(int statusCode) {
 # + return - a minimal Task's JSON representation
 public isolated function defaultTaskJson() returns json {
     return {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}};
+}
+
+# Builds a JSON-RPC-enveloped {"task": {...}} SSE data payload — the shape
+# a real sendMessageStream response opens with per specification section
+# 3.1.1 (the stream opens with a Task or a Message, then delivers zero or
+# more status/artifact update events).
+#
+# + taskId - the task identifier to stamp on the task
+# + state - the TaskState string value (e.g. "TASK_STATE_SUBMITTED")
+# + return - the SSE event's `data:` field content
+public isolated function taskJson(string taskId, string state = "TASK_STATE_SUBMITTED") returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"task":{"id":"${taskId}","status":{"state":"${state}"}}}}`;
+}
+
+# Builds a JSON-RPC-enveloped TaskStatusUpdateEvent SSE data payload, for
+# tests scripting a status-update SSE event without repeating the envelope
+# shape inline (follows the same {"jsonrpc":"2.0","id":"1","result":{...}}
+# envelope other tests in client_test.bal construct by hand).
+#
+# + taskId - the task identifier to stamp on the status update
+# + state - the TaskState string value (e.g. "TASK_STATE_WORKING")
+# + return - the SSE event's `data:` field content
+public isolated function statusUpdateJson(string taskId, string state) returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"${taskId}","contextId":"ctx-1","status":{"state":"${state}"}}}}`;
 }
 
 isolated function defaultMockAgentCard() returns json {
@@ -285,7 +356,12 @@ service / on mockListener {
             if extHeader is string {
                 res.setHeader("X-A2A-Extensions", extHeader);
             }
-            res.setPayload(script.sseEvents.toStream());
+            if script.simulateDropError {
+                stream<http:SseEvent, error?> dropStream = new (new DropAfterEventsGenerator(script.sseEvents));
+                res.setPayload(dropStream);
+            } else {
+                res.setPayload(script.sseEvents.toStream());
+            }
             respondIgnoringClientGoneAway(caller, res);
         } else {
             http:Response res = new;
