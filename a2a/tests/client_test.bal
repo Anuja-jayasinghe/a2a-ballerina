@@ -227,6 +227,26 @@ function testSendMessageSendsRequestedExtensionsHeader() returns error? {
 }
 
 @test:Config {}
+function testClientInitAutoWiresApiKeyHeaderFromAgentCard() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
+        capabilities: {},
+        securitySchemes: {
+            "apiKeyAuth": {'type: "apiKey", 'in: "header", name: "X-Api-Key"}
+        },
+        securityRequirements: [{"apiKeyAuth": []}],
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = card, credentials = {"apiKeyAuth": "secret-123"});
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    map<string> headers = getLastRequestHeaders();
+    test:assertEquals(headers["x-api-key"], "secret-123");
+}
+
+@test:Config {}
 function testSendMessageCapturesGrantedExtensionsFromResponse() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}}, extensionsHeader = "urn:example:ext-a");
     Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);

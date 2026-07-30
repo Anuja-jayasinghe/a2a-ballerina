@@ -222,16 +222,42 @@ public isolated client class Client {
     #                         A2A-Extensions header on every request. The
     #                         agent's response indicates which extensions
     #                         it actually granted; see lastGrantedExtensions.
-    # + return - error if the underlying http:Client cannot be created
+    # + credentials - Optional credential strings, keyed by security scheme
+    #                 name exactly as declared in agentCard.securitySchemes.
+    #                 When agentCard is given and this is non-empty,
+    #                 buildAuthFromCard resolves them into auth config and
+    #                 headers, merged in underneath clientConfig and headers
+    #                 respectively — an explicit value the caller already
+    #                 set always wins over the auto-wired one. Ignored (no
+    #                 error) when agentCard is not given, so passing
+    #                 credentials without a card is a silent no-op rather
+    #                 than a hard failure.
+    # + return - error if the underlying http:Client cannot be created, or
+    #            if credentials is non-empty but does not satisfy any of
+    #            agentCard's declared SecurityRequirements
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
             AgentCard? agentCard = (),
-            string[] requestedExtensions = []) returns error? {
-        self.httpClient = check new (serviceUrl, clientConfig);
-        self.defaultHeaders = headers.cloneReadOnly();
+            string[] requestedExtensions = [],
+            map<string> credentials = {}) returns error? {
+        http:ClientConfiguration effectiveClientConfig = clientConfig;
+        map<string> effectiveHeaders = headers;
+        if agentCard is AgentCard && credentials.length() > 0 {
+            ResolvedAuth resolved = check buildAuthFromCard(agentCard, credentials);
+            if effectiveClientConfig.auth is () {
+                effectiveClientConfig.auth = resolved.clientConfig.auth;
+            }
+            foreach [string, string] [k, v] in resolved.headers.entries() {
+                if !effectiveHeaders.hasKey(k) {
+                    effectiveHeaders[k] = v;
+                }
+            }
+        }
+        self.httpClient = check new (serviceUrl, effectiveClientConfig);
+        self.defaultHeaders = effectiveHeaders.cloneReadOnly();
         self.tenant = tenant;
         self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
