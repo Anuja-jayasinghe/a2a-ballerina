@@ -40,6 +40,15 @@ public type ExtensionSupportRequiredError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
 
+# Returned by buildAuthFromCard when an AgentCard's declared security
+# requirements cannot be automatically resolved into client auth config —
+# either no SecurityRequirement entry is satisfiable by the given
+# credentials, or one names a scheme buildAuthFromCard doesn't automate
+# (e.g. an apiKey scheme not sent via a header, or an OAuth2/OpenIdConnect/
+# mutualTLS scheme, which need a token-acquisition flow or client cert
+# rather than a single credential string).
+public type AuthResolutionError distinct A2AError;
+
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
 # table in design doc §4.1. Unrecognised codes map to A2AInternalError
 # with the original code preserved in A2AErrorDetail.code.

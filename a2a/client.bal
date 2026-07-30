@@ -243,8 +243,14 @@ public isolated client class Client {
             AgentCard? agentCard = (),
             string[] requestedExtensions = [],
             map<string> credentials = {}) returns error? {
-        http:ClientConfiguration effectiveClientConfig = clientConfig;
-        map<string> effectiveHeaders = headers;
+        // http:ClientConfiguration isn't Cloneable (some of its fields
+        // aren't pure data), so a mapping-constructor spread is used
+        // instead of .clone() to shallow-copy it before mutating .auth —
+        // otherwise this would mutate the caller's own clientConfig in
+        // place, corrupting it for any other Client.init call that reuses
+        // the same variable.
+        http:ClientConfiguration effectiveClientConfig = {...clientConfig};
+        map<string> effectiveHeaders = headers.clone();
         if agentCard is AgentCard && credentials.length() > 0 {
             ResolvedAuth resolved = check buildAuthFromCard(agentCard, credentials);
             if effectiveClientConfig.auth is () {

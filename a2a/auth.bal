@@ -29,9 +29,10 @@ public type ResolvedAuth record {|
 # + credentials - one credential string per scheme name this call should
 #                 satisfy; a scheme absent from securityRequirements is
 #                 ignored even if a credential is supplied for it
-# + return - resolved auth config, or an error if no SecurityRequirement
-#            entry can be fully satisfied by the given credentials
-public isolated function buildAuthFromCard(AgentCard card, map<string> credentials) returns ResolvedAuth|error {
+# + return - resolved auth config, or an AuthResolutionError if no
+#            SecurityRequirement entry can be fully satisfied by the given
+#            credentials
+public isolated function buildAuthFromCard(AgentCard card, map<string> credentials) returns ResolvedAuth|AuthResolutionError {
     foreach SecurityRequirement requirement in card.securityRequirements {
         string[] schemeNames = requirement.keys();
         boolean allSatisfiable = true;
@@ -53,7 +54,8 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
                 if scheme.'in == "header" {
                     headers[scheme.name] = credential;
                 } else {
-                    return error(string `apiKey scheme "${schemeName}" uses 'in: "${scheme.'in}"', which buildAuthFromCard does not automate yet — set it manually via Client.init's headers or serviceUrl query string`);
+                    return error AuthResolutionError(
+                        string `apiKey scheme "${schemeName}" uses 'in: "${scheme.'in}"', which buildAuthFromCard does not automate yet — set it manually via Client.init's headers or serviceUrl query string`);
                 }
             } else if scheme is HttpAuthSecurityScheme {
                 if scheme.scheme.toLowerAscii() == "bearer" {
@@ -64,17 +66,20 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
                     // "username:password" as the credential value.
                     string[] parts = re `:`.split(credential);
                     if parts.length() != 2 {
-                        return error(string `http Basic scheme "${schemeName}" requires credential in "username:password" form`);
+                        return error AuthResolutionError(
+                            string `http Basic scheme "${schemeName}" requires credential in "username:password" form`);
                     }
                     clientConfig.auth = {username: parts[0], password: parts[1]};
                 } else {
-                    return error(string `http auth scheme "${scheme.scheme}" (name: "${schemeName}") is not automated yet`);
+                    return error AuthResolutionError(
+                        string `http auth scheme "${scheme.scheme}" (name: "${schemeName}") is not automated yet`);
                 }
             } else {
-                return error(string `security scheme "${schemeName}" (type ${scheme.'type}) is not automated yet — OAuth2/OpenIdConnect/mutualTLS need manual clientConfig wiring`);
+                return error AuthResolutionError(
+                    string `security scheme "${schemeName}" (type ${scheme.'type}) is not automated yet — OAuth2/OpenIdConnect/mutualTLS need manual clientConfig wiring`);
             }
         }
         return {clientConfig, headers};
     }
-    return error("no SecurityRequirement in the AgentCard could be satisfied by the given credentials");
+    return error AuthResolutionError("no SecurityRequirement in the AgentCard could be satisfied by the given credentials");
 }
