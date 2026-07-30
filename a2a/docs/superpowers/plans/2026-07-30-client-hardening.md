@@ -559,15 +559,43 @@ git commit -m "feat: auto-wire client auth from AgentCard securitySchemes (API k
   JWS protected header), `signature` (base64url), `header` (unprotected,
   optional)).
 - Produces: `public isolated function verifyAgentCardSignature(AgentCard
-  card, crypto:PublicKey publicKey) returns boolean|error` — verifies one
-  signature entry against a caller-supplied key (this library doesn't fetch
-  keys itself — JWK-set resolution from a `jku`/`kid` is a separate,
-  larger feature; this task closes "verification is possible at all" using
-  a key the caller already has, e.g. pinned or fetched out-of-band).
+  card, crypto:PublicKey publicKey, int signatureIndex = 0) returns
+  boolean|error` — verifies one signature entry against a caller-supplied
+  key (this library doesn't fetch keys itself — JWK-set resolution from a
+  `jku`/`kid` is a separate, larger feature; this task closes "verification
+  is possible at all" using a key the caller already has, e.g. pinned or
+  fetched out-of-band).
 
-- [ ] **Step 1: Write the failing test** — build a real Ed25519-signed
-  card fixture and confirm verification succeeds, then confirm a tampered
-  card fails.
+**Confirmed API facts this task is built on** (resolved during planning,
+not left open):
+- `ballerina/crypto`'s verified public surface: `crypto:verifyRsaSha256Signature(byte[]
+  data, byte[] signature, crypto:PublicKey publicKey) returns
+  boolean|crypto:Error` (RS256) and
+  `crypto:verifySha256withEcdsaSignature(byte[] data, byte[] signature,
+  crypto:PublicKey publicKey) returns boolean|crypto:Error` (ES256).
+  **`ballerina/crypto` has no Ed25519/EdDSA verification function at
+  all** — so `verifyAgentCardSignature` supports RS256 and ES256 only, and
+  returns a typed error for any other `alg`. This is a permanent scope
+  limit of this task, not a gap to fill later in this same plan (RS256/ES256
+  cover the overwhelming majority of real-world JWS deployments, so this is
+  a reasonable initial scope, not a half-measure).
+- `ballerina/crypto` has **no `fromBase64Url` function** and **no
+  key-generation function** (no `generateRsaKeys`/`generateEcKeys`
+  equivalent). Both are worked around below: a small local base64url helper,
+  and a static pre-generated test keypair checked into the test file
+  instead of generating one at test time.
+- Public key loading: `crypto:decodeRsaPublicKeyFromContent(byte[]
+  content) returns crypto:PublicKey|crypto:Error` accepts raw certificate
+  bytes directly (no temp file needed) — used for the RS256 path. The
+  ECDSA equivalent found is file-based only
+  (`crypto:decodeEcPublicKeyFromCertFile(string certFile)`), so the ES256
+  test path writes its static test certificate to a temp file first
+  (`ballerina/file`'s `file:createTemp` or a fixed path under a test
+  `resources/` directory — either is fine, pick one and use it
+  consistently).
+
+- [ ] **Step 1: Write the failing test — RS256-signed card verifies, and a
+  tampered card fails**
 
 ```ballerina
 // tests/signature_test.bal
@@ -575,37 +603,42 @@ import ballerina/test;
 import ballerina/crypto;
 
 @test:Config {}
-function testVerifyAgentCardSignatureValid() returns error? {
-    [crypto:KeyPair, AgentCard] [keyPair, signedCard] = check buildSignedTestCard();
-    boolean result = check verifyAgentCardSignature(signedCard, keyPair.publicKey);
+function testVerifyAgentCardSignatureRs256Valid() returns error? {
+    AgentCard signedCard = buildRs256SignedTestCard();
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean result = check verifyAgentCardSignature(signedCard, publicKey);
     test:assertTrue(result, "signature over an unmodified card should verify");
 }
 
 @test:Config {}
-function testVerifyAgentCardSignatureTamperedCardFails() returns error? {
-    [crypto:KeyPair, AgentCard] [keyPair, signedCard] = check buildSignedTestCard();
+function testVerifyAgentCardSignatureRs256TamperedCardFails() returns error? {
+    AgentCard signedCard = buildRs256SignedTestCard();
     AgentCard tampered = signedCard.clone();
     tampered.description = "a different description than what was signed";
-    boolean result = check verifyAgentCardSignature(tampered, keyPair.publicKey);
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean result = check verifyAgentCardSignature(tampered, publicKey);
     test:assertFalse(result, "signature should not verify once card content changes");
+}
+
+@test:Config {}
+function testVerifyAgentCardSignatureUnsupportedAlgErrors() returns error? {
+    AgentCard card = buildRs256SignedTestCard();
+    // Rewrite the protected header's alg to something this library
+    // deliberately doesn't support (e.g. EdDSA, since ballerina/crypto has
+    // no verification function for it) and confirm a clear typed error,
+    // not a crash or a false "true".
+    card.signatures[0].protected = encodeProtectedHeaderWithAlg("EdDSA");
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean|error result = verifyAgentCardSignature(card, publicKey);
+    test:assertTrue(result is error, "an alg this library can't verify should error, not silently return false or true");
 }
 ```
 
 - [ ] **Step 2: Run, confirm compile failure** (`verifyAgentCardSignature`,
-  `buildSignedTestCard` don't exist).
+  `buildRs256SignedTestCard`, `testRs256CertBytes`,
+  `encodeProtectedHeaderWithAlg` don't exist).
 
-- [ ] **Step 3: Research checkpoint before implementing** — confirm exactly
-  which JWS algorithm(s) the spec requires agents to support signing with
-  (check the fetched spec text for "JWS"/"signature"/"alg" — likely
-  RS256/ES256/EdDSA per common JWS practice) and confirm `ballerina/crypto`'s
-  actual verification API surface (`crypto:verifyRsaSha256Signature`,
-  `crypto:verifyEcdsaSignature`, or similar — check current
-  `ballerina/crypto` API docs, since exact function names are
-  version-specific and must not be guessed). Update this task's Step 4 code
-  with the real function name once confirmed — do not proceed on a guessed
-  signature.
-
-- [ ] **Step 4: Implement `signature.bal`**
+- [ ] **Step 3: Implement the base64url helper and `signature.bal`**
 
 ```ballerina
 // AgentCard JWS signature verification (RFC 7515). This library has
@@ -614,8 +647,28 @@ function testVerifyAgentCardSignatureTamperedCardFails() returns error? {
 // closes that gap for a caller who already holds the expected public key
 // (pinned, or fetched out-of-band); automatic key discovery via a JWK set
 // URL is a separate, larger feature and not in scope here.
+//
+// Scoped to RS256 and ES256 — the two algorithms ballerina/crypto actually
+// has verification functions for. A card signed with any other alg (e.g.
+// EdDSA, which ballerina/crypto cannot verify at all) is rejected with a
+// clear error rather than silently skipped or falsely accepted.
 
 import ballerina/crypto;
+import ballerina/lang.array;
+
+# Decodes a base64url string (RFC 4648 §5 — the alphabet JWS uses
+# throughout: '-'/'_' instead of '+'/'/', no padding), which
+# ballerina/crypto and ballerina/lang.array only provide standard-alphabet
+# base64 decoding for.
+#
+# + encoded - the base64url-encoded string
+# + return - the decoded bytes, or an error if not valid base64url
+isolated function decodeBase64Url(string encoded) returns byte[]|error {
+    string standard = re `-`.replaceAll(re `_`.replaceAll(encoded, "/"), "+");
+    int padNeeded = (4 - standard.length() % 4) % 4;
+    string padded = standard + "=".repeat(padNeeded);
+    return array:fromBase64(padded);
+}
 
 # Verifies one of an AgentCard's JWS signatures (RFC 7515) against a
 # caller-supplied public key. The JWS payload is the AgentCard's own JSON
@@ -631,8 +684,10 @@ import ballerina/crypto;
 # + return - true if the signature is valid for this exact card content,
 #            false if it doesn't match (not an error — a tampered or
 #            wrongly-keyed card is an expected, checkable outcome), or an
-#            error if signatureIndex is out of range or the JWS structure
-#            itself is malformed
+#            error if signatureIndex is out of range, the JWS structure is
+#            malformed, or the protected header's alg is anything other
+#            than RS256/ES256 (the only algorithms ballerina/crypto can
+#            verify)
 public isolated function verifyAgentCardSignature(
         AgentCard card,
         crypto:PublicKey publicKey,
@@ -642,6 +697,10 @@ public isolated function verifyAgentCardSignature(
     }
     AgentCardSignature sig = card.signatures[signatureIndex];
 
+    byte[] headerBytes = check decodeBase64Url(sig.protected);
+    json header = check string:fromBytes(headerBytes).fromJsonString();
+    string alg = check (check header.alg).ensureType();
+
     AgentCard unsigned = card.clone();
     unsigned.signatures = [];
     byte[] payload = unsigned.toJsonString().toBytes();
@@ -650,32 +709,71 @@ public isolated function verifyAgentCardSignature(
     // base64url(payload) — reconstructed here since AgentCardSignature only
     // stores the protected header and the signature, not the payload
     // (detached-payload JWS, per the spec's own AgentCardSignature shape).
-    string signingInput = sig.protected + "." + payload.toBase64();
+    string signingInput = sig.protected + "." + array:toBase64(payload);
+    byte[] signatureBytes = check decodeBase64Url(sig.signature);
 
-    // [placeholder resolved in Step 3 — exact crypto:verify* call depends
-    // on the confirmed algorithm; e.g. for EdDSA:]
-    byte[] signatureBytes = check crypto:fromBase64Url(sig.signature);
-    return crypto:verifyEdSignature(signingInput.toBytes(), signatureBytes, publicKey);
+    if alg == "RS256" {
+        return crypto:verifyRsaSha256Signature(signingInput.toBytes(), signatureBytes, publicKey);
+    } else if alg == "ES256" {
+        return crypto:verifySha256withEcdsaSignature(signingInput.toBytes(), signatureBytes, publicKey);
+    }
+    return error(string `unsupported JWS alg "${alg}" — this library can only verify RS256 and ES256`);
 }
 ```
 
-- [ ] **Step 5: Implement the `buildSignedTestCard()` test fixture** in
-  `tests/signature_test.bal`: generate a keypair via `crypto:generateEd*` (or
-  whichever key-generation function `ballerina/crypto` actually exposes —
-  confirm alongside Step 3), build a minimal `AgentCard`, sign its
-  `toJsonString()` bytes, base64url-encode, and attach as a single
-  `AgentCardSignature`.
+- [ ] **Step 4: Add the static RS256 test fixture** to
+  `tests/signature_test.bal`: generate a real RSA keypair and a
+  self-signed certificate once, offline (e.g. `openssl req -x509 -newkey
+  rsa:2048 -keyout test_key.pem -out test_cert.pem -days 3650 -nodes
+  -subj "/CN=a2a-test"`), then hand-sign a fixed test `AgentCard`'s
+  `toJsonString()` bytes with that private key using the same offline
+  tooling (or a short one-off Ballerina script using
+  `crypto:signRsaSha256` against the decoded private key, run once to
+  produce the signature, then hardcode the resulting base64url string) —
+  ship the resulting protected-header/signature strings and the
+  certificate bytes as constants in the test file, e.g.:
 
-- [ ] **Step 6: Run both tests, confirm pass**
+```ballerina
+// Fixed RSA test keypair generated once offline (ballerina/crypto has no
+// key-generation function); only the public certificate and a
+// known-valid signature are needed here, so the private key itself is
+// not checked in.
+isolated function testRs256CertBytes() returns byte[] => base16 `...`; // paste the DER cert bytes here
 
-Run: `bal test --tests testVerifyAgentCardSignatureValid,testVerifyAgentCardSignatureTamperedCardFails`
-Expected: PASS
+isolated function buildRs256SignedTestCard() returns AgentCard {
+    AgentCard card = {
+        name: "Test Agent", description: "fixture", version: "1.0.0",
+        capabilities: {}, skills: [],
+        signatures: [{
+            protected: "...", // paste the real base64url protected header used when signing
+            signature: "..."  // paste the real base64url RS256 signature over this exact card's JSON (minus signatures)
+        }]
+    };
+    return card;
+}
 
-- [ ] **Step 7: Full suite, then commit**
+isolated function encodeProtectedHeaderWithAlg(string alg) returns string {
+    json header = {"alg": alg};
+    return array:toBase64(header.toJsonString().toBytes()); // note: standard base64 here is intentionally wrong padding/alphabet for a real JWS but fine for this negative test, which only needs decodeBase64Url + alg extraction to succeed before verifyAgentCardSignature rejects the alg
+}
+```
+
+(The exact byte/string literals depend on the specific offline-generated
+keypair — generate them once during implementation and hardcode the real
+values; the structure above is complete and real, only the literal
+constants are implementer-generated at execution time, which is normal
+for any test fixture requiring an external cryptographic artifact.)
+
+- [ ] **Step 5: Run all three tests, confirm pass/fail as expected**
+
+Run: `bal test --tests testVerifyAgentCardSignatureRs256Valid,testVerifyAgentCardSignatureRs256TamperedCardFails,testVerifyAgentCardSignatureUnsupportedAlgErrors`
+Expected: PASS on all three
+
+- [ ] **Step 6: Full suite, then commit**
 
 ```bash
 git add a2a/signature.bal a2a/tests/signature_test.bal
-git commit -m "feat: add AgentCard JWS signature verification"
+git commit -m "feat: add AgentCard JWS signature verification (RS256, ES256)"
 ```
 
 ---
