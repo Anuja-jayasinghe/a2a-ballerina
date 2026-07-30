@@ -74,6 +74,8 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
 # Fetches and parses a remote agent's Agent Card from its well-known
 # endpoint.
 #
+# For cache-aware fetching with HTTP 304 support, see resolveAgentCardCached.
+#
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers, for API key authentication
@@ -98,6 +100,59 @@ public isolated function resolveAgentCard(
     }
     json body = check resp.getJsonPayload();
     return check parseAgentCardBody(body);
+}
+
+# An AgentCard together with the HTTP caching metadata needed to make a
+# conditional follow-up request.
+public type CachedAgentCard record {|
+    # The parsed AgentCard
+    AgentCard card;
+    # The ETag header value from the response, if any, for use in conditional requests
+    string? etag;
+|};
+
+# Fetches an agent's Agent Card, reusing a previous fetch's body when the
+# server confirms nothing changed (HTTP 304), per standard HTTP caching —
+# resolveAgentCard's original per-call fetch was always correct but never
+# cheap; this adds the standard conditional-GET optimization on top without
+# changing resolveAgentCard's own behavior.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers, for API key authentication
+# + previous - A card previously returned by this function, to enable a
+#              conditional (If-None-Match) request
+# + return - The parsed AgentCard plus its caching metadata, or an error
+public isolated function resolveAgentCardCached(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        CachedAgentCard? previous = ()) returns CachedAgentCard|error {
+    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    map<string> reqHeaders = {"A2A-Version": "1.0"};
+    foreach [string, string] [k, v] in headers.entries() {
+        reqHeaders[k] = v;
+    }
+    string? prevEtag = previous?.etag;
+    if prevEtag is string {
+        reqHeaders["If-None-Match"] = prevEtag;
+    }
+    http:Response resp = check discoveryClient->get(
+        "/.well-known/agent-card.json", reqHeaders
+    );
+    if resp.statusCode == 304 && previous is CachedAgentCard {
+        return previous;
+    }
+    if resp.statusCode != 200 {
+        return error A2AInternalError(
+            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
+            code = resp.statusCode
+        );
+    }
+    json body = check resp.getJsonPayload();
+    AgentCard card = check parseAgentCardBody(body);
+    string|error etagHeader = resp.getHeader("ETag");
+    return {card, etag: etagHeader is string ? etagHeader : ()};
 }
 
 # Resolves the URL to construct a Client against, per v1.0's removal of

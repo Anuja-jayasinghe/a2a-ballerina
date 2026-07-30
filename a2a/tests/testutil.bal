@@ -35,6 +35,8 @@ type MockWellKnownScript record {|
     boolean hasOverride = false;
     json overrideBody = {};
     int overrideStatus = 200;
+    string? etag = ();
+    int? conditionalStatus = ();
 |};
 
 isolated MockRpcScript rpcScript = {};
@@ -92,8 +94,21 @@ public isolated function setWellKnownOverride(json? body, int statusCode = 200) 
         if body is () {
             wellKnownScript = {};
         } else {
-            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode};
+            // Preserve existing ETag and conditionalStatus when setting override
+            string? existingEtag = wellKnownScript.etag;
+            int? existingConditional = wellKnownScript.conditionalStatus;
+            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode, etag: existingEtag, conditionalStatus: existingConditional};
         }
+    }
+}
+
+# Sets the HTTP status code for a conditional well-known response when an
+# If-None-Match header is present and matches the scripted ETag.
+#
+# + statusCode - the HTTP status code to respond with (typically 304)
+public isolated function setWellKnownConditionalOverride(int statusCode) {
+    lock {
+        wellKnownScript.conditionalStatus = statusCode;
     }
 }
 
@@ -115,7 +130,12 @@ isolated function defaultMockAgentCard() returns json {
             }
         ]
     };
-    return card.toJson();
+    json cardJson = card.toJson();
+    // Set a stable ETag for the default card
+    lock {
+        wellKnownScript.etag = "\"default-card-v1\"";
+    }
+    return cardJson;
 }
 
 # Sends a response via the given caller, discarding any error instead of
@@ -142,10 +162,20 @@ isolated function respondIgnoringClientGoneAway(http:Caller caller, http:Respons
 }
 
 service / on mockListener {
-    resource function get \.well\-known/agent\-card\.json(http:Caller caller) returns error? {
+    resource function get \.well\-known/agent\-card\.json(http:Caller caller, http:Request req) returns error? {
         MockWellKnownScript wk;
         lock {
             wk = wellKnownScript.clone();
+        }
+
+        // Check for conditional request (If-None-Match header)
+        string|http:HeaderNotFoundError ifNoneMatch = req.getHeader("If-None-Match");
+        if ifNoneMatch is string && wk.conditionalStatus is int && wk.etag is string && ifNoneMatch == wk.etag {
+            // Send conditional response (typically 304 Not Modified)
+            http:Response res = new;
+            res.statusCode = <int>wk.conditionalStatus;
+            check caller->respond(res);
+            return;
         }
 
         http:Response res = new;
@@ -155,6 +185,9 @@ service / on mockListener {
         } else {
             res.statusCode = 200;
             res.setJsonPayload(defaultMockAgentCard());
+        }
+        if wk.etag is string {
+            res.setHeader("ETag", <string>wk.etag);
         }
         check caller->respond(res);
     }

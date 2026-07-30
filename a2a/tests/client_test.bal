@@ -1273,3 +1273,14 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
     test:assertEquals(card.skills[0].securityRequirements.length(), 1);
     test:assertEquals(card.skills[0].securityRequirements[0], {"oauth": ["write"]});
 }
+
+@test:Config {}
+function testResolveAgentCardHonors304() returns error? {
+    setWellKnownOverride(defaultMockAgentCard(), 200);
+    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
+    test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
+
+    setWellKnownConditionalOverride(304);
+    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
+    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached card unchanged");
+}
