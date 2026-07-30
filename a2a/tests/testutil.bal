@@ -32,6 +32,7 @@ type MockRpcScript record {|
     http:SseEvent[] sseEvents = [];
     boolean isSse = false;
     decimal delaySeconds = 0;
+    string? extensionsHeader = ();
 |};
 
 type MockWellKnownScript record {|
@@ -45,6 +46,7 @@ type MockWellKnownScript record {|
 isolated MockRpcScript rpcScript = {};
 isolated MockWellKnownScript wellKnownScript = {};
 isolated json lastRequestBody = {};
+isolated map<string> lastRequestHeaders = {};
 
 # Returns the JSON body of the last request the mock JSON-RPC endpoint
 # received, so tests can assert on what the Client actually sent on the
@@ -57,22 +59,37 @@ public isolated function getLastRequestBody() returns json {
     }
 }
 
+# Returns the headers of the last request the mock JSON-RPC endpoint
+# received, so tests can assert on outbound headers (e.g. A2A-Extensions).
+# Keys are lowercased, since the wire casing of header names varies with
+# HTTP protocol negotiation on this connection (see the capture site for
+# details) -- callers should look up headers by their lowercase name.
+#
+# + return - the last received request's headers, keyed by lowercase header name
+public isolated function getLastRequestHeaders() returns map<string> {
+    lock {
+        return lastRequestHeaders.clone();
+    }
+}
+
 # Scripts the next JSON-RPC request to receive a plain JSON response.
 #
 # + body - the JSON body to respond with
 # + statusCode - the HTTP status code to respond with
-public isolated function setNextJsonResponse(json body, int statusCode = 200) {
+# + extensionsHeader - optional X-A2A-Extensions header value to set on the response
+public isolated function setNextJsonResponse(json body, int statusCode = 200, string? extensionsHeader = ()) {
     lock {
-        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0};
+        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0, extensionsHeader};
     }
 }
 
 # Scripts the next JSON-RPC request to receive an SSE stream response.
 #
 # + events - the canned SSE events to stream back
-public isolated function setNextSseResponse(http:SseEvent[] events) {
+# + extensionsHeader - optional X-A2A-Extensions header value to set on the response
+public isolated function setNextSseResponse(http:SseEvent[] events, string? extensionsHeader = ()) {
     lock {
-        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0};
+        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, extensionsHeader};
     }
 }
 
@@ -123,6 +140,14 @@ public isolated function setWellKnownConditionalOverride(int statusCode) {
     lock {
         wellKnownScript.conditionalStatus = statusCode;
     }
+}
+
+# A minimal, valid Task JSON body, for tests that don't care about the
+# task's contents and just need something that decodes successfully.
+#
+# + return - a minimal Task's JSON representation
+public isolated function defaultTaskJson() returns json {
+    return {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}};
 }
 
 isolated function defaultMockAgentCard() returns json {
@@ -216,6 +241,24 @@ service / on mockListener {
             lastRequestBody = body.clone();
         }
 
+        // Header names are case-insensitive per HTTP semantics, but this
+        // connection's actual wire casing varies with protocol negotiation
+        // (HTTP/1.1 preserves the sender's casing; an h2c-upgraded HTTP/2
+        // connection lowercases all header names per the HTTP/2 spec) --
+        // observed directly across test runs on this same mock listener.
+        // Normalizing to lowercase here makes header assertions stable
+        // regardless of which protocol a given request happened to use.
+        map<string> headers = {};
+        foreach string headerName in req.getHeaderNames() {
+            string|http:HeaderNotFoundError headerValue = req.getHeader(headerName);
+            if headerValue is string {
+                headers[headerName.toLowerAscii()] = headerValue;
+            }
+        }
+        lock {
+            lastRequestHeaders = headers.clone();
+        }
+
         MockRpcScript script;
         lock {
             script = rpcScript.clone();
@@ -230,11 +273,19 @@ service / on mockListener {
             // to 201; the Client checks for exactly 200, so set it explicitly.
             http:Response res = new;
             res.statusCode = 200;
+            string? extHeader = script.extensionsHeader;
+            if extHeader is string {
+                res.setHeader("X-A2A-Extensions", extHeader);
+            }
             res.setPayload(script.sseEvents.toStream());
             respondIgnoringClientGoneAway(caller, res);
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;
+            string? extHeader = script.extensionsHeader;
+            if extHeader is string {
+                res.setHeader("X-A2A-Extensions", extHeader);
+            }
             res.setJsonPayload(script.jsonBody);
             respondIgnoringClientGoneAway(caller, res);
         }

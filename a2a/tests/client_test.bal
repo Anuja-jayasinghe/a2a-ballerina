@@ -215,6 +215,40 @@ function testSendMessageOmitsRequestLevelMetadataWhenUnset() returns error? {
     test:assertFalse(paramsMap.hasKey("metadata"), "request-level metadata should be absent when the caller didn't set it");
 }
 
+@test:Config {}
+function testSendMessageSendsRequestedExtensionsHeader() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a", "urn:example:ext-b"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    map<string> headers = getLastRequestHeaders();
+    test:assertEquals(headers["a2a-extensions"], "urn:example:ext-a,urn:example:ext-b");
+}
+
+@test:Config {}
+function testSendMessageCapturesGrantedExtensionsFromResponse() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}}, extensionsHeader = "urn:example:ext-a");
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a"]);
+}
+
+@test:Config {}
+function testSendMessageStreamCapturesGrantedExtensionsFromResponse() returns error? {
+    http:SseEvent[] minimalSseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-ext","contextId":"ctx-ext","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ];
+    setNextSseResponse(minimalSseResponse, extensionsHeader = "urn:example:ext-a,urn:example:ext-b");
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a", "urn:example:ext-b"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+    check closeIfStream(events);
+
+    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a", "urn:example:ext-b"]);
+}
+
 # The real reference server's SendMessage response wraps the payload —
 # {"result": {"task": {...}}} or {"result": {"message": {...}}} — never a
 # flat Task/Message. The happy-path test above only ever exercised the

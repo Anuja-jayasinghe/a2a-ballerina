@@ -196,6 +196,8 @@ public isolated client class Client {
     private final map<string> & readonly defaultHeaders;
     private final string? tenant;
     private final ProtocolMode mode;
+    private final string[] & readonly requestedExtensions;
+    private string[] grantedExtensions = [];
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -215,17 +217,24 @@ public isolated client class Client {
     #               to auto-detect whether to speak v1.0 or v0.3 wire
     #               format to this server. Omitting it (the default)
     #               preserves today's v1.0-only behavior exactly.
+    # + requestedExtensions - Optional A2A extension URIs to request from
+    #                         the remote agent, sent as a comma-joined
+    #                         A2A-Extensions header on every request. The
+    #                         agent's response indicates which extensions
+    #                         it actually granted; see lastGrantedExtensions.
     # + return - error if the underlying http:Client cannot be created
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
-            AgentCard? agentCard = ()) returns error? {
+            AgentCard? agentCard = (),
+            string[] requestedExtensions = []) returns error? {
         self.httpClient = check new (serviceUrl, clientConfig);
         self.defaultHeaders = headers.cloneReadOnly();
         self.tenant = tenant;
         self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
+        self.requestedExtensions = requestedExtensions.cloneReadOnly();
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
@@ -244,7 +253,21 @@ public isolated client class Client {
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
+        if self.requestedExtensions.length() > 0 {
+            headers["A2A-Extensions"] = string:'join(",", ...self.requestedExtensions);
+        }
         return headers;
+    }
+
+    # Returns the extensions the remote agent granted on the most recent
+    # call, per the response's X-A2A-Extensions header. Empty until the
+    # first call completes, or if the agent never sent the header.
+    #
+    # + return - the granted extension URIs
+    public isolated function lastGrantedExtensions() returns string[] {
+        lock {
+            return self.grantedExtensions.clone();
+        }
     }
 
     # Performs a unary JSON-RPC call and returns the unwrapped result.
@@ -262,6 +285,12 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), self.buildHeaders()
         );
+        string|error extHeader = resp.getHeader("X-A2A-Extensions");
+        if extHeader is string {
+            lock {
+                self.grantedExtensions = extHeader.length() > 0 ? re `,`.split(extHeader) : [];
+            }
+        }
         json body = check resp.getJsonPayload();
         transport:JsonRpcResponse rpcResp =
             check body.cloneWithType(transport:JsonRpcResponse);
@@ -371,6 +400,12 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), headers
         );
+        string|error sseExtHeader = resp.getHeader("X-A2A-Extensions");
+        if sseExtHeader is string {
+            lock {
+                self.grantedExtensions = sseExtHeader.length() > 0 ? re `,`.split(sseExtHeader) : [];
+            }
+        }
         if resp.statusCode != 200 {
             return error A2AInternalError(
                 string `Stream request failed with HTTP ${resp.statusCode}`,
