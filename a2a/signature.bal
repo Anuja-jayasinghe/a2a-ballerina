@@ -68,8 +68,8 @@ public isolated function verifyAgentCardSignature(
         AgentCard card,
         crypto:PublicKey publicKey,
         int signatureIndex = 0) returns boolean|error {
-    if signatureIndex >= card.signatures.length() {
-        return error(string `signatureIndex ${signatureIndex} out of range: card has ${card.signatures.length()} signature(s)`);
+    if signatureIndex < 0 || signatureIndex >= card.signatures.length() {
+        return error SignatureVerificationError(string `signatureIndex ${signatureIndex} out of range: card has ${card.signatures.length()} signature(s)`);
     }
     AgentCardSignature sig = card.signatures[signatureIndex];
 
@@ -93,9 +93,20 @@ public isolated function verifyAgentCardSignature(
     byte[] signatureBytes = check decodeBase64Url(sig.signature);
 
     if alg == "RS256" {
-        return crypto:verifyRsaSha256Signature(signingInput.toBytes(), signatureBytes, publicKey);
+        boolean|crypto:Error result = crypto:verifyRsaSha256Signature(signingInput.toBytes(), signatureBytes, publicKey);
+        if result is crypto:Error {
+            return error SignatureVerificationError(
+                string `RS256 signature verification failed: ${result.message()}`, result);
+        }
+        return result;
     } else if alg == "ES256" {
-        return crypto:verifySha256withEcdsaSignature(signingInput.toBytes(), signatureBytes, publicKey);
+        boolean|crypto:Error result = crypto:verifySha256withEcdsaSignature(signingInput.toBytes(), signatureBytes, publicKey);
+        if result is crypto:Error {
+            return error SignatureVerificationError(
+                string `ES256 signature verification failed: ${result.message()}`, result);
+        }
+        return result;
     }
-    return error(string `unsupported JWS alg "${alg}" — this library can only verify RS256 and ES256`);
+    return error UnsupportedSignatureAlgorithmError(
+        string `unsupported JWS alg "${alg}" — this library can only verify RS256 and ES256`);
 }

@@ -49,6 +49,19 @@ public type A2AInternalError distinct A2AError;
 # rather than a single credential string).
 public type AuthResolutionError distinct A2AError;
 
+# Returned by verifyAgentCardSignature when the requested signatureIndex
+# doesn't exist on the card, or when the underlying crypto:verify* call
+# itself fails (as opposed to cleanly returning a true/false validity
+# result) — e.g. an unparsable signature value for the given key type.
+public type SignatureVerificationError distinct A2AError;
+
+# Returned by verifyAgentCardSignature when a signature's protected header
+# declares a JWS `alg` this library has no verifier for. ballerina/crypto
+# only exposes verification functions for RS256 and ES256 (notably, no
+# Ed25519/EdDSA), so any other alg — valid JWS or not — is rejected with
+# this typed error rather than silently skipped or falsely accepted.
+public type UnsupportedSignatureAlgorithmError distinct A2AError;
+
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
 # table in design doc §4.1. Unrecognised codes map to A2AInternalError
 # with the original code preserved in A2AErrorDetail.code.

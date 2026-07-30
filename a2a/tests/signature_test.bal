@@ -40,7 +40,26 @@ function testVerifyAgentCardSignatureUnsupportedAlgErrors() returns error? {
     card.signatures[0].protected = encodeProtectedHeaderWithAlg("EdDSA");
     crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
     boolean|error result = verifyAgentCardSignature(card, publicKey);
-    test:assertTrue(result is error, "an alg this library can't verify should error, not silently return false or true");
+    test:assertTrue(result is UnsupportedSignatureAlgorithmError,
+            "an alg this library can't verify should error with the typed UnsupportedSignatureAlgorithmError, not silently return false or true");
+}
+
+@test:Config {}
+function testVerifyAgentCardSignatureOutOfRangeIndexErrors() returns error? {
+    AgentCard card = buildRs256SignedTestCard();
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean|error result = verifyAgentCardSignature(card, publicKey, 1);
+    test:assertTrue(result is SignatureVerificationError,
+            "a signatureIndex past the end of card.signatures should error with the typed SignatureVerificationError");
+}
+
+@test:Config {}
+function testVerifyAgentCardSignatureNegativeIndexErrors() returns error? {
+    AgentCard card = buildRs256SignedTestCard();
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean|error result = verifyAgentCardSignature(card, publicKey, -1);
+    test:assertTrue(result is SignatureVerificationError,
+            "a negative signatureIndex should error with the typed SignatureVerificationError, not raise an uncaught index error");
 }
 
 // Fixed RSA test keypair generated once offline via the JDK's keytool
