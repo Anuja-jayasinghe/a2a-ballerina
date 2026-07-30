@@ -102,6 +102,16 @@ public isolated function setWellKnownOverride(json? body, int statusCode = 200) 
     }
 }
 
+# Sets the ETag value for well-known endpoint responses, enabling conditional
+# request testing.
+#
+# + etagValue - the ETag value to include in responses (e.g., "\"v1\"")
+public isolated function setWellKnownETag(string etagValue) {
+    lock {
+        wellKnownScript.etag = etagValue;
+    }
+}
+
 # Sets the HTTP status code for a conditional well-known response when an
 # If-None-Match header is present and matches the scripted ETag.
 #
@@ -130,12 +140,7 @@ isolated function defaultMockAgentCard() returns json {
             }
         ]
     };
-    json cardJson = card.toJson();
-    // Set a stable ETag for the default card
-    lock {
-        wellKnownScript.etag = "\"default-card-v1\"";
-    }
-    return cardJson;
+    return card.toJson();
 }
 
 # Sends a response via the given caller, discarding any error instead of
@@ -168,9 +173,19 @@ service / on mockListener {
             wk = wellKnownScript.clone();
         }
 
+        // Ensure default card has an ETag for conditional requests
+        string etag;
+        if wk.etag is string {
+            etag = <string>wk.etag;
+        } else if !wk.hasOverride {
+            etag = "\"default-card-v1\"";
+        } else {
+            etag = "";
+        }
+
         // Check for conditional request (If-None-Match header)
         string|http:HeaderNotFoundError ifNoneMatch = req.getHeader("If-None-Match");
-        if ifNoneMatch is string && wk.conditionalStatus is int && wk.etag is string && ifNoneMatch == wk.etag {
+        if ifNoneMatch is string && wk.conditionalStatus is int && etag.length() > 0 && ifNoneMatch == etag {
             // Send conditional response (typically 304 Not Modified)
             http:Response res = new;
             res.statusCode = <int>wk.conditionalStatus;
@@ -186,8 +201,8 @@ service / on mockListener {
             res.statusCode = 200;
             res.setJsonPayload(defaultMockAgentCard());
         }
-        if wk.etag is string {
-            res.setHeader("ETag", <string>wk.etag);
+        if etag.length() > 0 {
+            res.setHeader("ETag", etag);
         }
         check caller->respond(res);
     }
