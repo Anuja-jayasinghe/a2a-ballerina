@@ -69,7 +69,7 @@ code is a follow-up plan).
 ```ballerina
 // tests/client_test.bal
 @test:Config {}
-function testResolveAgentCardHonors304(string caller = "runtime") returns error? {
+function testResolveAgentCardHonors304() returns error? {
     setWellKnownOverride(defaultMockAgentCard(), 200);
     CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
     test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
@@ -344,7 +344,26 @@ git commit -m "feat: add A2A-Extensions request/response header support"
   + `map<string> credentials = {}` pair that, when given, calls this and
   merges the result into `clientConfig` before constructing `self.httpClient`.
 
-- [ ] **Step 1: Write the failing test — API key scheme wires a header**
+- [ ] **Step 1: Design note before writing any test** —
+  `http:ClientConfiguration` has no generic "static header" slot; that's
+  what `Client.init`'s existing `headers` parameter is for
+  (`client.bal:142-143`), not `clientConfig`. So `buildAuthFromCard`'s
+  return type must be a small pair, not `http:ClientConfiguration` alone —
+  define this type first, then write every test directly against it (no
+  throwaway draft):
+
+```ballerina
+# The result of resolving an AgentCard's declared security requirements
+# against a caller-supplied credential map: HTTP client auth config for
+# schemes http:ClientConfiguration.auth natively supports (HTTP Bearer/Basic),
+# plus a header map for schemes that don't (API key).
+public type ResolvedAuth record {|
+    http:ClientConfiguration clientConfig;
+    map<string> headers;
+|};
+```
+
+- [ ] **Step 2: Write the three failing tests against `ResolvedAuth`**
 
 ```ballerina
 // tests/auth_test.bal
@@ -362,43 +381,6 @@ function testBuildAuthFromCardApiKeyHeader() returns error? {
         securityRequirements: [{"apiKeyAuth": []}],
         skills: []
     };
-    http:ClientConfiguration config = check buildAuthFromCard(card, {"apiKeyAuth": "secret-123"});
-    // ApiKeySecurityScheme with 'in: "header" resolves to a default header,
-    // not http:ClientConfiguration.auth (which has no generic API-key-header
-    // concept) — assert on the customHeaders field this task adds.
-    test:assertEquals(config.auth, ());
-}
-```
-
-- [ ] **Step 2: Run, confirm compile failure** (`buildAuthFromCard` doesn't
-  exist).
-
-Run: `bal test --tests testBuildAuthFromCardApiKeyHeader`
-Expected: FAIL
-
-- [ ] **Step 3: Design note before implementing** — `http:ClientConfiguration`
-  has no generic "static header" slot; that's what `Client.init`'s existing
-  `headers` parameter is for (`client.bal:142-143`), not `clientConfig`. So
-  `buildAuthFromCard`'s real return type must be a small pair, not
-  `http:ClientConfiguration` alone:
-
-```ballerina
-# The result of resolving an AgentCard's declared security requirements
-# against a caller-supplied credential map: HTTP client auth config for
-# schemes http:ClientConfiguration.auth natively supports (HTTP Bearer/Basic),
-# plus a header map for schemes that don't (API key).
-public type ResolvedAuth record {|
-    http:ClientConfiguration clientConfig;
-    map<string> headers;
-|};
-```
-
-- [ ] **Step 4: Rewrite the test against `ResolvedAuth`**
-
-```ballerina
-@test:Config {}
-function testBuildAuthFromCardApiKeyHeader() returns error? {
-    AgentCard card = { /* same as above */ };
     ResolvedAuth resolved = check buildAuthFromCard(card, {"apiKeyAuth": "secret-123"});
     test:assertEquals(resolved.headers["X-Api-Key"], "secret-123");
 }
@@ -436,9 +418,9 @@ function testBuildAuthFromCardMissingCredentialErrors() returns error? {
 }
 ```
 
-- [ ] **Step 5: Run, confirm all three fail** (implementation still missing)
+- [ ] **Step 3: Run, confirm all three fail** (implementation still missing)
 
-- [ ] **Step 6: Implement `auth.bal`**
+- [ ] **Step 4: Implement `auth.bal`**
 
 ```ballerina
 // Automatic client-auth wiring from an AgentCard's declared security
@@ -523,12 +505,12 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
 }
 ```
 
-- [ ] **Step 7: Run all three new tests, confirm pass**
+- [ ] **Step 5: Run all three new tests, confirm pass**
 
 Run: `bal test --tests testBuildAuthFromCardApiKeyHeader,testBuildAuthFromCardHttpBearer,testBuildAuthFromCardMissingCredentialErrors`
 Expected: PASS
 
-- [ ] **Step 8: Wire an optional convenience path into `Client.init`**
+- [ ] **Step 6: Wire an optional convenience path into `Client.init`**
 
 Add `map<string> credentials = {}` parameter to `Client.init`; when
 `agentCard` is given and `credentials` is non-empty, call
@@ -539,7 +521,7 @@ map the same way. Add one integration test in `client_test.bal` proving a
 `Client` constructed this way sends the resolved API-key header on an
 actual `sendMessage` call (reusing `getLastRequestHeaders` from Task 2).
 
-- [ ] **Step 9: Full suite, then commit**
+- [ ] **Step 7: Full suite, then commit**
 
 ```bash
 git add a2a/auth.bal a2a/client.bal a2a/tests/auth_test.bal a2a/tests/client_test.bal
