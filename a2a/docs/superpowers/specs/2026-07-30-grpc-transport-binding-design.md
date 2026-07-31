@@ -152,7 +152,7 @@ clean:
    `anydata` (2 occurrences: the `Part.data` field declaration and the
    `setPart_Data` helper).
 
-Verified end-to-end:
+Verified to **compile clean** — and no more than that:
 
 ```
 $ bal grpc --input vend/a2a.proto --proto-path vend --output out3
@@ -167,7 +167,24 @@ Generating executable
 Two mechanical steps, both deterministic, both scriptable. This is what
 drives the codegen-workflow decision in §Design decision 1.
 
-#### Finding 3 — every generated type name collides with `types.bal`
+**What that result does *not* establish, and why it matters.** The above
+is a compilation result. The wire behaviour of the rewritten field is
+**not yet exercised.** The `google_protobuf_Value` → `anydata` rewrite
+changes only the *Ballerina* field type; `A2A_DESCRIPTOR_MAP` still
+declares `Part.data` as a `google.protobuf.Value` on the wire. At runtime
+the protobuf marshaller is therefore handed a Ballerina type the
+descriptor does not describe. `bal build` cannot detect that — only an
+actual round trip of a `Part` carrying non-nil `data` can. The workaround
+may serialize incorrectly, or panic, on the first such `Part`.
+
+Every other `Part` variant (`text`, `raw`, `url`, plus `filename` /
+`media_type` / `metadata`) is untouched by the rewrite and carries no
+such risk. This is the single largest unvalidated assumption in this
+design: it is recorded as Known limitation 3 and gated by a mandatory
+test in §Testing that implementation must clear before building anything
+on top of the stub.
+
+#### Finding 3 — ~22 generated type names collide with `types.bal`
 
 The stub declares `Task`, `Message`, `Part`, `Artifact`, `TaskStatus`,
 `AgentCard`, `AgentInterface`, `AgentCapabilities`, `AgentSkill`,
@@ -176,9 +193,12 @@ The stub declares `Task`, `Message`, `Part`, `Artifact`, `TaskStatus`,
 `TaskPushNotificationConfig`, `AuthenticationInfo`,
 `SendMessageConfiguration`, `SecurityScheme`, `SecurityRequirement`,
 `OAuthFlows`, and the enums `Role` and `TaskState` — **all** public,
-**all** already defined in `a2a/types.bal`. The stub therefore cannot be
-dropped into the root module; it must live in its own submodule. See
-§Design decision 1.
+**all** already defined in `a2a/types.bal`. (The generated request
+messages — `GetTaskRequest`, `CancelTaskRequest`, and so on — do *not*
+collide; they have no `types.bal` counterpart. The collisions are
+concentrated in the domain types, which is exactly the set the
+conversion layer touches.) The stub therefore cannot be dropped into the
+root module; it must live in its own submodule. See §Design decision 1.
 
 #### Finding 4 — generated records are structurally incompatible with `types.bal`
 
@@ -289,14 +309,17 @@ error type is `distinct Error` where `public type Error distinct error`
 — a plain error with **no detail record**. Grepping the whole module for
 `trailer`, `Trailer`, `ErrorInfo`, and `errorDetail` returns nothing.
 
-The module does map gRPC status codes onto 17 distinct Ballerina error
+The module does map gRPC status codes onto 16 distinct Ballerina error
 types (`CancelledError`, `UnKnownError`, `InvalidArgumentError`,
 `DeadlineExceededError`, `NotFoundError`, `AlreadyExistsError`,
 `PermissionDeniedError`, `UnauthenticatedError`,
 `ResourceExhaustedError`, `FailedPreconditionError`, `AbortedError`,
 `OutOfRangeError`, `UnimplementedError`, `InternalError`,
-`UnavailableError`, `DataLossError`, plus resiliency/stream helpers), so
-status-code granularity is available. What is *not* available is the
+`UnavailableError`, `DataLossError`), so status-code granularity is
+available. The module declares four further `Error` subtypes
+(`ResiliencyError`, `StreamClosedError`, `DataMismatchError`,
+`ClientAuthError`) but these are client-side conditions, not status-code
+mappings. What is *not* available is the
 `google.rpc.ErrorInfo.reason` string that Task 8 relies on to
 disambiguate errors sharing a status. This is the one place where the
 gRPC binding is strictly less faithful than the other two, and
@@ -366,6 +389,99 @@ transcription error later.
 | `AuthenticationInfo` | `scheme`, `credentials` |
 | `AgentCard` | `name`, `description`, `supported_interfaces` (repeated `AgentInterface`), `provider`, `version`, `capabilities`, `security_schemes` (map), `security_requirements` (repeated), `default_input_modes`, `default_output_modes`, `skills` (repeated), `signatures` (repeated), `optional documentation_url`, `optional icon_url` |
 | `AgentInterface` | `url`, `protocol_binding`, `tenant`, `protocol_version` |
+
+### Supporting message fields
+
+These are the messages the conversion functions in §Design decision 5
+depend on but that no rpc names directly. They are tabulated here for the
+same reason as the rest: so an implementer never has to go back to the
+proto.
+
+| Message | Fields |
+|---|---|
+| `SendMessageConfiguration` | `accepted_output_modes` (repeated string, 1), `task_push_notification_config` (2), `optional history_length` (int32, 3), `return_immediately` (bool, 4) |
+| `AgentCapabilities` | `optional streaming` (bool, 1), `optional push_notifications` (bool, 2), `extensions` (repeated `AgentExtension`, 3), `optional extended_agent_card` (bool, 4) |
+| `AgentSkill` | `id` (REQUIRED), `name` (REQUIRED), `description` (REQUIRED), `tags` (repeated, REQUIRED), `examples` (repeated), `input_modes` (repeated), `output_modes` (repeated), `security_requirements` (repeated `SecurityRequirement`) |
+| `AgentProvider` | `url` (REQUIRED), `organization` (REQUIRED) |
+| `AgentExtension` | `uri`, `description`, `required` (bool), `params` (Struct) |
+| `AgentCardSignature` | `protected` (REQUIRED), `signature` (REQUIRED), `header` (Struct) |
+| `SecurityRequirement` | `schemes` — `map<string, StringList>` |
+| `StringList` | `list` (repeated string) |
+
+`AgentCapabilities` is worth a second look: all three booleans are proto3
+`optional`, so they generate as Ballerina *optional* fields
+(`boolean streaming?`), whereas `types.bal` declares them as required
+with `= false` defaults. Decode must treat an absent field as `false`,
+and encode must not emit `false` as an explicit presence signal — a
+server distinguishing "not declared" from "declared false" would
+otherwise see the wrong thing.
+
+### The `SecurityScheme` oneof and its five arms
+
+`decodeGrpcAgentCard` is called the largest single function in
+§Design decision 5 precisely because of this subtree, so it is spelled
+out in full.
+
+```proto
+message SecurityScheme {
+  oneof scheme {
+    APIKeySecurityScheme api_key_security_scheme = 1;
+    HTTPAuthSecurityScheme http_auth_security_scheme = 2;
+    OAuth2SecurityScheme oauth2_security_scheme = 3;
+    OpenIdConnectSecurityScheme open_id_connect_security_scheme = 4;
+    MutualTlsSecurityScheme mtls_security_scheme = 5;
+  }
+}
+```
+
+| Arm message | Fields |
+|---|---|
+| `APIKeySecurityScheme` | `description`, `location` (REQUIRED), `name` (REQUIRED) |
+| `HTTPAuthSecurityScheme` | `description`, `scheme` (REQUIRED), `bearer_format` |
+| `OAuth2SecurityScheme` | `description`, `flows` (`OAuthFlows`, REQUIRED), `oauth2_metadata_url` |
+| `OpenIdConnectSecurityScheme` | `description`, `open_id_connect_url` (REQUIRED) |
+| `MutualTlsSecurityScheme` | `description` |
+
+`OAuthFlows` is itself a five-member oneof, two arms deprecated:
+
+```proto
+message OAuthFlows {
+  oneof flow {
+    AuthorizationCodeOAuthFlow authorization_code = 1;
+    ClientCredentialsOAuthFlow client_credentials = 2;
+    ImplicitOAuthFlow implicit = 3 [deprecated = true];
+    PasswordOAuthFlow password = 4 [deprecated = true];
+    DeviceCodeOAuthFlow device_code = 5;
+  }
+}
+```
+
+| Flow message | Fields |
+|---|---|
+| `AuthorizationCodeOAuthFlow` | `authorization_url` (REQUIRED), `token_url` (REQUIRED), `refresh_url`, `scopes` (`map<string,string>`, REQUIRED), `pkce_required` (bool) |
+| `ClientCredentialsOAuthFlow` | `token_url` (REQUIRED), `refresh_url`, `scopes` (map, REQUIRED) |
+| `ImplicitOAuthFlow` | `authorization_url`, `refresh_url`, `scopes` (map) |
+| `PasswordOAuthFlow` | `token_url`, `refresh_url`, `scopes` (map) |
+| `DeviceCodeOAuthFlow` | `device_authorization_url` (REQUIRED), `token_url` (REQUIRED), `refresh_url`, `scopes` (map, REQUIRED) |
+
+Three things fall out of this subtree that the conversion layer must
+handle and that are easy to miss:
+
+- **Every `scopes` field is a proto map**, so it arrives as
+  `record {|string key; string value;|}[]` (Finding 4d) and must be
+  converted to `types.bal`'s `map<string> scopes`. Five occurrences.
+- **`SecurityRequirement.schemes` is a map to `StringList`**, i.e. a
+  key/value array whose values are themselves single-field wrapper
+  records. Two unwrapping steps, not one.
+- **`OAuthFlows.device_code` exists in the proto.** Task 8's M2 recorded
+  that `types.bal`'s `OAuthFlows` declares only four of the five flows
+  and that `device_code` survives on the JSON bindings as untyped `json`
+  via the open record. That escape hatch **does not exist over gRPC** —
+  the generated records are closed (Finding 4b), so a device-code flow is
+  dropped outright. If M2 is fixed by adding a `DeviceCodeOAuthFlow` type
+  to `types.bal`, this becomes a non-issue for all three bindings at
+  once; until then it is a gRPC-specific data loss, not merely a missing
+  typed accessor.
 
 `Part`'s `raw` is `bytes` on the wire — genuinely binary under protobuf,
 with no base64 step. Task 8's M1 (the untested base64 round-trip
@@ -564,6 +680,13 @@ eleven duplicated method bodies.
   a `stream<StreamResponse, error?>` for a streaming operation — and the
   rename is private-to-`Client`, so it costs nothing.
 
+  **Cross-plan note:** Task 8's spec refers to `openSseStream` by its
+  current name throughout, and correctly so — REST does still use SSE. To
+  keep the two follow-up implementation plans from colliding, the rename
+  lands with whichever binding ships **second**, and the plan that ships
+  first leaves the name alone. Either order works; doing it twice, or
+  doing it first and stranding the other spec's references, does not.
+
 **Auth and headers cross the seam cleanly.** `grpc:ClientConfiguration`
 has its own `auth` field of type
 `grpc:ClientAuthConfig = CredentialsConfig|BearerTokenConfig|JwtIssuerConfig|OAuth2GrantConfig`
@@ -669,7 +792,7 @@ layer gets the same treatment in a new `grpc_binding.bal`:
 | decode (`grpcstub:` → library) | `decodeGrpcPart`, `decodeGrpcMessage`, `decodeGrpcTaskStatus`, `decodeGrpcArtifact`, `decodeGrpcTask`, `decodeGrpcStatusUpdate`, `decodeGrpcArtifactUpdate`, `decodeGrpcSendResult`, `decodeGrpcStreamResponse`, `decodeGrpcPushConfig`, `decodeGrpcListTasksResult`, `decodeGrpcListPushConfigsResult`, `decodeGrpcAgentCard` |
 | shared helpers | `grpcKvToMap` / `mapToGrpcKv` (Finding 4d), `grpcTimestampToString` / `stringToGrpcTimestamp` (4e), `grpcStructToJson` / `jsonToGrpcStruct`, `emptyToNil` (4c) |
 
-Four cross-cutting rules the helpers exist to enforce consistently:
+Five cross-cutting rules the helpers exist to enforce consistently:
 
 1. **`""` decodes to `()`,** for every non-`optional` proto string that
    `types.bal` models as `string?`. Encoding does the reverse — `()`
@@ -683,6 +806,44 @@ Four cross-cutting rules the helpers exist to enforce consistently:
 4. **Enums pass through by name** (Finding 4f) — the one place
    conversion is a genuine no-op, and worth a test asserting it stays
    that way if either enum gains a member.
+5. **`Part.data` crosses a `json` ↔ `anydata` boundary, and the
+   narrowing direction can fail.** This is the arm the
+   `google_protobuf_Value` workaround touches, and it is the riskiest
+   conversion in the layer, so its rule is stated separately from the
+   rest.
+
+   `types.bal` declares `json? data?` (`types.bal:22`); the rewritten
+   stub declares `anydata data?`. The two directions are not symmetric:
+
+   - **Encode (`json` → `anydata`) is total and lossless.** `json` is a
+     strict subtype of `anydata`, so `encodeGrpcPart` assigns directly,
+     with no check and no possibility of failure.
+   - **Decode (`anydata` → `json`) is partial.** `anydata` admits values
+     `json` does not — `xml`, `table`, `byte[]`, tuples, `decimal` in
+     positions `json` disallows, and records that aren't
+     `map<json>`-shaped. `decodeGrpcPart` must therefore attempt
+     `value:cloneWithType(json)` (or equivalent) rather than cast, and
+     **must not** silently coerce.
+
+   **What happens when the narrowing fails.** `decodeGrpcPart` returns
+   an `InvalidAgentResponseError` (code -32006) naming the offending
+   part index and the actual runtime type. Rationale: a `data` value the
+   library cannot represent as `json` *is* an agent response this client
+   cannot honour, which is precisely what -32006 already means on the
+   other two bindings — so no new error type, and callers handle it
+   identically regardless of binding. The rejected alternatives were
+   dropping `data` silently (turns a protocol error into missing user
+   content) and stringifying it (fabricates a value the agent never
+   sent).
+
+   **How likely is the failure in practice?** A well-behaved server
+   sends a `google.protobuf.Value`, whose value space is exactly JSON's
+   — so on the happy path the narrowing always succeeds. The rule exists
+   because the workaround has removed the type system's guarantee that
+   this is what actually arrives: with the field typed `anydata`, nothing
+   in the stub constrains what the marshaller can hand back. Which is the
+   same reason Known limitation 3 exists, viewed from the conversion
+   layer rather than the wire.
 
 `decodeGrpcAgentCard` is the largest single function, because
 `AgentCard.security_schemes` is a key/value array of a five-member
@@ -825,14 +986,36 @@ constrains, and a wrong match is worse than an honest widening.
 
 ## Testing
 
+- **`Part.data` wire round-trip — mandatory, and a gate on the whole
+  `google_protobuf_Value` workaround.** This test must be written and
+  passing *before* any other gRPC work proceeds, because everything else
+  in this design assumes the rewritten stub marshals correctly and
+  nothing so far has demonstrated that (Finding 2, Known limitation 3).
+  Against a real gRPC server or a Ballerina gRPC listener built from the
+  same stub, send a `Part` whose `data` holds each of: a JSON object, a
+  JSON array, a string, a number, a boolean, and `null`; assert each
+  survives the round trip byte-equal. A `Part` with `data` unset must
+  also round-trip, to confirm the rewrite didn't make the field
+  accidentally mandatory. If this test cannot be made to pass, the
+  `anydata` rewrite is not a viable workaround and the codegen strategy
+  in §Design decision 1 must be revisited — most likely by hand-writing
+  a `Value` type into the stub rather than erasing it to `anydata`.
+  Note this is the one test in this list that a pure unit-level mock
+  **cannot** satisfy: the defect is in marshalling against the embedded
+  descriptor, so the protobuf codec has to actually run.
+- **`Part.data` narrowing-failure test** — feed `decodeGrpcPart` an
+  `anydata` value outside `json`'s value space and assert it returns
+  `InvalidAgentResponseError` with the part index named, rather than
+  dropping the field or stringifying it (§Design decision 5, rule 5).
 - **Conversion round-trip tests** — the highest-value block by a wide
   margin, and the cheapest, since they need no server at all. For each
   paired `encodeGrpc*`/`decodeGrpc*`: build a fully-populated
-  `types.bal` value, encode, decode, assert deep equality. Then the four
-  cross-cutting rules from §Design decision 5 get dedicated negative
-  tests: `""`→`()`, all-default nested message→`()`, `time:Utc
-  [0, 0.0d]`→`()` (not the epoch), and key/value-array↔map for
-  `securitySchemes`, `securityRequirements`, and OAuth `scopes`.
+  `types.bal` value, encode, decode, assert deep equality. Then rules 1–4
+  from §Design decision 5 get dedicated negative tests: `""`→`()`,
+  all-default nested message→`()`, `time:Utc [0, 0.0d]`→`()` (not the
+  epoch), and key/value-array↔map for `securitySchemes`,
+  `securityRequirements`, and all five OAuth flows' `scopes`. (Rule 5,
+  `Part.data`, is covered by the two dedicated tests above.)
 - **Enum-parity test** — assert every `Role` and `TaskState` member in
   `types.bal` has an identically-named member in `grpcstub`, so the
   pass-through-by-name assumption fails loudly if either drifts.
@@ -878,11 +1061,30 @@ constrains, and a wrong match is worse than an honest widening.
    §Design decision 6.
 2. **Unknown fields are dropped**, because protobuf-generated records are
    closed. `types.bal`'s open records preserve them on JSON-RPC and REST.
-3. **The stub requires a post-generation rewrite** for
-   `google.protobuf.Value`, which is tool-version-sensitive. Guarded by
-   an assertion in the regeneration script, and worth an upstream bug
-   report.
-4. **The vendored proto is not byte-identical to upstream** (annotations
+3. **`Part.data` over gRPC is unvalidated, and the workaround may not
+   work at all.** The `google_protobuf_Value` → `anydata` rewrite
+   (Finding 2) changes the Ballerina field type while
+   `A2A_DESCRIPTOR_MAP` still declares the field as
+   `google.protobuf.Value` on the wire, so the marshaller receives a type
+   the descriptor does not describe. This compiles — verified — but the
+   wire behaviour has **not** been exercised, and it may serialize
+   incorrectly or panic at runtime on the first `Part` carrying non-nil
+   `data`. Gated by the mandatory round-trip test in §Testing; if that
+   test fails, §Design decision 1's codegen strategy needs revisiting.
+   Only `Part.data` is affected — `text`, `raw`, `url`, `filename`,
+   `media_type`, and `metadata` are untouched by the rewrite.
+4. **The post-generation rewrite is tool-version-sensitive.** It is a
+   textual rewrite of tool output and will silently stop applying if a
+   future `bal grpc` emits a proper type. Guarded by an
+   exactly-2-occurrences assertion in the regeneration script, and worth
+   an upstream bug report.
+5. **`OAuthFlows.device_code` is dropped over gRPC.** Task 8's M2 noted
+   `types.bal`'s `OAuthFlows` omits the device-code flow but that it
+   survives as untyped `json` on the JSON bindings via the open record.
+   Closed generated records remove that escape hatch, so on gRPC the flow
+   is lost outright. Fixed for all three bindings at once by adding a
+   `DeviceCodeOAuthFlow` type to `types.bal`.
+6. **The vendored proto is not byte-identical to upstream** (annotations
    stripped), so drift detection is by recorded SHA rather than by
    direct diff.
-5. **v0.3 over gRPC is unsupported**, by construction.
+7. **v0.3 over gRPC is unsupported**, by construction.
