@@ -146,6 +146,76 @@ function testPrimaryUrlErrorsWhenNeitherIsSet() {
 }
 
 @test:Config {}
+function testSelectInterfaceFindsJsonRpcByDefault() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", tenant: "acme"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card);
+    test:assertEquals(iface.url, "http://jsonrpc.example");
+    test:assertEquals(iface?.tenant, "acme");
+}
+
+@test:Config {}
+function testSelectInterfaceFindsHttpJsonWhenPreferred() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"},
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON", tenant: "acme-rest"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card, "HTTP+JSON");
+    test:assertEquals(iface.url, "http://rest.example");
+    test:assertEquals(iface?.tenant, "acme-rest");
+}
+
+@test:Config {}
+function testSelectInterfaceErrorsWhenNoMatchAndNoLegacyUrl() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    AgentInterface|error result = selectInterface(card, "HTTP+JSON");
+    test:assertTrue(result is error, "no HTTP+JSON interface and no legacy url should error, not silently fall back to a JSONRPC endpoint");
+}
+
+@test:Config {}
+function testPrimaryUrlDefaultsToJsonRpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON"},
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    string url = check primaryUrl(card);
+    test:assertEquals(url, "http://jsonrpc.example", "primaryUrl with no argument must keep resolving JSONRPC, unchanged from today");
+}
+
+@test:Config {}
+function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        url: "http://legacy.example",
+        supportedInterfaces: [],
+        skills: []
+    };
+    AgentInterface|error restResult = selectInterface(card, "HTTP+JSON");
+    test:assertTrue(restResult is error, "a pre-v1.0 card's legacy url field predates HTTP+JSON entirely and must not be treated as a REST endpoint");
+    string jsonRpcUrl = check primaryUrl(card);
+    test:assertEquals(jsonRpcUrl, "http://legacy.example");
+}
+
+@test:Config {}
 function testSendMessageHappyPath() returns error? {
     setNextJsonResponse({
         jsonrpc: "2.0",

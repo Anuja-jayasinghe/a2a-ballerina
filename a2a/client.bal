@@ -173,30 +173,59 @@ public isolated function resolveAgentCardCached(
     return {card: <AgentCard>result.card, etag: result.etag};
 }
 
+# The A2A transport bindings this library can speak.
+public type TransportBinding "JSONRPC"|"HTTP+JSON";
+
+# Resolves the whole matched AgentInterface for a preferred binding, not
+# just its url — callers need the interface's own tenant and
+# protocolVersion, which must come from the same entry the url did, not
+# be independently re-derived (a card can list several interfaces with
+# different tenant/version values).
+#
+# + card - the agent card to read the endpoint from
+# + preferredBinding - which transport binding to look for; defaults to
+#                      "JSONRPC", preserving every existing single-binding
+#                      caller's behavior unchanged
+# + return - the first supportedInterfaces entry declaring the matching
+#            protocolBinding, or an error if none exists. The legacy
+#            top-level url field is never treated as a match for
+#            "HTTP+JSON" — it predates that binding entirely — so only
+#            "JSONRPC" callers fall back to it (see primaryUrl)
+public isolated function selectInterface(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
+    foreach AgentInterface iface in card.supportedInterfaces {
+        if iface.protocolBinding == preferredBinding {
+            return iface;
+        }
+    }
+    return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces`);
+}
+
 # Resolves the URL to construct a Client against, per v1.0's removal of
 # AgentCard.url as a required field.
 #
-# This Client only ever speaks the JSON-RPC binding on the wire, so among
-# supportedInterfaces it looks specifically for a "JSONRPC" entry rather
-# than blindly taking index 0 — a card listing e.g. a GRPC interface first
-# would otherwise resolve to an endpoint this Client can't actually talk
-# to, then fail non-obviously on the first request instead of here.
-#
 # + card - the agent card to read the endpoint from
-# + return - the first supportedInterfaces entry declaring the "JSONRPC"
-#            protocolBinding, the legacy url field if no such entry
+# + preferredBinding - which transport binding to resolve a URL for;
+#                      defaults to "JSONRPC", preserving every existing
+#                      caller's behavior unchanged
+# + return - the matching supportedInterfaces entry's url, the legacy url
+#            field if preferredBinding is "JSONRPC" and no such entry
 #            exists, or an error if neither is present
-public isolated function primaryUrl(AgentCard card) returns string|error {
-    foreach AgentInterface iface in card.supportedInterfaces {
-        if iface.protocolBinding == "JSONRPC" {
-            return iface.url;
+public isolated function primaryUrl(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns string|error {
+    AgentInterface|error iface = selectInterface(card, preferredBinding);
+    if iface is AgentInterface {
+        return iface.url;
+    }
+    if preferredBinding == "JSONRPC" {
+        string? legacyUrl = card?.url;
+        if legacyUrl is string {
+            return legacyUrl;
         }
     }
-    string? legacyUrl = card?.url;
-    if legacyUrl is string {
-        return legacyUrl;
-    }
-    return error("AgentCard has no JSONRPC entry in supportedInterfaces and no legacy url field");
+    return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
 }
 
 # An A2A protocol client for calling remote agents.
