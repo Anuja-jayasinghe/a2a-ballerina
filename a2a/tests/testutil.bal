@@ -23,23 +23,37 @@ public isolated function getServerBaseUrl() returns string {
 
 listener http:Listener mockListener = check new (19199);
 
+// ETag value for the default mock Agent Card
+final string DEFAULT_MOCK_CARD_ETAG = "\"default-card-v1\"";
+
 type MockRpcScript record {|
     json jsonBody = {};
     int statusCode = 200;
     http:SseEvent[] sseEvents = [];
     boolean isSse = false;
     decimal delaySeconds = 0;
+    string? extensionsHeader = ();
+    // When true, the SSE response ends the scripted events with a genuine
+    // stream error instead of a clean end-of-stream — simulating a dropped
+    // connection (as opposed to sseEvents simply running out, which the
+    // underlying HTTP response framing surfaces as a normal, error-free
+    // stream end). Used to exercise ReconnectingStreamGenerator's
+    // reconnect-on-error path, which must NOT trigger on a clean close.
+    boolean simulateDropError = false;
 |};
 
 type MockWellKnownScript record {|
     boolean hasOverride = false;
     json overrideBody = {};
     int overrideStatus = 200;
+    string? etag = ();
+    int? conditionalStatus = ();
 |};
 
 isolated MockRpcScript rpcScript = {};
 isolated MockWellKnownScript wellKnownScript = {};
 isolated json lastRequestBody = {};
+isolated map<string> lastRequestHeaders = {};
 
 # Returns the JSON body of the last request the mock JSON-RPC endpoint
 # received, so tests can assert on what the Client actually sent on the
@@ -52,22 +66,77 @@ public isolated function getLastRequestBody() returns json {
     }
 }
 
+# Returns the headers of the last request the mock JSON-RPC endpoint
+# received, so tests can assert on outbound headers (e.g. A2A-Extensions).
+# Keys are lowercased, since the wire casing of header names varies with
+# HTTP protocol negotiation on this connection (see the capture site for
+# details) -- callers should look up headers by their lowercase name.
+#
+# + return - the last received request's headers, keyed by lowercase header name
+public isolated function getLastRequestHeaders() returns map<string> {
+    lock {
+        return lastRequestHeaders.clone();
+    }
+}
+
 # Scripts the next JSON-RPC request to receive a plain JSON response.
 #
 # + body - the JSON body to respond with
 # + statusCode - the HTTP status code to respond with
-public isolated function setNextJsonResponse(json body, int statusCode = 200) {
+# + extensionsHeader - optional A2A-Extensions header value to set on the response
+public isolated function setNextJsonResponse(json body, int statusCode = 200, string? extensionsHeader = ()) {
     lock {
-        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0};
+        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0, extensionsHeader};
     }
 }
 
 # Scripts the next JSON-RPC request to receive an SSE stream response.
 #
 # + events - the canned SSE events to stream back
-public isolated function setNextSseResponse(http:SseEvent[] events) {
+# + extensionsHeader - optional A2A-Extensions header value to set on the response
+public isolated function setNextSseResponse(http:SseEvent[] events, string? extensionsHeader = ()) {
     lock {
-        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0};
+        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, extensionsHeader};
+    }
+}
+
+# Scripts the next JSON-RPC request to receive an SSE stream that plays the
+# given events and then ends with a genuine stream error, simulating a
+# dropped connection — distinct from setNextSseResponse, whose events
+# simply running out produces a normal, error-free stream end (proven by
+# testSendMessageStreamPausesAtInputRequiredThenResumes). Used to exercise
+# the reconnect-on-error path of automatic SSE reconnection.
+#
+# + events - the canned SSE events to stream back before the simulated drop
+public isolated function setNextSseResponseThenDrop(http:SseEvent[] events) {
+    lock {
+        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, simulateDropError: true};
+    }
+}
+
+# A synthetic SSE source that replays a fixed list of events, then yields a
+# stream error instead of ending cleanly — used by
+# setNextSseResponseThenDrop to simulate a dropped connection at the wire
+# level, since a plain array-backed stream (events.toStream()) has no way
+# to end with anything but a clean, error-free close.
+isolated class DropAfterEventsGenerator {
+    private final http:SseEvent[] & readonly events;
+    private int idx = 0;
+
+    isolated function init(http:SseEvent[] events) {
+        self.events = events.cloneReadOnly();
+    }
+
+    public isolated function next() returns record {| http:SseEvent value; |}|error? {
+        int i;
+        lock {
+            i = self.idx;
+            self.idx += 1;
+        }
+        if i >= self.events.length() {
+            return error("simulated connection drop");
+        }
+        return {value: self.events[i]};
     }
 }
 
@@ -92,9 +161,90 @@ public isolated function setWellKnownOverride(json? body, int statusCode = 200) 
         if body is () {
             wellKnownScript = {};
         } else {
-            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode};
+            // Preserve existing ETag and conditionalStatus when setting override
+            string? existingEtag = wellKnownScript.etag;
+            int? existingConditional = wellKnownScript.conditionalStatus;
+            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode, etag: existingEtag, conditionalStatus: existingConditional};
         }
     }
+}
+
+# Sets the ETag value for well-known endpoint responses, enabling conditional
+# request testing.
+#
+# + etagValue - the ETag value to include in responses (e.g., "\"v1\"")
+public isolated function setWellKnownETag(string etagValue) {
+    lock {
+        wellKnownScript.etag = etagValue;
+    }
+}
+
+# Sets the HTTP status code for a conditional well-known response when an
+# If-None-Match header is present and matches the scripted ETag.
+#
+# + statusCode - the HTTP status code to respond with (typically 304)
+public isolated function setWellKnownConditionalOverride(int statusCode) {
+    lock {
+        wellKnownScript.conditionalStatus = statusCode;
+    }
+}
+
+# A minimal, valid Task JSON body, for tests that don't care about the
+# task's contents and just need something that decodes successfully.
+#
+# + return - a minimal Task's JSON representation
+public isolated function defaultTaskJson() returns json {
+    return {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}};
+}
+
+# Builds a Task JSON body with the specified task ID and state, wrapped in a
+# JSON-RPC response envelope for use with setNextJsonResponse().
+#
+# + taskId - the task identifier to stamp on the task
+# + state - the TaskState string value (e.g. "TASK_STATE_FAILED")
+# + return - the JSON-RPC response body with the task
+public isolated function taskJsonWithState(string taskId, string state) returns json {
+    return {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: taskId, status: {state: state}}
+    };
+}
+
+# Builds a JSON-RPC-enveloped {"task": {...}} SSE data payload — the shape
+# a real sendMessageStream response opens with per specification section
+# 3.1.1 (the stream opens with a Task or a Message, then delivers zero or
+# more status/artifact update events).
+#
+# + taskId - the task identifier to stamp on the task
+# + state - the TaskState string value (e.g. "TASK_STATE_SUBMITTED")
+# + return - the SSE event's `data:` field content
+public isolated function taskJson(string taskId, string state = "TASK_STATE_SUBMITTED") returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"task":{"id":"${taskId}","status":{"state":"${state}"}}}}`;
+}
+
+# Builds a JSON-RPC-enveloped {"message": {...}} SSE data payload — the
+# other valid shape sendMessageStream can open with per specification
+# section 3.1.1: a plain conversational reply with no task. Used to
+# exercise the no-op reconnect-wrapping path, since a bare Message carries
+# no taskId to resubscribe with.
+#
+# + messageId - the message identifier to stamp on the reply
+# + return - the SSE event's `data:` field content
+public isolated function messageJson(string messageId) returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"message":{"messageId":"${messageId}","role":"ROLE_AGENT","parts":[{"text":"a direct reply"}]}}}`;
+}
+
+# Builds a JSON-RPC-enveloped TaskStatusUpdateEvent SSE data payload, for
+# tests scripting a status-update SSE event without repeating the envelope
+# shape inline (follows the same {"jsonrpc":"2.0","id":"1","result":{...}}
+# envelope other tests in client_test.bal construct by hand).
+#
+# + taskId - the task identifier to stamp on the status update
+# + state - the TaskState string value (e.g. "TASK_STATE_WORKING")
+# + return - the SSE event's `data:` field content
+public isolated function statusUpdateJson(string taskId, string state) returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"${taskId}","contextId":"ctx-1","status":{"state":"${state}"}}}}`;
 }
 
 isolated function defaultMockAgentCard() returns json {
@@ -142,10 +292,30 @@ isolated function respondIgnoringClientGoneAway(http:Caller caller, http:Respons
 }
 
 service / on mockListener {
-    resource function get \.well\-known/agent\-card\.json(http:Caller caller) returns error? {
+    resource function get \.well\-known/agent\-card\.json(http:Caller caller, http:Request req) returns error? {
         MockWellKnownScript wk;
         lock {
             wk = wellKnownScript.clone();
+        }
+
+        // Ensure default card has an ETag for conditional requests
+        string etag;
+        if wk.etag is string {
+            etag = <string>wk.etag;
+        } else if !wk.hasOverride {
+            etag = DEFAULT_MOCK_CARD_ETAG;
+        } else {
+            etag = "";
+        }
+
+        // Check for conditional request (If-None-Match header)
+        string|http:HeaderNotFoundError ifNoneMatch = req.getHeader("If-None-Match");
+        if ifNoneMatch is string && wk.conditionalStatus is int && etag.length() > 0 && ifNoneMatch == etag {
+            // Send conditional response (typically 304 Not Modified)
+            http:Response res = new;
+            res.statusCode = <int>wk.conditionalStatus;
+            check caller->respond(res);
+            return;
         }
 
         http:Response res = new;
@@ -156,6 +326,9 @@ service / on mockListener {
             res.statusCode = 200;
             res.setJsonPayload(defaultMockAgentCard());
         }
+        if etag.length() > 0 {
+            res.setHeader("ETag", etag);
+        }
         check caller->respond(res);
     }
 
@@ -163,6 +336,32 @@ service / on mockListener {
         json body = check req.getJsonPayload();
         lock {
             lastRequestBody = body.clone();
+        }
+
+        // Header names are case-insensitive per HTTP semantics, but this
+        // connection's actual wire casing varies with protocol negotiation.
+        // Confirmed by logging req.getHeaderNames() directly: the client's
+        // http:ClientConfiguration defaults httpVersion to "2.0" with
+        // http2PriorKnowledge false (ballerina/http's own defaults -- not
+        // anything this repo configures), so the first request on a fresh
+        // connection is a plaintext HTTP/1.1 request carrying `Upgrade:
+        // h2c`/`HTTP2-Settings` and preserves the sender's original header
+        // casing (e.g. "A2A-Extensions"), while every subsequent request
+        // reusing that same pooled, now-upgraded connection is real HTTP/2
+        // framing, which came through with all-lowercase header names
+        // (e.g. "a2a-extensions") -- consistent with HTTP/2 requiring
+        // lowercase header field names on the wire. Normalizing to
+        // lowercase here makes header assertions stable regardless of
+        // which of those two cases a given test's request happens to hit.
+        map<string> headers = {};
+        foreach string headerName in req.getHeaderNames() {
+            string|http:HeaderNotFoundError headerValue = req.getHeader(headerName);
+            if headerValue is string {
+                headers[headerName.toLowerAscii()] = headerValue;
+            }
+        }
+        lock {
+            lastRequestHeaders = headers.clone();
         }
 
         MockRpcScript script;
@@ -179,11 +378,24 @@ service / on mockListener {
             // to 201; the Client checks for exactly 200, so set it explicitly.
             http:Response res = new;
             res.statusCode = 200;
-            res.setPayload(script.sseEvents.toStream());
+            string? extHeader = script.extensionsHeader;
+            if extHeader is string {
+                res.setHeader("A2A-Extensions", extHeader);
+            }
+            if script.simulateDropError {
+                stream<http:SseEvent, error?> dropStream = new (new DropAfterEventsGenerator(script.sseEvents));
+                res.setPayload(dropStream);
+            } else {
+                res.setPayload(script.sseEvents.toStream());
+            }
             respondIgnoringClientGoneAway(caller, res);
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;
+            string? extHeader = script.extensionsHeader;
+            if extHeader is string {
+                res.setHeader("A2A-Extensions", extHeader);
+            }
             res.setJsonPayload(script.jsonBody);
             respondIgnoringClientGoneAway(caller, res);
         }

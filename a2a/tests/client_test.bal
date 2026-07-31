@@ -215,6 +215,126 @@ function testSendMessageOmitsRequestLevelMetadataWhenUnset() returns error? {
     test:assertFalse(paramsMap.hasKey("metadata"), "request-level metadata should be absent when the caller didn't set it");
 }
 
+@test:Config {}
+function testSendMessageSendsRequestedExtensionsHeader() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a", "urn:example:ext-b"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    map<string> headers = getLastRequestHeaders();
+    test:assertEquals(headers["a2a-extensions"], "urn:example:ext-a,urn:example:ext-b");
+}
+
+@test:Config {}
+function testClientInitAutoWiresApiKeyHeaderFromAgentCard() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
+        capabilities: {},
+        securitySchemes: {
+            "apiKeyAuth": {'type: "apiKey", 'in: "header", name: "X-Api-Key"}
+        },
+        securityRequirements: [{"apiKeyAuth": []}],
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(), agentCard = card, credentials = {"apiKeyAuth": "secret-123"});
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    map<string> headers = getLastRequestHeaders();
+    test:assertEquals(headers["x-api-key"], "secret-123");
+}
+
+@test:Config {}
+function testClientInitDoesNotLeakAuthAcrossSharedConfig() returns error? {
+    // Regression test: Client.init must not mutate the caller's own
+    // clientConfig/headers in place. Two Client.init calls sharing the
+    // same base variables must each resolve their own auth independently
+    // — e.g. constructing several agent clients in a loop from one shared
+    // base config must not leak the first call's resolved auth into the
+    // second.
+    http:ClientConfiguration sharedConfig = {};
+    map<string> sharedHeaders = {};
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
+        capabilities: {},
+        securitySchemes: {"bearerAuth": {'type: "http", scheme: "Bearer"}},
+        securityRequirements: [{"bearerAuth": []}],
+        skills: []
+    };
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    Client c1 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = sharedHeaders,
+            agentCard = card, credentials = {"bearerAuth": "tok-1"});
+    Task|Message _ = check c1->sendMessage(msg);
+    map<string> headers1 = getLastRequestHeaders();
+    test:assertEquals(headers1["authorization"], "Bearer tok-1");
+
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    Client c2 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = sharedHeaders,
+            agentCard = card, credentials = {"bearerAuth": "tok-2"});
+    Task|Message _ = check c2->sendMessage(msg);
+    map<string> headers2 = getLastRequestHeaders();
+    test:assertEquals(headers2["authorization"], "Bearer tok-2",
+            "a second Client.init sharing the same base clientConfig/headers variables should resolve its own auth independently, not inherit the first Client's");
+
+    test:assertTrue(sharedConfig.auth is (), "Client.init must not mutate the caller's own clientConfig in place");
+    test:assertEquals(sharedHeaders.length(), 0, "Client.init must not mutate the caller's own headers map in place");
+}
+
+@test:Config {}
+function testClientInitPreservesCallerSuppliedAuthAndHeaderOverAutoWired() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
+        capabilities: {},
+        securitySchemes: {
+            "apiKeyAuth": {'type: "apiKey", 'in: "header", name: "X-Api-Key"},
+            "bearerAuth": {'type: "http", scheme: "Bearer"}
+        },
+        securityRequirements: [{"apiKeyAuth": [], "bearerAuth": []}],
+        skills: []
+    };
+    Client c = check new (getServerBaseUrl(),
+            clientConfig = {auth: {token: "explicit-tok"}},
+            headers = {"X-Api-Key": "explicit-key"},
+            agentCard = card,
+            credentials = {"apiKeyAuth": "auto-key", "bearerAuth": "auto-tok"});
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+
+    map<string> headers = getLastRequestHeaders();
+    test:assertEquals(headers["authorization"], "Bearer explicit-tok",
+            "an explicit clientConfig.auth should win over buildAuthFromCard's resolved auth");
+    test:assertEquals(headers["x-api-key"], "explicit-key",
+            "an explicit headers entry should win over buildAuthFromCard's resolved header");
+}
+
+@test:Config {}
+function testSendMessageCapturesGrantedExtensionsFromResponse() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}}, extensionsHeader = "urn:example:ext-a");
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a"]);
+}
+
+@test:Config {}
+function testSendMessageStreamCapturesGrantedExtensionsFromResponse() returns error? {
+    http:SseEvent[] minimalSseResponse = [
+        {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-ext","contextId":"ctx-ext","status":{"state":"TASK_STATE_WORKING"}}}}`}
+    ];
+    setNextSseResponse(minimalSseResponse, extensionsHeader = "urn:example:ext-a,urn:example:ext-b");
+    Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a", "urn:example:ext-b"]);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+    check closeIfStream(events);
+
+    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a", "urn:example:ext-b"]);
+}
+
 # The real reference server's SendMessage response wraps the payload —
 # {"result": {"task": {...}}} or {"result": {"message": {...}}} — never a
 # flat Task/Message. The happy-path test above only ever exercised the
@@ -377,6 +497,30 @@ function testGetTaskNotFoundErrorMapping() returns error? {
 
     test:assertTrue(result is error, "an unknown task should surface as an error");
     test:assertTrue(result is TaskNotFoundError, "code -32001 should map to TaskNotFoundError");
+}
+
+@test:Config {}
+function testGetTaskReturnsFailedState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-x", "TASK_STATE_FAILED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-x");
+    test:assertEquals(task.status.state, TASK_STATE_FAILED);
+}
+
+@test:Config {}
+function testGetTaskReturnsRejectedState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-y", "TASK_STATE_REJECTED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-y");
+    test:assertEquals(task.status.state, TASK_STATE_REJECTED);
+}
+
+@test:Config {}
+function testGetTaskReturnsAuthRequiredState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-z", "TASK_STATE_AUTH_REQUIRED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-z");
+    test:assertEquals(task.status.state, TASK_STATE_AUTH_REQUIRED);
 }
 
 @test:Config {}
@@ -853,6 +997,33 @@ function testListTasksOmitsUnsetFilterFields() returns error? {
     test:assertFalse(paramsMap.hasKey("pageSize"), "pageSize should be absent when no filter is passed");
 }
 
+@test:Config {}
+function testListTasksSendsAllFilterFields() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {tasks: [], nextPageToken: "", pageSize: 0, totalSize: 0}
+    });
+    Client c = check new (getServerBaseUrl());
+    ListTasksResult _ = check c->listTasks(filter = {
+        contextId: "ctx-1",
+        status: TASK_STATE_WORKING,
+        pageSize: 10,
+        pageToken: "cursor-abc",
+        historyLength: 5,
+        statusTimestampAfter: "2026-01-01T00:00:00Z",
+        includeArtifacts: true
+    });
+    json body = getLastRequestBody();
+    map<json> params = check (check body.params).ensureType();
+    test:assertEquals(params["contextId"], "ctx-1");
+    test:assertEquals(params["status"], "TASK_STATE_WORKING");
+    test:assertEquals(params["pageSize"], 10);
+    test:assertEquals(params["pageToken"], "cursor-abc");
+    test:assertEquals(params["historyLength"], 5);
+    test:assertEquals(params["statusTimestampAfter"], "2026-01-01T00:00:00Z");
+    test:assertEquals(params["includeArtifacts"], true);
+}
+
 # ListTasks has no v0.3 equivalent (confirmed "(NEW)" in the migration
 # table) — a V0_3-mode Client must fail client-side with
 # VersionNotSupportedError before making any network call, per §3.6.3's
@@ -1272,4 +1443,267 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
     test:assertEquals(card.signatures[0].protected, "eyJhbGciOiJSUzI1NiJ9");
     test:assertEquals(card.skills[0].securityRequirements.length(), 1);
     test:assertEquals(card.skills[0].securityRequirements[0], {"oauth": ["write"]});
+}
+
+@test:Config {}
+function testResolveAgentCardHonors304() returns error? {
+    setWellKnownOverride(defaultMockAgentCard(), 200);
+    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
+    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
+    test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
+
+    setWellKnownConditionalOverride(304);
+    // Deliberately re-script the well-known endpoint to serve a DIFFERENT
+    // card body (a different name) while the conditional-304 logic stays
+    // active (setWellKnownOverride preserves the existing ETag and
+    // conditionalStatus). If the client failed to send If-None-Match — or
+    // if it did but then didn't correctly reuse the cached body — the mock
+    // would serve this different, fresh 200 body instead of a genuine 304,
+    // and `second.card` would end up equal to this different card rather
+    // than the original. Only a real conditional round-trip (If-None-Match
+    // sent, genuine 304 received, cached body reused) makes this test pass.
+    json differentCard = defaultMockAgentCard();
+    map<json> differentCardMap = <map<json>>differentCard;
+    differentCardMap["name"] = "A Completely Different Mock Agent";
+    setWellKnownOverride(differentCardMap, 200);
+
+    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
+    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached (original) card unchanged, not the newly-scripted different body");
+    test:assertNotEquals(second.card.name, differentCardMap["name"], "a genuine 304 must never surface the newly-scripted different card body");
+
+    setWellKnownOverride(());
+}
+
+@test:Config {}
+function testResolveAgentCardReturnsErrorOn304() returns error? {
+    // Regression test: resolveAgentCard (non-cached) should never panic on 304.
+    // If a non-compliant server sends 304 to an unconditional GET, it should
+    // be treated as a non-200 error and return a typed A2AInternalError, not panic.
+    setWellKnownOverride(defaultMockAgentCard(), 304);
+
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+
+    setWellKnownOverride(());
+
+    test:assertTrue(result is error, "resolveAgentCard should return an error on 304, not panic");
+    test:assertTrue(result is A2AInternalError, "304 should map to A2AInternalError for unconditional requests");
+}
+
+@test:Config {}
+function testSendMessageStreamReconnectsOnDrop() returns error? {
+    // First script: the opening Task event (sendMessageStream's wrapping
+    // only kicks in once a task exists to resubscribe to — see Step 4 of
+    // the design), then a WORKING status, then an abrupt close — scripted
+    // via setNextSseResponseThenDrop, which ends the scripted events with
+    // a genuine stream error rather than a clean end-of-stream. A plain
+    // setNextSseResponse([...]) running out of events is NOT equivalent:
+    // that produces a normal, error-free stream close (see
+    // testSendMessageStreamPausesAtInputRequiredThenResumes), which must
+    // NOT trigger a reconnect — only a real transport error should.
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-1")},
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response (what subscribeToTask will receive)
+    // before pulling the next value — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse third = check expectValue(s.next());
+    test:assertEquals(third?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+# Regression guard: maxReconnectAttempts defaults to 0, which must preserve
+# today's exact pre-reconnect behavior — a dropped stream surfaces its
+# error immediately to the caller, with no reconnect attempted. Proves the
+# feature is truly opt-in, not silently on by default.
+@test:Config {}
+function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-1")},
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl());
+    Message msg = {messageId: "m2", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script what a reconnect *would* receive, to prove it is never called:
+    // if a reconnect happened despite maxReconnectAttempts being 0, this
+    // scripted COMPLETED event would be returned instead of the error.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_COMPLETED")}
+    ]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "with maxReconnectAttempts = 0 (the default), a dropped stream should surface its error immediately, not reconnect");
+}
+
+# Edge case called out explicitly in the design: a bare Message (no task)
+# as sendMessageStream's first event carries nothing to resubscribe with,
+# so wrapping must be a no-op even when maxReconnectAttempts > 0 — a
+# dropped connection after a Message-only reply surfaces its error
+# immediately, exactly like the maxReconnectAttempts = 0 case, rather than
+# attempting (and failing) to call subscribeToTask with no taskId.
+@test:Config {}
+function testSendMessageStreamDoesNotReconnectAfterBareMessage() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: messageJson("reply-1")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m5", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.message is Message, "first event should be the bare Message reply");
+
+    // Script what a reconnect *would* receive, to prove it is never
+    // called: if a reconnect were attempted despite there being no taskId
+    // to resubscribe with, this scripted event would surface instead of
+    // the drop's error.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-should-not-exist", "TASK_STATE_COMPLETED")}
+    ]);
+    record {| StreamResponse value; |}|error? second = s.next();
+    test:assertTrue(second is error, "a bare Message first event has no task to resubscribe to, so a dropped connection should surface its error immediately, not reconnect");
+}
+
+# subscribeToTask is the reconnect primitive ReconnectingStreamGenerator
+# calls internally, but its own wrapping (simpler than
+# sendMessageStream's — the taskId is already the input parameter, no
+# peeking needed) had no direct coverage; this exercises it in isolation,
+# not just as a side effect of sendMessageStream's reconnect.
+@test:Config {}
+function testSubscribeToTaskReconnectsOnDrop() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: statusUpdateJson("task-7", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-7");
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-7", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+# Regression test for a real bug caught during review: on reconnect,
+# ReconnectingStreamGenerator used to call
+# self.a2aClient.openTaskSubscriptionStream(self.taskId) with no tenant
+# argument, so a reconnect always fell back to the client-level default
+# tenant (or no tenant at all) — even when the originating
+# subscribeToTask(id, tenant = "x") call specified a per-call tenant
+# override. In a multi-tenant deployment this silently resubscribes under
+# the wrong tenant after a drop. This client is constructed with NO
+# client-level default tenant, and the originating call passes a per-call
+# tenant override; the mock's captured request body on the reconnect must
+# still carry that same per-call tenant, not omit it or substitute a
+# different one.
+@test:Config {}
+function testSubscribeToTaskReconnectPreservesPerCallTenant() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: statusUpdateJson("task-10", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-10", tenant = "acme-corp");
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-10", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.tenant, "acme-corp", "reconnect must resubscribe using the originating call's per-call tenant override, not the client-level default (or no tenant)");
+}
+
+# Proves attempt exhaustion actually surfaces the final error to the
+# caller, rather than retrying indefinitely or swallowing it: with
+# maxReconnectAttempts = 1, a second consecutive drop (the resubscribed
+# stream itself failing immediately) must exhaust the single allotted
+# attempt and return that second drop's error, not silently retry again.
+@test:Config {}
+function testSendMessageStreamGivesUpAfterExhaustingReconnectAttempts() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-8")},
+        {'event: "message", data: statusUpdateJson("task-8", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m6", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the resubscribe's response to fail immediately (no events at
+    // all before the drop) — the single reconnect attempt succeeds in
+    // opening a new stream, but that stream itself then drops right away,
+    // with no attempts left to retry again.
+    setNextSseResponseThenDrop([]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "a second consecutive drop after the single allotted reconnect attempt should surface as an error, not retry again or hang");
+}
+
+# Regression test for a real bug caught during review: ReconnectingStreamGenerator
+# used to reconnect by calling the *public* subscribeToTask remote function,
+# which wraps its own returned stream in a brand-new
+# ReconnectingStreamGenerator with a fresh attemptsUsed = 0 and the full
+# maxReconnectAttempts budget every time. Since each reconnect attempt
+# went through that same public, budget-resetting path, the attempt count
+# was silently reset on every single reconnect — against a mock (or
+# agent) that fails every single reconnect attempt, not just once,
+# reconnection never actually exhausted and recursed effectively without
+# bound (confirmed to hang indefinitely before the fix, extracting the raw
+# openTaskSubscriptionStream helper in client.bal). This scripts a target
+# that keeps failing every reconnect attempt (not just the first) with
+# maxReconnectAttempts = 2, so a persistently-unreachable agent must still
+# give up after exactly 2 reconnect attempts, quickly, not hang.
+@test:Config {}
+function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-9")},
+        {'event: "message", data: statusUpdateJson("task-9", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 2);
+    Message msg = {messageId: "m7", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // From here on the mock keeps replaying this same "drop immediately"
+    // script for every subsequent request — including both reconnect
+    // attempts the generator will make — simulating a target that is
+    // persistently failing, not just failing once.
+    setNextSseResponseThenDrop([]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "with every reconnect attempt failing, both allotted attempts should be exhausted and the error surfaced, not recurse indefinitely");
 }

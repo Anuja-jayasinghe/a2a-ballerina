@@ -35,10 +35,18 @@ function testPartUrlVariantRoundTrip() returns error? {
 }
 
 @test:Config {}
-function testPartDataVariantRoundTrip() returns error? {
-    Part original = {data: {temperature: 29, condition: "partly cloudy"}};
-    Part decoded = check original.toJson().cloneWithType(Part);
+function testPartFileVariantRoundTrip() returns error? {
+    Part original = {raw: "hello".toBytes(), filename: "greeting.txt", mediaType: "text/plain"};
+    json encoded = original.toJson();
+    Part decoded = check encoded.cloneWithType(Part);
+    test:assertEquals(decoded, original);
+}
 
+@test:Config {}
+function testPartDataVariantRoundTrip() returns error? {
+    Part original = {data: {"key": "value", "count": 3}, mediaType: "application/json"};
+    json encoded = original.toJson();
+    Part decoded = check encoded.cloneWithType(Part);
     test:assertEquals(decoded, original);
     test:assertTrue(decoded?.text is (), "text should be nil for a data Part");
     test:assertTrue(decoded?.raw is (), "raw should be nil for a data Part");

@@ -71,8 +71,51 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
     return card;
 }
 
+# Internal helper that fetches and parses an Agent Card with optional
+# conditional-request support. Shared by resolveAgentCard and
+# resolveAgentCardCached.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers, for API key authentication
+# + conditionalEtag - Optional ETag value to send in If-None-Match header
+# + return - A tuple of {card?, etag, notModified} where card is nil for 304
+#            responses, or an error
+isolated function fetchAgentCardWithCaching(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig,
+        map<string> headers,
+        string? conditionalEtag = ()) returns record {|AgentCard? card; string? etag; boolean notModified;|}|error {
+    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    map<string> reqHeaders = {"A2A-Version": "1.0"};
+    foreach [string, string] [k, v] in headers.entries() {
+        reqHeaders[k] = v;
+    }
+    if conditionalEtag is string {
+        reqHeaders["If-None-Match"] = conditionalEtag;
+    }
+    http:Response resp = check discoveryClient->get(
+        "/.well-known/agent-card.json", reqHeaders
+    );
+    if resp.statusCode == 304 && conditionalEtag is string {
+        return {card: (), etag: conditionalEtag, notModified: true};
+    }
+    if resp.statusCode != 200 {
+        return error A2AInternalError(
+            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
+            code = resp.statusCode
+        );
+    }
+    json body = check resp.getJsonPayload();
+    AgentCard card = check parseAgentCardBody(body);
+    string|http:HeaderNotFoundError etagHeader = resp.getHeader("ETag");
+    return {card, etag: etagHeader is string ? etagHeader : (), notModified: false};
+}
+
 # Fetches and parses a remote agent's Agent Card from its well-known
 # endpoint.
+#
+# For cache-aware fetching with HTTP 304 support, see resolveAgentCardCached.
 #
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
@@ -82,22 +125,52 @@ public isolated function resolveAgentCard(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
         map<string> headers = {}) returns AgentCard|error {
-    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
-    map<string> reqHeaders = {"A2A-Version": "1.0"};
-    foreach [string, string] [k, v] in headers.entries() {
-        reqHeaders[k] = v;
+    record {|AgentCard? card; string? etag; boolean notModified;|} result =
+        check fetchAgentCardWithCaching(agentBaseUrl, clientConfig, headers);
+    return <AgentCard>result.card;
+}
+
+# An AgentCard together with the HTTP caching metadata needed to make a
+# conditional follow-up request.
+public type CachedAgentCard record {|
+    # The parsed AgentCard
+    AgentCard card;
+    # The ETag header value from the response, if any, for use in conditional requests
+    string? etag;
+|};
+
+# Fetches an agent's Agent Card, reusing a previous fetch's body when the
+# server confirms nothing changed (HTTP 304), per standard HTTP caching —
+# resolveAgentCard's original per-call fetch was always correct but never
+# cheap; this adds the standard conditional-GET optimization on top without
+# changing resolveAgentCard's own behavior.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers, for API key authentication
+# + previous - A card previously returned by this function, to enable a
+#              conditional (If-None-Match) request
+# + return - The parsed AgentCard plus its caching metadata, or an error.
+#            Note: like resolveAgentCard, this is a bare `error` rather
+#            than a narrowed A2A error union — it shares
+#            fetchAgentCardWithCaching with resolveAgentCard, which
+#            propagates raw, un-wrapped http/JSON errors (e.g. connection
+#            failures, malformed JSON) via `check` alongside the typed
+#            A2AInternalError cases it constructs itself. Callers that
+#            need to distinguish typed A2A errors from these raw
+#            passthroughs must still pattern-match on the concrete error
+#            type.
+public isolated function resolveAgentCardCached(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        CachedAgentCard? previous = ()) returns CachedAgentCard|error {
+    record {|AgentCard? card; string? etag; boolean notModified;|} result =
+        check fetchAgentCardWithCaching(agentBaseUrl, clientConfig, headers, previous?.etag);
+    if result.notModified && previous is CachedAgentCard {
+        return previous;
     }
-    http:Response resp = check discoveryClient->get(
-        "/.well-known/agent-card.json", reqHeaders
-    );
-    if resp.statusCode != 200 {
-        return error A2AInternalError(
-            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
-            code = resp.statusCode
-        );
-    }
-    json body = check resp.getJsonPayload();
-    return check parseAgentCardBody(body);
+    return {card: <AgentCard>result.card, etag: result.etag};
 }
 
 # Resolves the URL to construct a Client against, per v1.0's removal of
@@ -132,6 +205,9 @@ public isolated client class Client {
     private final map<string> & readonly defaultHeaders;
     private final string? tenant;
     private final ProtocolMode mode;
+    private final string[] & readonly requestedExtensions;
+    private string[] grantedExtensions = [];
+    private final int maxReconnectAttempts;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -151,17 +227,68 @@ public isolated client class Client {
     #               to auto-detect whether to speak v1.0 or v0.3 wire
     #               format to this server. Omitting it (the default)
     #               preserves today's v1.0-only behavior exactly.
-    # + return - error if the underlying http:Client cannot be created
+    # + requestedExtensions - Optional A2A extension URIs to request from
+    #                         the remote agent, sent as a comma-joined
+    #                         A2A-Extensions header on every request. The
+    #                         agent's response indicates which extensions
+    #                         it actually granted; see lastGrantedExtensions.
+    # + credentials - Optional credential strings, keyed by security scheme
+    #                 name exactly as declared in agentCard.securitySchemes.
+    #                 When agentCard is given and this is non-empty,
+    #                 buildAuthFromCard resolves them into auth config and
+    #                 headers, merged in underneath clientConfig and headers
+    #                 respectively — an explicit value the caller already
+    #                 set always wins over the auto-wired one. Ignored (no
+    #                 error) when agentCard is not given, so passing
+    #                 credentials without a card is a silent no-op rather
+    #                 than a hard failure.
+    # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
+    #                          (the default), sendMessageStream and
+    #                          subscribeToTask behave exactly as before —
+    #                          a dropped connection surfaces its error
+    #                          immediately. When positive, the returned
+    #                          stream transparently resubscribes to the
+    #                          task via subscribeToTask up to this many
+    #                          times if the underlying stream ends with an
+    #                          error (not a clean terminal-state close)
+    #                          before giving up and surfacing the error.
+    # + return - error if the underlying http:Client cannot be created, or
+    #            if credentials is non-empty but does not satisfy any of
+    #            agentCard's declared SecurityRequirements
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
-            AgentCard? agentCard = ()) returns error? {
-        self.httpClient = check new (serviceUrl, clientConfig);
-        self.defaultHeaders = headers.cloneReadOnly();
+            AgentCard? agentCard = (),
+            string[] requestedExtensions = [],
+            map<string> credentials = {},
+            int maxReconnectAttempts = 0) returns error? {
+        // http:ClientConfiguration isn't Cloneable (some of its fields
+        // aren't pure data), so a mapping-constructor spread is used
+        // instead of .clone() to shallow-copy it before mutating .auth —
+        // otherwise this would mutate the caller's own clientConfig in
+        // place, corrupting it for any other Client.init call that reuses
+        // the same variable.
+        http:ClientConfiguration effectiveClientConfig = {...clientConfig};
+        map<string> effectiveHeaders = headers.clone();
+        if agentCard is AgentCard && credentials.length() > 0 {
+            ResolvedAuth resolved = check buildAuthFromCard(agentCard, credentials);
+            if effectiveClientConfig.auth is () {
+                effectiveClientConfig.auth = resolved.clientConfig.auth;
+            }
+            foreach [string, string] [k, v] in resolved.headers.entries() {
+                if !effectiveHeaders.hasKey(k) {
+                    effectiveHeaders[k] = v;
+                }
+            }
+        }
+        self.httpClient = check new (serviceUrl, effectiveClientConfig);
+        self.defaultHeaders = effectiveHeaders.cloneReadOnly();
         self.tenant = tenant;
         self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
+        self.requestedExtensions = requestedExtensions.cloneReadOnly();
+        self.maxReconnectAttempts = maxReconnectAttempts;
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
@@ -180,7 +307,54 @@ public isolated client class Client {
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
+        if self.requestedExtensions.length() > 0 {
+            headers["A2A-Extensions"] = string:'join(",", ...self.requestedExtensions);
+        }
         return headers;
+    }
+
+    # Returns the extensions the remote agent granted on the most recent
+    # call that reported them, per the response's A2A-Extensions header.
+    # Empty until the first call completes. Note: a call whose response
+    # omits the header does not clear a previous grant — this reflects the
+    # most recent call that reported an A2A-Extensions header, not
+    # necessarily literally the single most recent call.
+    #
+    # + return - the granted extension URIs
+    public isolated function lastGrantedExtensions() returns string[] {
+        lock {
+            return self.grantedExtensions.clone();
+        }
+    }
+
+    # Captures the response's A2A-Extensions header, if present, into
+    # self.grantedExtensions. Shared by rpcCall and openSseStream, since
+    # both read a granted-extensions header off their respective
+    # http:Response before doing anything else with it.
+    #
+    # Per spec §14.2.2, the request and response directions use the exact
+    # same header name (`A2A-Extensions`, not the deprecated `X-`-prefixed
+    # convention) — this reads that name first, falling back to the
+    # legacy `X-A2A-Extensions` spelling only for non-conformant servers
+    # that still send it.
+    #
+    # + resp - the response just received from the remote agent
+    private isolated function captureGrantedExtensions(http:Response resp) {
+        string|error extHeader = resp.getHeader("A2A-Extensions");
+        if extHeader is error {
+            extHeader = resp.getHeader("X-A2A-Extensions");
+        }
+        if extHeader is string {
+            string[] granted = [];
+            if extHeader.length() > 0 {
+                foreach string entry in re `,`.split(extHeader) {
+                    granted.push(entry.trim());
+                }
+            }
+            lock {
+                self.grantedExtensions = granted.clone();
+            }
+        }
     }
 
     # Performs a unary JSON-RPC call and returns the unwrapped result.
@@ -198,6 +372,7 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), self.buildHeaders()
         );
+        self.captureGrantedExtensions(resp);
         json body = check resp.getJsonPayload();
         transport:JsonRpcResponse rpcResp =
             check body.cloneWithType(transport:JsonRpcResponse);
@@ -307,6 +482,7 @@ public isolated client class Client {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), headers
         );
+        self.captureGrantedExtensions(resp);
         if resp.statusCode != 200 {
             return error A2AInternalError(
                 string `Stream request failed with HTTP ${resp.statusCode}`,
@@ -374,7 +550,44 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("SendStreamingMessage", params);
+        stream<StreamResponse, error?> rawStream = check self.openSseStream("SendStreamingMessage", params);
+        if self.maxReconnectAttempts <= 0 {
+            return rawStream;
+        }
+
+        // Peek the first event to find the taskId to resubscribe to on a
+        // dropped connection. A bare Message (no task) carries nothing to
+        // reconnect against, so wrapping is a no-op in that case: the raw
+        // stream is returned untouched, with the peeked value re-spliced
+        // back on as ReconnectingStreamGenerator's buffered first result
+        // (with maxAttempts 0, so it never actually attempts a reconnect)
+        // so the caller never observes that a peek happened either way.
+        record {| StreamResponse value; |}|error? peeked = rawStream.next();
+        if peeked is error {
+            return peeked;
+        }
+        if peeked is () {
+            stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, tenant = effectiveTenant));
+            return wrapped;
+        }
+        Task? maybeTask = peeked.value?.task;
+        if maybeTask is Task {
+            stream<StreamResponse, error?> wrapped =
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked, effectiveTenant));
+            return wrapped;
+        }
+        // A stream can also legitimately open with a status update rather
+        // than a Task (e.g. resubscribing to an already-created task), and
+        // that update still carries a taskId worth reconnecting against —
+        // so this isn't limited to the first-event-is-a-Task case above.
+        string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
+        if maybeTaskId is string {
+            stream<StreamResponse, error?> wrapped =
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTaskId, self.maxReconnectAttempts, peeked, effectiveTenant));
+            return wrapped;
+        }
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked, effectiveTenant));
+        return wrapped;
     }
 
     # Retrieves the current state of a task.
@@ -455,6 +668,35 @@ public isolated client class Client {
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        stream<StreamResponse, error?> rawStream = check self.openTaskSubscriptionStream(taskId, tenant);
+        if self.maxReconnectAttempts <= 0 {
+            return rawStream;
+        }
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts, tenant = tenant));
+        return wrapped;
+    }
+
+    # Opens the raw, unwrapped subscribeToTask stream — the same request
+    # subscribeToTask itself sends, but without any reconnect wrapping.
+    #
+    # Used internally by both subscribeToTask (which wraps this in a
+    # ReconnectingStreamGenerator when maxReconnectAttempts > 0) and by
+    # ReconnectingStreamGenerator itself when it resubscribes on a drop.
+    # The latter must go through this raw helper rather than the public
+    # subscribeToTask remote function: calling the public
+    # subscribeToTask would construct a brand-new
+    # ReconnectingStreamGenerator with its own fresh
+    # attemptsUsed/maxAttempts budget on every single reconnect, silently
+    # resetting the attempt count each time and defeating
+    # maxReconnectAttempts entirely — against a persistently-failing
+    # agent, reconnection would recurse without bound instead of ever
+    # giving up. Going through this raw helper keeps exactly one budget
+    # (the outer generator's own) governing the whole reconnect chain.
+    #
+    # + taskId - The task to subscribe to
+    # + tenant - Optional per-call tenant override
+    # + return - A stream of StreamResponse values, or an error
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
         map<json> params = {"id": taskId};
         string? effectiveTenant = tenant ?: self.tenant;
         // tenant routing is a v1.0-only concept (per-AgentInterface tenant

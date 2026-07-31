@@ -166,8 +166,11 @@ public type AgentCard record {|
     string[] defaultOutputModes = ["text"];
     # Capabilities this agent exposes
     AgentSkill[] skills;
-    # JWS signatures over this card. Captured but not verified — see
-    # AgentCardSignature's doc comment
+    # JWS signatures over this card. Verification is available via
+    # `verifyAgentCardSignature` (see its doc comment in signature.bal for
+    # supported algorithms and a known JCS-canonicalization limitation) —
+    # this field itself is only the captured shape, not a verification
+    # result.
     AgentCardSignature[] signatures = [];
     json...;
 |};
@@ -497,9 +500,13 @@ public type SecurityScheme ApiKeySecurityScheme|HttpAuthSecurityScheme|OAuth2Sec
 public type SecurityRequirement map<string[]>;
 
 # A JSON Web Signature (RFC 7515) computed over an AgentCard, for
-# authenticity verification. This library captures the signature's shape
-# but does not verify it — see the design spec for why verification is
-# out of scope.
+# authenticity verification. This library captures the signature's shape;
+# use `verifyAgentCardSignature` (signature.bal) to verify it. See that
+# function's doc comment for supported algorithms (RS256/ES256) and a
+# known limitation — it does not perform RFC 8785 JSON Canonicalization
+# (JCS), so it only reliably verifies signatures computed over
+# Ballerina's own JSON serialization, not signatures from an arbitrary
+# spec-conformant external signer.
 public type AgentCardSignature record {|
     # Unprotected JWS header values
     map<json>? header?;
