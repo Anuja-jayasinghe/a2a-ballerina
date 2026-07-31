@@ -62,6 +62,7 @@ type MockRestScript record {|
     string lastPath = "";
     string lastMethod = "";
     boolean hasResponseBody = true;
+    json lastBody = {};
 |};
 
 isolated MockRestScript restScript = {};
@@ -84,6 +85,19 @@ public isolated function setNextRestResponse(json body, int statusCode = 200, bo
 public isolated function getLastRestRequest() returns record {| string method; string path; map<string> queryParams; |} {
     lock {
         return {method: restScript.lastMethod, path: restScript.lastPath, queryParams: restScript.lastQueryParams.clone()};
+    }
+}
+
+# Returns the JSON body of the last REST request the mock received, so
+# tests can assert on what the Client actually sent on the wire (e.g. the
+# M3/M4 tenant/path-param body duplication for hasBody operations). `{}`
+# for a bodiless request (e.g. a GET or DELETE, which never carries a
+# request body to parse).
+#
+# + return - the last REST request's JSON body, or `{}` if it had none
+public isolated function getLastRestBody() returns json {
+    lock {
+        return restScript.lastBody.clone();
     }
 }
 
@@ -457,10 +471,19 @@ service / on mockListener {
             }
         }
         string fullPath = "/" + string:'join("/", ...path);
+        // GET/DELETE requests never carry a body -- getJsonPayload() on a
+        // bodiless request is an error, not a useful {} value, so this is
+        // guarded rather than `check`ed; a genuinely malformed body on a
+        // POST is likewise tolerated here (recorded as {}) since body
+        // well-formedness isn't this mock's concern -- it exists to let
+        // tests assert on what the Client sent, not to validate it.
+        json|error parsedBody = req.getJsonPayload();
+        json capturedBody = parsedBody is json ? parsedBody : {};
         lock {
             restScript.lastMethod = req.method;
             restScript.lastPath = fullPath;
             restScript.lastQueryParams = queryParams.clone();
+            restScript.lastBody = capturedBody.clone();
         }
         http:Response res = new;
         res.statusCode = script.statusCode;

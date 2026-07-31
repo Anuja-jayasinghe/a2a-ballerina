@@ -1825,6 +1825,10 @@ function testRestSendMessageSendsCorrectPathAndBody() returns error? {
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.method, "POST");
     test:assertEquals(req.path, "/message:send");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertTrue(body.hasKey("message"), "the REST request body must carry the message");
+    map<json> messageBody = check body.get("message").ensureType();
+    test:assertEquals(messageBody["messageId"], "m1");
 }
 
 @test:Config {}
@@ -1846,6 +1850,26 @@ function testRestCancelTaskSendsIdInPathAndBody() returns error? {
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.method, "POST");
     test:assertEquals(req.path, "/tasks/task-123:cancel");
+    // M4: id is duplicated into the body for hasBody operations, matching
+    // the reference a2a-python SDK exactly rather than "cleaning up" the
+    // path/body duplication.
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["id"], "task-123", "CancelTask's id must be duplicated into the body per M4, not just substituted into the path");
+}
+
+@test:Config {}
+function testRestHasBodyOperationDuplicatesTenantIntoBody() returns error? {
+    // M3: tenant is duplicated into the body for hasBody operations too,
+    // not just removed once it's substituted into the path (as it is for
+    // bodiless operations, per testRestOperationWithTenantPrefixesPath).
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON", tenant = "acme-corp");
+    Task _ = check c->cancelTask("task-123");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/acme-corp/tasks/task-123:cancel");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["tenant"], "acme-corp", "M3: tenant must be duplicated into the body for hasBody operations");
+    test:assertEquals(body["id"], "task-123");
 }
 
 @test:Config {}
@@ -1873,6 +1897,8 @@ function testRestCreateTaskPushNotificationConfigSendsTaskIdInPathAndBody() retu
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.method, "POST");
     test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["taskId"], "task-1", "taskId must be duplicated into the body per M4, not just substituted into the path");
 }
 
 @test:Config {}
