@@ -8,11 +8,14 @@ This archive contains an earlier, unversioned draft of the A2A Technical Design,
 >
 > Everything from here down to "Task Delegation Lifecycle" below is an
 > earlier, unversioned draft of this design, superseded by the
-> "Phase 1: Client Technical Design" section above. It disagrees with
-> the Phase 1 draft in at least three confirmed places, independently
-> verified against the live A2A spec
-> (https://a2a-protocol.org/latest/specification/) — the Phase 1 draft
-> is correct in all three:
+> "Phase 1: Client Technical Design" section of `docs/A2A_Technical_Design.md`
+> (this content used to live in that same file, directly above this
+> section, before being moved into this archive file — the caveat below
+> still refers to it as "above" in that original sense; it is not above
+> within *this* file). It disagrees with the Phase 1 draft in at least
+> three confirmed places, independently verified against the live A2A
+> spec (https://a2a-protocol.org/latest/specification/) — the Phase 1
+> draft is correct in all three:
 >
 > - **`AgentInterface.tenant`** — this draft's `AgentInterface` omits the
 >   `tenant` field entirely; Phase 1 §3.2 includes it, and the client's
@@ -26,7 +29,7 @@ This archive contains an earlier, unversioned draft of the A2A Technical Design,
 > This section also sketches Phase 2 (Listener/service) material that is
 > out of scope for Phase 1 regardless of the above. Kept here for
 > historical reference only — always implement from the Phase 1 section
-> above, per `a2a/CLAUDE.md`.
+> of `docs/A2A_Technical_Design.md`, per `a2a/CLAUDE.md`.
 
 ---
 

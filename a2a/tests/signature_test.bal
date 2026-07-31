@@ -10,7 +10,6 @@
 // replaced with `return true;`, only that test would fail.
 import ballerina/test;
 import ballerina/crypto;
-import ballerina/lang.array;
 
 @test:Config {}
 function testVerifyAgentCardSignatureRs256Valid() returns error? {
@@ -62,6 +61,32 @@ function testVerifyAgentCardSignatureNegativeIndexErrors() returns error? {
             "a negative signatureIndex should error with the typed SignatureVerificationError, not raise an uncaught index error");
 }
 
+@test:Config {}
+function testVerifyAgentCardSignatureMalformedBase64ProtectedHeaderErrors() returns error? {
+    // "!!!not-base64url!!!" contains characters outside the base64url
+    // alphabet, so decoding the protected header must fail — and that
+    // failure must surface as the typed SignatureVerificationError, not a
+    // bare/raw error, per the function's "malformed JWS structure" promise.
+    AgentCard card = buildRs256SignedTestCard();
+    card.signatures[0].protected = "!!!not-base64url!!!";
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean|error result = verifyAgentCardSignature(card, publicKey);
+    test:assertTrue(result is SignatureVerificationError,
+            "a protected header that isn't valid base64url should error with the typed SignatureVerificationError, not a bare error");
+}
+
+@test:Config {}
+function testVerifyAgentCardSignatureNonJsonProtectedHeaderErrors() returns error? {
+    // Valid base64url, but the decoded bytes aren't valid JSON — must also
+    // surface as the typed SignatureVerificationError.
+    AgentCard card = buildRs256SignedTestCard();
+    card.signatures[0].protected = encodeBase64Url("not { valid json".toBytes());
+    crypto:PublicKey publicKey = check crypto:decodeRsaPublicKeyFromContent(testRs256CertBytes());
+    boolean|error result = verifyAgentCardSignature(card, publicKey);
+    test:assertTrue(result is SignatureVerificationError,
+            "a protected header whose decoded bytes aren't valid JSON should error with the typed SignatureVerificationError, not a bare error");
+}
+
 // Fixed RSA test keypair generated once offline via the JDK's keytool
 // (ballerina/crypto has no key-generation function):
 //   keytool -genkeypair -alias a2atest -keyalg RSA -keysize 2048 \
@@ -111,5 +136,5 @@ isolated function buildRs256SignedTestCard() returns AgentCard {
 
 isolated function encodeProtectedHeaderWithAlg(string alg) returns string {
     json header = {"alg": alg};
-    return array:toBase64(header.toJsonString().toBytes());
+    return encodeBase64Url(header.toJsonString().toBytes());
 }

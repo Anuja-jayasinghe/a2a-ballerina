@@ -53,17 +53,40 @@ isolated function encodeBase64Url(byte[] data) returns string {
 # embedded payload, since JWS's compact form for a detached signature
 # carries no payload of its own.
 #
+# LIMITATION: does not perform RFC 8785 JSON Canonicalization (JCS). Spec
+# §8.4.1 ("Canonicalization Requirements") requires Agent Card signing to
+# canonicalize the card's JSON via JCS before computing the JWS signing
+# input, precisely so that different JSON serializers' field ordering and
+# number/string formatting don't produce different signing bytes for
+# semantically identical cards. This function instead reconstructs the
+# signing payload via Ballerina's own toJsonString (record-declaration
+# field order, Ballerina's own formatting) — it will only verify
+# signatures computed over that exact serialization, not signatures
+# produced by a real, spec-conformant JCS signer (e.g. a Python or Java
+# reference implementation). This is fail-closed (a genuinely
+# validly-signed, spec-conformant card may verify as `false`; a
+# forged/tampered card is never falsely accepted), but it means
+# verification against non-Ballerina-signed cards is not yet reliable.
+# JCS was deliberately not implemented here: doing it correctly (recursive
+# Unicode-code-point key sorting, ECMAScript-compatible number formatting,
+# ECMA-262 string escaping) is intricate enough, especially given
+# `AgentCard`'s open `json...` fields can carry arbitrary data including
+# numbers, that a partial/incorrect implementation risked silently wrong
+# results — worse than this documented gap.
+#
 # + card - the AgentCard to verify, including its `signatures` entries
 # + publicKey - the key to verify against
 # + signatureIndex - which entry of card.signatures to verify, if more
 #                     than one is present; defaults to the first
 # + return - true if the signature is valid for this exact card content,
 #            false if it doesn't match (not an error — a tampered or
-#            wrongly-keyed card is an expected, checkable outcome), or an
-#            error if signatureIndex is out of range, the JWS structure is
-#            malformed, or the protected header's alg is anything other
-#            than RS256/ES256 (the only algorithms ballerina/crypto can
-#            verify)
+#            wrongly-keyed card is an expected, checkable outcome), or a
+#            `SignatureVerificationError` if signatureIndex is out of
+#            range or the JWS structure is malformed (bad base64url, bad
+#            JSON, missing/non-string `alg`), or an
+#            `UnsupportedSignatureAlgorithmError` if the protected
+#            header's alg is anything other than RS256/ES256 (the only
+#            algorithms ballerina/crypto can verify)
 public isolated function verifyAgentCardSignature(
         AgentCard card,
         crypto:PublicKey publicKey,
@@ -73,10 +96,38 @@ public isolated function verifyAgentCardSignature(
     }
     AgentCardSignature sig = card.signatures[signatureIndex];
 
-    byte[] headerBytes = check decodeBase64Url(sig.protected);
-    string headerStr = check string:fromBytes(headerBytes);
-    json header = check headerStr.fromJsonString();
-    string alg = check (check header.alg).ensureType();
+    byte[]|error headerBytesResult = decodeBase64Url(sig.protected);
+    if headerBytesResult is error {
+        return error SignatureVerificationError(
+                string `protected header is not valid base64url: ${headerBytesResult.message()}`, headerBytesResult);
+    }
+    byte[] headerBytes = headerBytesResult;
+
+    string|error headerStrResult = string:fromBytes(headerBytes);
+    if headerStrResult is error {
+        return error SignatureVerificationError(
+                string `protected header bytes are not valid UTF-8: ${headerStrResult.message()}`, headerStrResult);
+    }
+    string headerStr = headerStrResult;
+
+    json|error headerResult = headerStr.fromJsonString();
+    if headerResult is error {
+        return error SignatureVerificationError(
+                string `protected header is not valid JSON: ${headerResult.message()}`, headerResult);
+    }
+    json header = headerResult;
+
+    json|error algJsonResult = header.alg;
+    if algJsonResult is error {
+        return error SignatureVerificationError(
+                string `protected header has no "alg" field: ${algJsonResult.message()}`, algJsonResult);
+    }
+    string|error algResult = algJsonResult.ensureType();
+    if algResult is error {
+        return error SignatureVerificationError(
+                string `protected header's "alg" is not a string: ${algResult.message()}`, algResult);
+    }
+    string alg = algResult;
 
     AgentCard unsigned = card.clone();
     unsigned.signatures = [];
@@ -90,7 +141,12 @@ public isolated function verifyAgentCardSignature(
     // array:toBase64 alone would diverge from a real signer's bytes
     // whenever the payload's encoding needs '+', '/', or '=' padding.
     string signingInput = sig.protected + "." + encodeBase64Url(payload);
-    byte[] signatureBytes = check decodeBase64Url(sig.signature);
+    byte[]|error signatureBytesResult = decodeBase64Url(sig.signature);
+    if signatureBytesResult is error {
+        return error SignatureVerificationError(
+                string `signature value is not valid base64url: ${signatureBytesResult.message()}`, signatureBytesResult);
+    }
+    byte[] signatureBytes = signatureBytesResult;
 
     if alg == "RS256" {
         boolean|crypto:Error result = crypto:verifyRsaSha256Signature(signingInput.toBytes(), signatureBytes, publicKey);

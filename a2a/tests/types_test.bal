@@ -48,6 +48,9 @@ function testPartDataVariantRoundTrip() returns error? {
     json encoded = original.toJson();
     Part decoded = check encoded.cloneWithType(Part);
     test:assertEquals(decoded, original);
+    test:assertTrue(decoded?.text is (), "text should be nil for a data Part");
+    test:assertTrue(decoded?.raw is (), "raw should be nil for a data Part");
+    test:assertTrue(decoded?.url is (), "url should be nil for a data Part");
 }
 
 @test:Config {}

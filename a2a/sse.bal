@@ -154,6 +154,14 @@ class ReconnectingStreamGenerator {
             // rationale.
             stream<StreamResponse, error?>|error reconnected = self.a2aClient.openTaskSubscriptionStream(self.taskId);
             if reconnected is stream<StreamResponse, error?> {
+                // Best-effort close of the errored/dropped stream before
+                // swapping in the reconnected one; a failure here doesn't
+                // change anything about the reconnect itself, so it's
+                // deliberately not surfaced.
+                error? closeResult = self.current.close();
+                if closeResult is error {
+                    // ignored
+                }
                 self.current = reconnected;
                 return self.next();
             }

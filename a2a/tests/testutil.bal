@@ -83,7 +83,7 @@ public isolated function getLastRequestHeaders() returns map<string> {
 #
 # + body - the JSON body to respond with
 # + statusCode - the HTTP status code to respond with
-# + extensionsHeader - optional X-A2A-Extensions header value to set on the response
+# + extensionsHeader - optional A2A-Extensions header value to set on the response
 public isolated function setNextJsonResponse(json body, int statusCode = 200, string? extensionsHeader = ()) {
     lock {
         rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0, extensionsHeader};
@@ -93,7 +93,7 @@ public isolated function setNextJsonResponse(json body, int statusCode = 200, st
 # Scripts the next JSON-RPC request to receive an SSE stream response.
 #
 # + events - the canned SSE events to stream back
-# + extensionsHeader - optional X-A2A-Extensions header value to set on the response
+# + extensionsHeader - optional A2A-Extensions header value to set on the response
 public isolated function setNextSseResponse(http:SseEvent[] events, string? extensionsHeader = ()) {
     lock {
         rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, extensionsHeader};
@@ -380,7 +380,7 @@ service / on mockListener {
             res.statusCode = 200;
             string? extHeader = script.extensionsHeader;
             if extHeader is string {
-                res.setHeader("X-A2A-Extensions", extHeader);
+                res.setHeader("A2A-Extensions", extHeader);
             }
             if script.simulateDropError {
                 stream<http:SseEvent, error?> dropStream = new (new DropAfterEventsGenerator(script.sseEvents));
@@ -394,7 +394,7 @@ service / on mockListener {
             res.statusCode = script.statusCode;
             string? extHeader = script.extensionsHeader;
             if extHeader is string {
-                res.setHeader("X-A2A-Extensions", extHeader);
+                res.setHeader("A2A-Extensions", extHeader);
             }
             res.setJsonPayload(script.jsonBody);
             respondIgnoringClientGoneAway(caller, res);

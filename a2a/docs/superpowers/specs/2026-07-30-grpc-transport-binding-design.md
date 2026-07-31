@@ -716,8 +716,9 @@ reachable in both directions:
   become request metadata, supplied via the generated
   `Context{Operation}Request` record's `headers` field. `Content-Type`
   is dropped from the map for this binding — gRPC sets its own.
-- **Inbound.** `captureGrantedExtensions` reads `X-A2A-Extensions` off
-  the response. Only the `Context` variants surface response headers, so
+- **Inbound.** `captureGrantedExtensions` reads `A2A-Extensions` off
+  the response (spec §14.2.2 uses the same header name in both
+  directions). Only the `Context` variants surface response headers, so
   without them the extension-negotiation feature added earlier in this
   plan would silently stop working on the gRPC binding.
 
@@ -1010,12 +1011,14 @@ constrains, and a wrong match is worse than an honest widening.
 - **Conversion round-trip tests** — the highest-value block by a wide
   margin, and the cheapest, since they need no server at all. For each
   paired `encodeGrpc*`/`decodeGrpc*`: build a fully-populated
-  `types.bal` value, encode, decode, assert deep equality. Then rules 1–4
+  `types.bal` value, encode, decode, assert deep equality. Then rules 1–3
   from §Design decision 5 get dedicated negative tests: `""`→`()`,
   all-default nested message→`()`, `time:Utc [0, 0.0d]`→`()` (not the
-  epoch), and key/value-array↔map for `securitySchemes`,
-  `securityRequirements`, and all five OAuth flows' `scopes`. (Rule 5,
-  `Part.data`, is covered by the two dedicated tests above.)
+  epoch); plus key/value-array↔map for `securitySchemes`,
+  `securityRequirements`, and all five OAuth flows' `scopes` (Finding 4d,
+  not one of the five numbered cross-cutting rules). Rule 4 (enums pass
+  through by name) is covered by the enum-parity test below, not here.
+  (Rule 5, `Part.data`, is covered by the two dedicated tests above.)
 - **Enum-parity test** — assert every `Role` and `TaskState` member in
   `types.bal` has an identically-named member in `grpcstub`, so the
   pass-through-by-name assumption fails loudly if either drifts.

@@ -305,7 +305,7 @@ public isolated client class Client {
     }
 
     # Returns the extensions the remote agent granted on the most recent
-    # call, per the response's X-A2A-Extensions header. Empty until the
+    # call, per the response's A2A-Extensions header. Empty until the
     # first call completes, or if the agent never sent the header.
     #
     # + return - the granted extension URIs
@@ -315,14 +315,23 @@ public isolated client class Client {
         }
     }
 
-    # Captures the response's X-A2A-Extensions header, if present, into
+    # Captures the response's A2A-Extensions header, if present, into
     # self.grantedExtensions. Shared by rpcCall and openSseStream, since
     # both read a granted-extensions header off their respective
     # http:Response before doing anything else with it.
     #
+    # Per spec §14.2.2, the request and response directions use the exact
+    # same header name (`A2A-Extensions`, not the deprecated `X-`-prefixed
+    # convention) — this reads that name first, falling back to the
+    # legacy `X-A2A-Extensions` spelling only for non-conformant servers
+    # that still send it.
+    #
     # + resp - the response just received from the remote agent
     private isolated function captureGrantedExtensions(http:Response resp) {
-        string|error extHeader = resp.getHeader("X-A2A-Extensions");
+        string|error extHeader = resp.getHeader("A2A-Extensions");
+        if extHeader is error {
+            extHeader = resp.getHeader("X-A2A-Extensions");
+        }
         if extHeader is string {
             string[] granted = [];
             if extHeader.length() > 0 {
@@ -553,6 +562,16 @@ public isolated client class Client {
         if maybeTask is Task {
             stream<StreamResponse, error?> wrapped =
                 new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked));
+            return wrapped;
+        }
+        // A stream can also legitimately open with a status update rather
+        // than a Task (e.g. resubscribing to an already-created task), and
+        // that update still carries a taskId worth reconnecting against —
+        // so this isn't limited to the first-event-is-a-Task case above.
+        string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
+        if maybeTaskId is string {
+            stream<StreamResponse, error?> wrapped =
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTaskId, self.maxReconnectAttempts, peeked));
             return wrapped;
         }
         stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked));

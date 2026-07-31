@@ -63,13 +63,19 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
                 } else if scheme.scheme.toLowerAscii() == "basic" {
                     // http:CredentialsConfig expects username+password, not
                     // one combined string. Caller must instead have supplied
-                    // "username:password" as the credential value.
-                    string[] parts = re `:`.split(credential);
-                    if parts.length() != 2 {
+                    // "username:password" as the credential value. Split on
+                    // the *first* colon only — RFC 7617 forbids ':' in the
+                    // username but explicitly allows it in the password, so
+                    // splitting on every colon would wrongly reject (or
+                    // truncate) a password that itself contains one.
+                    int? colonIndex = credential.indexOf(":");
+                    if colonIndex is () {
                         return error AuthResolutionError(
                             string `http Basic scheme "${schemeName}" requires credential in "username:password" form`);
                     }
-                    clientConfig.auth = {username: parts[0], password: parts[1]};
+                    string username = credential.substring(0, colonIndex);
+                    string password = credential.substring(colonIndex + 1);
+                    clientConfig.auth = {username, password};
                 } else {
                     return error AuthResolutionError(
                         string `http auth scheme "${scheme.scheme}" (name: "${schemeName}") is not automated yet`);

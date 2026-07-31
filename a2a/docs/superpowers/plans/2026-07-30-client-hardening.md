@@ -235,8 +235,9 @@ Add `map<string> lastRequestHeaders` (isolated, mirroring
 `lastRequestBody`'s pattern) captured in the `post .` resource via
 `req.getHeaderNames()`/`req.getHeader(name)`, plus `getLastRequestHeaders()`.
 Add an optional `extensionsHeader` param to `setNextJsonResponse` that sets
-`X-A2A-Extensions` (server → client direction; spec's response-side header
-name) on the scripted response.
+`A2A-Extensions` (server → client direction) on the scripted response — per
+spec §14.2.2, the response direction uses the exact same header name as the
+request direction, not a distinct `X-`-prefixed name.
 
 ```ballerina
 public isolated function setNextJsonResponse(json body, int statusCode = 200, string? extensionsHeader = ()) {
@@ -268,13 +269,14 @@ if self.requestedExtensions.length() > 0 {
 ```
 
 After every `rpcCall`/`openSseStream` response is read, capture the
-response's own extensions header (spec's `X-A2A-Extensions` on the
-response, distinct from the request-side `A2A-Extensions`) into
-`self.grantedExtensions` — add this inside `rpcCall` right after
-`http:Response resp = check self.httpClient->post(...)`:
+response's own extensions header (spec §14.2.2: `A2A-Extensions`, the same
+header name used on the request side — the protocol has no separate
+response-side name) into `self.grantedExtensions` — add this inside
+`rpcCall` right after `http:Response resp = check
+self.httpClient->post(...)`:
 
 ```ballerina
-string|error extHeader = resp.getHeader("X-A2A-Extensions");
+string|error extHeader = resp.getHeader("A2A-Extensions");
 if extHeader is string {
     lock {
         self.grantedExtensions = extHeader.length() > 0 ? re `,`.split(extHeader) : [];
@@ -290,7 +292,7 @@ Add:
 
 ```ballerina
 # Returns the extensions the remote agent granted on the most recent call,
-# per the response's X-A2A-Extensions header. Empty until the first call
+# per the response's A2A-Extensions header. Empty until the first call
 # completes, or if the agent never sent the header.
 #
 # + return - the granted extension URIs
@@ -547,6 +549,29 @@ git commit -m "feat: auto-wire client auth from AgentCard securitySchemes (API k
   `jku`/`kid` is a separate, larger feature; this task closes "verification
   is possible at all" using a key the caller already has, e.g. pinned or
   fetched out-of-band).
+
+**Known limitation (confirmed during the final whole-branch review, not
+fixed in this pass):** spec §8.4.1 ("Canonicalization Requirements")
+requires Agent Card signing to use RFC 8785 JSON Canonicalization Scheme
+(JCS) before computing the JWS signing input, so that different JSON
+serializers' field ordering and formatting don't produce different bytes
+to sign over. `signature.bal` does not implement JCS — it reconstructs the
+signing payload via Ballerina's own `toJsonString()` (record-declaration
+field order, Ballerina's own number/string formatting), with no
+canonicalization step. This was a deliberate choice, not an oversight:
+implementing RFC 8785 correctly (recursive Unicode-code-point key sorting,
+ECMAScript-`Number::toString`-compatible number formatting, ECMA-262
+string escaping) has enough intricate edge cases — especially numbers,
+since `AgentCard` and its nested records are open (`json...`) and can
+carry arbitrary caller/extension data — that a partial or subtly-incorrect
+implementation risked being worse than clearly documenting the gap. The
+function is fail-closed (rejects valid non-Ballerina-signed cards; never
+accepts a forged one), so this is a completeness gap, not a security hole.
+A caller verifying a card signed by a spec-conformant JCS signer (e.g. a
+Python or Java reference implementation) will currently get a `false`
+result even for a genuinely validly-signed card. See the LIMITATION note
+on `verifyAgentCardSignature`'s doc comment in `signature.bal` for the
+same statement at the call site.
 
 **Confirmed API facts this task is built on** (resolved during planning,
 not left open):

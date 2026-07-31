@@ -155,9 +155,9 @@ reference SDK rather than trimmed.
 **M5 — bodiless operations (the six GETs and the DELETE) move fields from
 a body into the query string.**
 This is the largest reconciliation item and has no JSON-RPC analogue.
-`GetTask`, `ListTasks`, `GetTaskPushNotificationConfig`,
-`ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`,
-and `GetExtendedAgentCard` carry no body at all; every non-path field
+`GetTask`, `ListTasks`, `SubscribeToTask`, `GetTaskPushNotificationConfig`,
+`ListTaskPushNotificationConfigs`, `GetExtendedAgentCard`, and
+`DeleteTaskPushNotificationConfig` carry no body at all; every non-path field
 becomes a query parameter. The field *names* are unchanged (still
 camelCase), so this is a shape change, not a rename — but it means
 `ListTasksFilter`'s seven fields must be URL-encoded rather than
@@ -391,7 +391,16 @@ public isolated function detectProtocolModeForBinding(
 ```
 
 The existing one-arg `detectProtocolMode` stays, delegating with
-`"JSONRPC"`, preserving its current semantics for every present caller.
+`"JSONRPC"`. For a single-binding card this preserves its current
+semantics exactly. It is **not** identical behaviour for every present
+caller, though: for a multi-interface card where the `JSONRPC` interface
+isn't at `supportedInterfaces[0]` — the same mixed-interface-card shape
+worked through a few paragraphs above — the new binding-aware lookup now
+selects the actual `JSONRPC` entry's `protocolVersion` instead of
+whatever happens to sit at index 0. That is a deliberate, correct
+behaviour change (it fixes exactly the index-0 misread this section
+exists to address), not a regression, but it is a real divergence from
+today's index-0 reading for that specific case, not "identical."
 
 **Where the v0.3+REST check lives.** `Client.init` already accepts an
 optional `agentCard` and derives `self.mode` from it

@@ -84,6 +84,29 @@ function testBuildAuthFromCardHttpBasicMalformedCredentialErrors() returns error
 }
 
 @test:Config {}
+function testBuildAuthFromCardHttpBasicPasswordWithColonSucceeds() returns error? {
+    // RFC 7617 forbids ':' in the username but explicitly allows it in the
+    // password — splitting on every colon (instead of just the first) would
+    // wrongly reject or truncate a password like this one.
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0",
+        capabilities: {},
+        securitySchemes: {
+            "basicAuth": {'type: "http", scheme: "Basic"}
+        },
+        securityRequirements: [{"basicAuth": []}],
+        skills: []
+    };
+    ResolvedAuth resolved = check buildAuthFromCard(card, {"basicAuth": "alice:s3:cret"});
+    http:ClientAuthConfig? auth = resolved.clientConfig.auth;
+    test:assertTrue(auth is http:CredentialsConfig, "http+Basic scheme should resolve to CredentialsConfig");
+    if auth is http:CredentialsConfig {
+        test:assertEquals(auth.username, "alice");
+        test:assertEquals(auth.password, "s3:cret");
+    }
+}
+
+@test:Config {}
 function testBuildAuthFromCardOAuth2NotAutomatedErrors() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0",
