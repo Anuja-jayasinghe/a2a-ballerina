@@ -608,7 +608,7 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
@@ -633,7 +633,7 @@ public isolated client class Client {
 
         // The wire response wraps the payload — {"task": {...}} or
         // {"message": {...}} — rather than returning either one flat.
-        SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);
+        SendMessageResult wrapped = check (check decodeRawBytesFromWire(result)).cloneWithType(SendMessageResult);
         Task? maybeTask = wrapped?.task;
         Message? maybeMessage = wrapped?.message;
 
@@ -766,7 +766,7 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
@@ -851,7 +851,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("GetTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
     }
 
     # Requests cancellation of an in-progress task.
@@ -880,7 +880,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("CancelTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
     }
 
     # Opens a stream on an existing task.
@@ -1002,7 +1002,7 @@ public isolated client class Client {
         }
 
         json result = check self.rpcCall("ListTasks", params);
-        return check result.cloneWithType(ListTasksResult);
+        return check (check decodeRawBytesFromWire(result)).cloneWithType(ListTasksResult);
     }
 
     # Registers a webhook to receive updates for a task.

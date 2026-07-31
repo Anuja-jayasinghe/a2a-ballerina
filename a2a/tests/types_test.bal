@@ -54,18 +54,44 @@ function testPartDataVariantRoundTrip() returns error? {
 }
 
 @test:Config {}
-function testPartRawBytesRoundTripThroughBase64() returns error? {
+function testEncodeRawBytesForWireConvertsIntArrayToBase64() returns error? {
+    Part original = {raw: "hello world".toBytes(), mediaType: "application/octet-stream"};
+    json defaultEncoded = original.toJson();
+    // Confirm the bug is real: default toJson() produces an int array, not a string.
+    map<json> defaultMap = check defaultEncoded.ensureType();
+    test:assertTrue(defaultMap["raw"] is json[], "sanity check: Ballerina's default toJson() must produce an int array for byte[] — if this fails, the underlying Ballerina behavior changed and this whole fix may be unnecessary");
+
+    json fixed = encodeRawBytesForWire(defaultEncoded);
+    map<json> fixedMap = check fixed.ensureType();
+    test:assertTrue(fixedMap["raw"] is string, "after encodeRawBytesForWire, Part.raw must be a base64 string, matching the wire encoding every real A2A implementation expects");
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireRoundTripsThroughEncodeRawBytesForWire() returns error? {
     byte[] originalBytes = "hello world, some bytes".toBytes();
     Part original = {raw: originalBytes, mediaType: "application/octet-stream"};
-    json encoded = original.toJson();
-    // Confirm the wire representation really is a base64 string, not a
-    // JSON array of byte values — this is the specific thing the design
-    // spec flagged as assumed-but-never-asserted.
-    map<json> encodedMap = check encoded.ensureType();
-    json? rawField = encodedMap["raw"];
-    test:assertTrue(rawField is string, "Part.raw must serialize as a base64 string on the wire, matching the proto's documented JSON encoding for bytes fields");
-    Part decoded = check encoded.cloneWithType(Part);
+    json wireForm = encodeRawBytesForWire(original.toJson());
+    json restoredForm = check decodeRawBytesFromWire(wireForm);
+    Part decoded = check restoredForm.cloneWithType(Part);
     test:assertEquals(decoded?.raw, originalBytes);
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireHandlesRealisticExternalPayload() returns error? {
+    // Simulates what a real, spec-conformant external server would actually
+    // send on the wire: a base64 string, not Ballerina's own int-array
+    // shape — this is the case that matters for real interop, not just
+    // round-tripping through our own encode function.
+    json externalPayload = {
+        "parts": [
+            {"raw": "aGVsbG8gd29ybGQ=", "mediaType": "text/plain"} // "hello world" in base64
+        ]
+    };
+    json decoded = check decodeRawBytesFromWire(externalPayload);
+    map<json> decodedMap = check decoded.ensureType();
+    json[] parts = check decodedMap["parts"].ensureType();
+    Part firstPart = check parts[0].cloneWithType(Part);
+    test:assertEquals(firstPart?.raw, "hello world".toBytes());
 }
 
 @test:Config {}

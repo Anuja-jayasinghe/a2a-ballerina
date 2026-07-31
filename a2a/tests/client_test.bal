@@ -1986,3 +1986,75 @@ function testRestFallbackDoesNotFireForOtherOperations() returns error? {
     Task|error result = c->getTask("task-1");
     test:assertTrue(result is error, "a 405 on GetTask must surface as an error, not silently retry with a different verb");
 }
+
+# Integration-level proof that decodeRawBytesFromWire is actually wired
+# into getTask's response handling, not just unit-tested in isolation.
+# Scripts the mock server to return a Task whose history contains a Part
+# with a base64-encoded raw field — exactly what a real, spec-conformant
+# v1.0 server would send on the wire — and confirms getTask correctly
+# decodes it back to the original bytes.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testGetTaskDecodesBase64EncodedPartRawFromRealisticServerResponse() returns error? {
+    byte[] expectedBytes = "hello from a real server".toBytes();
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            id: "task-raw-1",
+            status: {state: "TASK_STATE_COMPLETED"},
+            history: [
+                {
+                    messageId: "msg-1",
+                    role: "ROLE_AGENT",
+                    parts: [
+                        {"raw": "aGVsbG8gZnJvbSBhIHJlYWwgc2VydmVy", mediaType: "application/octet-stream"}
+                    ]
+                }
+            ]
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-raw-1");
+
+    Message[]? history = task?.history;
+    test:assertTrue(history is Message[], "history should decode");
+    Message[] hist = <Message[]>history;
+    test:assertEquals(hist.length(), 1);
+    Part firstPart = hist[0].parts[0];
+    test:assertEquals(firstPart?.raw, expectedBytes, "Part.raw nested inside Task.history must be decoded from base64 back into the original bytes");
+}
+
+# Integration-level proof that encodeRawBytesForWire is actually wired
+# into sendMessage's request encoding, not just unit-tested in isolation.
+# Sends a Message containing a Part.raw value and confirms the wire body
+# captured by getLastRequestBody() carries it as a base64 string — not
+# Ballerina's default integer-array shape, which no real server can parse.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageEncodesPartRawAsBase64OnTheWire() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {task: {id: "task-raw-2", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-raw-1",
+        role: ROLE_USER,
+        parts: [
+            {raw: "outbound file bytes".toBytes(), mediaType: "application/octet-stream"}
+        ]
+    };
+    Task|Message _ = check c->sendMessage(msg);
+
+    json params = check getLastRequestBody().params;
+    map<json> messageMap = check params.message.ensureType();
+    json[] parts = check messageMap["parts"].ensureType();
+    map<json> firstPart = check parts[0].ensureType();
+    test:assertTrue(firstPart["raw"] is string, "Part.raw in the outbound wire body must be a base64 string, not Ballerina's default integer-array shape");
+}

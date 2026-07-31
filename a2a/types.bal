@@ -33,59 +33,83 @@ public type Part record {|
     json...;
 |};
 
-# Helper function: Serialize a Part with proper base64 encoding for raw field.
-# Ensures wire format matches proto spec requirement for bytes fields.
-public isolated function encodePartWithBase64(Part part) returns json|error {
-    map<json> result = {};
-
-    if part?.text is string {
-        result["text"] = part?.text;
-    }
-    byte[]? rawField = part?.raw;
-    if rawField is byte[] {
-        result["raw"] = array:toBase64(rawField);
-    }
-    if part?.url is string {
-        result["url"] = part?.url;
-    }
-    if part?.data is json {
-        result["data"] = part?.data;
-    }
-    if part?.filename is string {
-        result["filename"] = part?.filename;
-    }
-    if part?.mediaType is string {
-        result["mediaType"] = part?.mediaType;
-    }
-    if part?.metadata is map<json> {
-        result["metadata"] = part?.metadata;
-    }
-
-    // Copy any additional open record fields
-    map<json> partAsMap = check (part.toJson()).ensureType();
-    foreach [string, json] [key, value] in partAsMap.entries() {
-        if !result.hasKey(key) {
-            result[key] = value;
+# Recursively walks a json value (already produced by a type's default
+# .toJson()), converting any Part's raw field from the integer-array shape
+# Ballerina's default byte[] serialization produces into a base64 string —
+# the wire encoding every other A2A implementation expects for bytes
+# fields (protobuf JSON mapping), and the only shape a real server can
+# parse. Applied once, after toJson(), to any v1.0 Message/Task/Artifact/
+# StreamResponse/etc. tree before it is sent — the v0.3 compat layer
+# (compat_v03.bal's encodeV03Part) already handles this correctly on its
+# own dialect-specific path and needs no change.
+#
+# Only the "raw" key is special-cased; "raw" does not appear as a field
+# name anywhere else in this type model (confirmed: Part.raw is the only
+# byte[] field in the entire type hierarchy), so this cannot misfire on
+# an unrelated field.
+#
+# + value - a json value (or subtree) to walk
+# + return - the same tree with every Part.raw integer-array rewritten to
+#            a base64 string
+public isolated function encodeRawBytesForWire(json value) returns json {
+    if value is json[] {
+        json[] result = [];
+        foreach json v in value {
+            result.push(encodeRawBytesForWire(v));
         }
+        return result;
     }
-
-    return result;
+    if value is map<json> {
+        map<json> result = {};
+        foreach [string, json] [k, v] in value.entries() {
+            if k == "raw" && v is json[] {
+                byte[]|error asBytes = trap v.cloneWithType();
+                if asBytes is byte[] {
+                    result[k] = array:toBase64(asBytes);
+                    continue;
+                }
+            }
+            result[k] = encodeRawBytesForWire(v);
+        }
+        return result;
+    }
+    return value;
 }
 
-# Helper function: Deserialize a Part from JSON that may have base64-encoded raw field.
-public isolated function decodePartWithBase64(json jsonSource) returns Part|error {
-    map<json> sourceMap = check jsonSource.ensureType();
-    map<json> workingMap = sourceMap.clone();
-
-    // Handle raw field: convert base64 string to bytes if needed
-    if workingMap.hasKey("raw") {
-        json rawValue = workingMap["raw"];
-        if rawValue is string {
-            workingMap["raw"] = check array:fromBase64(rawValue);
+# The reverse of encodeRawBytesForWire: converts any "raw" field that is a
+# base64 string back into the integer-array shape cloneWithType expects
+# for a byte[] field — Ballerina's cloneWithType cannot decode a base64
+# string into byte[] itself (confirmed empirically: it requires an
+# integer-array json shape), so this must run on every inbound v1.0
+# Message/Task/Artifact/StreamResponse/etc. tree before cloneWithType is
+# called, or a real server's base64-encoded response would fail to parse
+# entirely.
+#
+# + value - a json value (or subtree) to walk
+# + return - the same tree with every Part.raw base64 string rewritten to
+#            an integer-array, or an error if a "raw" string isn't valid
+#            base64
+public isolated function decodeRawBytesFromWire(json value) returns json|error {
+    if value is json[] {
+        json[] result = [];
+        foreach json v in value {
+            result.push(check decodeRawBytesFromWire(v));
         }
+        return result;
     }
-
-    return check workingMap.cloneWithType(Part);
+    if value is map<json> {
+        map<json> result = {};
+        foreach [string, json] [k, v] in value.entries() {
+            if k == "raw" && v is string {
+                byte[] decoded = check array:fromBase64(v);
+                result[k] = decoded.toJson();
+                continue;
+            }
+            result[k] = check decodeRawBytesFromWire(v);
+        }
+        return result;
+    }
+    return value;
 }
 
 # One turn of communication between a client and an agent.

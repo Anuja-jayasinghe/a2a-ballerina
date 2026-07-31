@@ -96,7 +96,7 @@ class A2AStreamGenerator {
             // REST events carry a bare StreamResponse with no JSON-RPC
             // envelope, unlike the JSON-RPC binding's enveloped events.
             json restEnvelope = check data.fromJsonString();
-            return check restEnvelope.cloneWithType(StreamResponse);
+            return check (check decodeRawBytesFromWire(restEnvelope)).cloneWithType(StreamResponse);
         }
         json envelope = check data.fromJsonString();
         transport:JsonRpcResponse rpcResp = check envelope.cloneWithType(transport:JsonRpcResponse);
@@ -113,7 +113,7 @@ class A2AStreamGenerator {
                 message = "SSE event contained neither result nor error"
             );
         }
-        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check result.cloneWithType(StreamResponse);
+        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(StreamResponse);
     }
 
     public isolated function close() returns error? {
