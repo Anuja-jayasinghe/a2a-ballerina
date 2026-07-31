@@ -2058,3 +2058,38 @@ function testSendMessageEncodesPartRawAsBase64OnTheWire() returns error? {
     map<json> firstPart = check parts[0].ensureType();
     test:assertTrue(firstPart["raw"] is string, "Part.raw in the outbound wire body must be a base64 string, not Ballerina's default integer-array shape");
 }
+
+@test:Config {}
+function testJsonRpcAndRestProduceIdenticalGetTaskResult() returns error? {
+    json taskBody = defaultTaskJson();
+
+    setNextJsonResponse({"jsonrpc": "2.0", "id": "1", "result": taskBody});
+    Client jsonRpcClient = check new (getServerBaseUrl());
+    Task jsonRpcResult = check jsonRpcClient->getTask("task-x");
+
+    setNextRestResponse(taskBody);
+    Client restClient = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task restResult = check restClient->getTask("task-x");
+
+    test:assertEquals(jsonRpcResult, restResult, "the same logical task must decode to an identical Task value regardless of which binding fetched it");
+}
+
+@test:Config {}
+function testJsonRpcAndRestProduceIdenticalErrorTypeAndCode() returns error? {
+    setNextJsonResponse({"jsonrpc": "2.0", "id": "1", "error": {"code": -32002, "message": "cannot cancel"}});
+    Client jsonRpcClient = check new (getServerBaseUrl());
+    Task|error jsonRpcResult = jsonRpcClient->cancelTask("task-x");
+
+    setNextRestResponse({
+        "error": {"message": "cannot cancel", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_CANCELABLE"}]}
+    }, statusCode = 400);
+    Client restClient = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error restResult = restClient->cancelTask("task-x");
+
+    test:assertTrue(jsonRpcResult is TaskNotCancelableError);
+    test:assertTrue(restResult is TaskNotCancelableError);
+    TaskNotCancelableError jsonRpcErr = <TaskNotCancelableError>jsonRpcResult;
+    TaskNotCancelableError restErr = <TaskNotCancelableError>restResult;
+    test:assertEquals(jsonRpcErr.detail().code, restErr.detail().code,
+            "detail.code must be identical across bindings so a caller switching Client from JSON-RPC to REST sees no difference");
+}
