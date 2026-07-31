@@ -1,5 +1,7 @@
 // Spec-facing types for the A2A protocol.
 
+import ballerina/lang.array;
+
 public enum Role {
     ROLE_UNSPECIFIED,
     ROLE_USER,
@@ -30,6 +32,61 @@ public type Part record {|
     // newer specification version can have additional fields
     json...;
 |};
+
+# Helper function: Serialize a Part with proper base64 encoding for raw field.
+# Ensures wire format matches proto spec requirement for bytes fields.
+public isolated function encodePartWithBase64(Part part) returns json|error {
+    map<json> result = {};
+
+    if part?.text is string {
+        result["text"] = part?.text;
+    }
+    byte[]? rawField = part?.raw;
+    if rawField is byte[] {
+        result["raw"] = array:toBase64(rawField);
+    }
+    if part?.url is string {
+        result["url"] = part?.url;
+    }
+    if part?.data is json {
+        result["data"] = part?.data;
+    }
+    if part?.filename is string {
+        result["filename"] = part?.filename;
+    }
+    if part?.mediaType is string {
+        result["mediaType"] = part?.mediaType;
+    }
+    if part?.metadata is map<json> {
+        result["metadata"] = part?.metadata;
+    }
+
+    // Copy any additional open record fields
+    map<json> partAsMap = check (part.toJson()).ensureType();
+    foreach [string, json] [key, value] in partAsMap.entries() {
+        if !result.hasKey(key) {
+            result[key] = value;
+        }
+    }
+
+    return result;
+}
+
+# Helper function: Deserialize a Part from JSON that may have base64-encoded raw field.
+public isolated function decodePartWithBase64(json jsonSource) returns Part|error {
+    map<json> sourceMap = check jsonSource.ensureType();
+    map<json> workingMap = sourceMap.clone();
+
+    // Handle raw field: convert base64 string to bytes if needed
+    if workingMap.hasKey("raw") {
+        json rawValue = workingMap["raw"];
+        if rawValue is string {
+            workingMap["raw"] = check array:fromBase64(rawValue);
+        }
+    }
+
+    return check workingMap.cloneWithType(Part);
+}
 
 # One turn of communication between a client and an agent.
 public type Message record {|

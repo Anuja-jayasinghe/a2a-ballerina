@@ -54,6 +54,21 @@ function testPartDataVariantRoundTrip() returns error? {
 }
 
 @test:Config {}
+function testPartRawBytesRoundTripThroughBase64() returns error? {
+    byte[] originalBytes = "hello world, some bytes".toBytes();
+    Part original = {raw: originalBytes, mediaType: "application/octet-stream"};
+    json encoded = original.toJson();
+    // Confirm the wire representation really is a base64 string, not a
+    // JSON array of byte values — this is the specific thing the design
+    // spec flagged as assumed-but-never-asserted.
+    map<json> encodedMap = check encoded.ensureType();
+    json? rawField = encodedMap["raw"];
+    test:assertTrue(rawField is string, "Part.raw must serialize as a base64 string on the wire, matching the proto's documented JSON encoding for bytes fields");
+    Part decoded = check encoded.cloneWithType(Part);
+    test:assertEquals(decoded?.raw, originalBytes);
+}
+
+@test:Config {}
 function testPartToleratesUnrecognizedField() returns error? {
     json payload = {
         text: "What is the weather in Colombo?",
