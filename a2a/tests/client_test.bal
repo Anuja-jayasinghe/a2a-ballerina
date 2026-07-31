@@ -1777,3 +1777,39 @@ function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns er
     record {| StreamResponse value; |}|error? third = s.next();
     test:assertTrue(third is error, "with every reconnect attempt failing, both allotted attempts should be exhausted and the error surfaced, not recurse indefinitely");
 }
+
+@test:Config {}
+function testClientInitRejectsV03WithHttpJsonBinding() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getServerBaseUrl(), protocolBinding: "HTTP+JSON", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client|error result = new (getServerBaseUrl(), agentCard = card, binding = "HTTP+JSON");
+    test:assertTrue(result is VersionNotSupportedError,
+            "constructing an HTTP+JSON client against a card that resolves to V0_3 must fail fast with a typed error, not send a v0.3 JSON-RPC method name to a REST path");
+}
+
+@test:Config {}
+function testClientInitAllowsV03WithJsonRpcBinding() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getServerBaseUrl(), protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    // binding defaults to "JSONRPC" — v0.3 + JSONRPC is the existing,
+    // already-supported combination and must still construct cleanly.
+    Client _ = check new (getServerBaseUrl(), agentCard = card);
+}
+
+@test:Config {}
+function testClientInitDefaultBindingUnchangedWithNoCard() returns error? {
+    // Omitting agentCard entirely must construct exactly as before,
+    // regardless of the new binding parameter's value, since self.mode
+    // defaults to V1_0 when no card is given.
+    Client _ = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+}

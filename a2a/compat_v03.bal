@@ -12,20 +12,49 @@ import ballerina/lang.array;
 # Which A2A wire dialect a Client speaks to a given server.
 public type ProtocolMode "V1_0"|"V0_3";
 
-# Detects which wire dialect to use, from a resolved AgentCard.
+# Resolves the wire dialect for the interface matching preferredBinding,
+# rather than assuming supportedInterfaces[0] — the same interface
+# selectInterface would return for this binding, so a REST client and a
+# JSON-RPC client on the same multi-interface card each read their own
+# interface's protocolVersion, not whichever happens to sit at index 0.
+# Falls back to the existing index-0/legacy behavior when the card
+# declares no matching interface (this function has no error return type
+# to report "not found" through, so falling back rather than defaulting
+# blindly to V1_0 preserves the existing single-binding-card semantics).
 #
 # + card - the agent card fetched via resolveAgentCard
-# + return - V0_3 for a legacy card (no supportedInterfaces) unless its
-#            legacy top-level protocolVersion explicitly says otherwise, or
-#            for a card whose first supportedInterfaces entry declares a
-#            "0.x" protocolVersion; V1_0 otherwise
-public isolated function detectProtocolMode(AgentCard card) returns ProtocolMode {
+# + preferredBinding - which transport binding's interface to read
+#                      protocolVersion from; defaults to "JSONRPC"
+# + return - V0_3 or V1_0, per the matched interface's protocolVersion,
+#            or the existing index-0/legacy rules if no interface matches
+public isolated function detectProtocolModeForBinding(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns ProtocolMode {
+    AgentInterface|error iface = selectInterface(card, preferredBinding);
+    if iface is AgentInterface {
+        string? v = iface?.protocolVersion;
+        return (v is string && v.startsWith("0.")) ? "V0_3" : "V1_0";
+    }
     if card.supportedInterfaces.length() > 0 {
         string? v = card.supportedInterfaces[0]?.protocolVersion;
         return (v is string && v.startsWith("0.")) ? "V0_3" : "V1_0";
     }
     string? v = card?.protocolVersion;
     return (v is string && !v.startsWith("0.")) ? "V1_0" : "V0_3";
+}
+
+# Detects which wire dialect to use, from a resolved AgentCard, for the
+# JSONRPC binding. Kept as the existing one-argument entry point so every
+# caller from before HTTP+JSON existed keeps behaving identically;
+# delegates to detectProtocolModeForBinding with "JSONRPC".
+#
+# + card - the agent card fetched via resolveAgentCard
+# + return - V0_3 for a legacy card (no supportedInterfaces) unless its
+#            legacy top-level protocolVersion explicitly says otherwise, or
+#            for a card whose JSONRPC supportedInterfaces entry declares a
+#            "0.x" protocolVersion; V1_0 otherwise
+public isolated function detectProtocolMode(AgentCard card) returns ProtocolMode {
+    return detectProtocolModeForBinding(card, "JSONRPC");
 }
 
 # Translates a v1.0 PascalCase JSON-RPC method name to its v0.3 equivalent.

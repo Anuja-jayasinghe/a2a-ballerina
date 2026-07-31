@@ -237,6 +237,7 @@ public isolated client class Client {
     private final string[] & readonly requestedExtensions;
     private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
+    private final TransportBinding binding;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -281,9 +282,16 @@ public isolated client class Client {
     #                          times if the underlying stream ends with an
     #                          error (not a clean terminal-state close)
     #                          before giving up and surfacing the error.
+    # + binding - Which transport binding this Client speaks. Defaults to
+    #             "JSONRPC", preserving today's behavior exactly. When
+    #             agentCard is given, the matching supportedInterfaces
+    #             entry for this binding determines self.mode; v0.3 has no
+    #             REST/HTTP+JSON binding equivalent, so "HTTP+JSON"
+    #             combined with a card that resolves to v0.3 is rejected.
     # + return - error if the underlying http:Client cannot be created, or
     #            if credentials is non-empty but does not satisfy any of
-    #            agentCard's declared SecurityRequirements
+    #            agentCard's declared SecurityRequirements, or if binding
+    #            is "HTTP+JSON" and agentCard resolves to A2A v0.3
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
@@ -292,7 +300,8 @@ public isolated client class Client {
             AgentCard? agentCard = (),
             string[] requestedExtensions = [],
             map<string> credentials = {},
-            int maxReconnectAttempts = 0) returns error? {
+            int maxReconnectAttempts = 0,
+            TransportBinding binding = "JSONRPC") returns error? {
         // http:ClientConfiguration isn't Cloneable (some of its fields
         // aren't pure data), so a mapping-constructor spread is used
         // instead of .clone() to shallow-copy it before mutating .auth —
@@ -315,7 +324,16 @@ public isolated client class Client {
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = effectiveHeaders.cloneReadOnly();
         self.tenant = tenant;
-        self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
+        self.binding = binding;
+        self.mode = agentCard is AgentCard
+            ? detectProtocolModeForBinding(agentCard, binding)
+            : "V1_0";
+        if self.mode == "V0_3" && binding == "HTTP+JSON" {
+            return error VersionNotSupportedError(
+                "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent",
+                message = "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent"
+            );
+        }
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
     }
