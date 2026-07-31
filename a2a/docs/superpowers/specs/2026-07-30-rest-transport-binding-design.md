@@ -128,8 +128,10 @@ while REST is being built.
 bindings).** Proto `OAuthFlows` is a `oneof` of five members:
 `authorization_code`, `client_credentials`, `implicit` (deprecated),
 `password` (deprecated), and `device_code`. `types.bal`'s `OAuthFlows`
-declares only the first four. A card advertising a device-code flow
-loses that member on parse. Unrelated to REST; noted because the pass
+declares only the first four. Because `OAuthFlows` is an open record
+(`json...;`), a card advertising a device-code flow does **not** lose the
+member — it survives as an untyped `json` value, just without a typed
+`DeviceCodeOAuthFlow` accessor. Unrelated to REST; noted because the pass
 found it and the brief asked for every mismatch however small.
 
 **M3 — `tenant` is duplicated between path and body on writes.** Every
@@ -150,7 +152,8 @@ is worse: its request message *is* `TaskPushNotificationConfig`, bound at
 `taskId` appears in the path and in the body. Again, matched to the
 reference SDK rather than trimmed.
 
-**M5 — GET operations move fields from a body into the query string.**
+**M5 — bodiless operations (the six GETs and the DELETE) move fields from
+a body into the query string.**
 This is the largest reconciliation item and has no JSON-RPC analogue.
 `GetTask`, `ListTasks`, `GetTaskPushNotificationConfig`,
 `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`,
@@ -206,15 +209,19 @@ which is uniformly the unscoped path prefixed with `/{tenant}`.
 | GetExtendedAgentCard | GET | `/extendedAgentCard` | `/{tenant}/extendedAgentCard` |
 | DeleteTaskPushNotificationConfig | DELETE | `/tasks/{task_id}/pushNotificationConfigs/{id}` | `/{tenant}/tasks/{task_id}/pushNotificationConfigs/{id}` |
 
-Every POST and the DELETE use `body: "*"` — the whole request message as
-the JSON body (the DELETE's request message has only path fields, so its
-body is empty in practice).
+Every POST uses `body: "*"` — the whole request message as the JSON body.
+The DELETE has **no `body` member** in its annotation at all (only
+`delete:` plus `additional_bindings`), so it carries no body; its request
+message consists entirely of path fields. This distinction feeds
+`REST_OPERATIONS`'s `hasBody` flag below, which in turn decides whether
+path params are retained in the body or dropped — `hasBody` must be
+`false` for the DELETE.
 
-### Known discrepancy: `SubscribeToTask`'s verb
+### `SubscribeToTask`'s verb: proto says GET, reference client sends POST
 
 The proto annotates `SubscribeToTask` as **GET**
 (`get: "/tasks/{id=*}:subscribe"`, and the tenant variant likewise). The
-reference `a2a-python` SDK sends **POST**:
+reference `a2a-python` *client* sends **POST**:
 
 ```python
 async for event in self._send_stream_request(
@@ -225,19 +232,38 @@ async for event in self._send_stream_request(
 ):
 ```
 
-Both were read directly; this is a real divergence between the normative
-proto and the reference implementation, not a transcription slip.
+The reference *server*, however, accepts **both**. From
+`a2aproject/a2a-python`, `src/a2a/server/routes/rest_routes.py:80-81`:
 
-**Decision: send GET, matching the proto, and treat a `405 Method Not
-Allowed` on this one operation as a signal to retry once with POST.**
-The proto is the normative artifact and the spec site renders from it, so
-GET is the defensible default; but a server generated from the Python SDK's
-own server side may well only route POST, and a single conditional retry
-on exactly one status code for exactly one operation is far cheaper than
-being unable to resubscribe at all. The retry is deliberately not
-generalised to other operations. This must be verified against a real
-REST-serving agent during implementation and the finding recorded — it is
-the single most likely source of an interop failure in this binding.
+```python
+('/tasks/{id}:subscribe', 'GET'): dispatcher.on_subscribe_to_task,
+('/tasks/{id}:subscribe', 'POST'): dispatcher.on_subscribe_to_task,
+```
+
+So the client/proto divergence is real but **largely inert in practice**:
+against the reference server — which is what most REST-serving A2A agents
+are built on — GET works fine, and the two verbs dispatch to the same
+handler.
+
+**Decision: send GET, matching the proto.** GET is the normative
+annotation, and the reference server routes it, so this is correct
+against both the specification and the dominant implementation.
+
+**Fallback, deliberately scoped small.** A non-reference server that
+hand-rolls its routes might register only POST, following the reference
+client rather than the proto. For that case only, a `404`, `405`, or
+`501` response to a `SubscribeToTask` GET triggers exactly one retry with
+POST. The trigger covers all three statuses rather than just `405`
+because a router that never registered the GET route is as likely to
+return `404` (no route matched) or `501` as a properly-formed `405`
+(route exists, wrong verb). The retry is scoped to this one operation and
+is not generalised.
+
+This is a **low-likelihood** interop risk, not a high one — the earlier
+framing of it as the most likely failure source was based on reading only
+the reference client and has been corrected. It is still worth confirming
+against a real REST-serving agent, since a mock cannot settle it (a mock
+implements whatever the client sends).
 
 ## Request/response body shape per operation
 
@@ -309,21 +335,89 @@ Rationale, and why not the alternatives:
 - **Why also `selectInterface`.** REST needs more than a URL. The tenant
   a client must echo on every request is defined per-interface
   (`AgentInterface.tenant`, and the proto states clients MUST include it
-  when set), and `detectProtocolMode` reads `protocolVersion` off
-  `supportedInterfaces[0]` — which is *not necessarily* the entry whose
-  url was selected. Returning only a string forces callers to re-scan the
-  card and risks pairing one interface's URL with another's tenant.
-  `primaryUrl` becomes a thin wrapper over `selectInterface` so there is
-  one scan implementation, not two.
+  when set), and so is `protocolVersion`. Returning only a string forces
+  callers to re-scan the card and risks pairing one interface's URL with
+  another's tenant or version. `primaryUrl` becomes a thin wrapper over
+  `selectInterface` so there is one scan implementation, not two.
 - **Legacy `card.url` fallback stays `JSONRPC`-only.** A pre-v1.0 card's
   bare `url` field predates `HTTP+JSON` entirely, so falling back to it
   for a REST request would point the client at a JSON-RPC endpoint.
   `selectInterface(card, "HTTP+JSON")` errors rather than falling back.
 - **`Client.init` gains a matching `binding` parameter**, defaulted to
   `"JSONRPC"`, so existing construction is unchanged. Deliberately *not*
-  auto-detected from the card: `Client` is constructed from a URL, not a
-  card, and silently choosing a binding based on card ordering would make
-  the wire format depend on server-side list order.
+  auto-detected from the card: silently choosing a binding based on card
+  ordering would make the wire format depend on server-side list order.
+
+### `protocolVersion` must be read from the selected interface
+
+`detectProtocolMode` (`compat_v03.bal`) currently reads `protocolVersion`
+off `supportedInterfaces[0]` unconditionally:
+
+```ballerina
+if card.supportedInterfaces.length() > 0 {
+    string? v = card.supportedInterfaces[0]?.protocolVersion;
+    return (v is string && v.startsWith("0.")) ? "V0_3" : "V1_0";
+}
+```
+
+Index 0 is not necessarily the entry `selectInterface` returned, and with
+a second binding in play that becomes a live bug rather than a
+theoretical one. Consider a conformant card:
+
+```json
+"supportedInterfaces": [
+  {"protocolBinding": "JSONRPC",   "url": "...", "protocolVersion": "0.3"},
+  {"protocolBinding": "HTTP+JSON", "url": "...", "protocolVersion": "1.0"}
+]
+```
+
+A REST client selects entry 1 (v1.0), but `detectProtocolMode` reads
+entry 0 and resolves `V0_3` — which, combined with the v0.3+REST
+rejection rule below, would reject a perfectly valid REST client at
+construction.
+
+**Decision: `protocolVersion` is read from the interface `selectInterface`
+actually returned, never from index 0.** `detectProtocolMode` gains a
+binding-aware overload rather than being changed in place, so every
+existing single-binding caller keeps identical behaviour:
+
+```ballerina
+# Resolves the wire dialect for the interface matching `preferredBinding`,
+# rather than assuming supportedInterfaces[0]. Falls back to the existing
+# index-0/legacy behaviour when the card declares no matching interface.
+public isolated function detectProtocolModeForBinding(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns ProtocolMode;
+```
+
+The existing one-arg `detectProtocolMode` stays, delegating with
+`"JSONRPC"`, preserving its current semantics for every present caller.
+
+**Where the v0.3+REST check lives.** `Client.init` already accepts an
+optional `agentCard` and derives `self.mode` from it
+(`self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0"`),
+so `init` *does* see a card when one is supplied and the check belongs
+there — inside `init`, not pushed onto callers. With the new `binding`
+parameter, that line becomes:
+
+```ballerina
+self.mode = agentCard is AgentCard
+    ? detectProtocolModeForBinding(agentCard, binding)
+    : "V1_0";
+if self.mode == "V0_3" && binding == "HTTP+JSON" {
+    return error VersionNotSupportedError(...);
+}
+```
+
+No new `init` parameter beyond `binding` is needed. When no card is
+supplied, `mode` defaults to `V1_0` exactly as today, so REST is
+permitted and the check is a no-op — matching the existing convention
+that omitting the card means "assume v1.0".
+
+An earlier draft of this design asserted that `Client` "is constructed
+from a URL, not a card"; that is wrong — `init` has taken an optional
+`agentCard` since the v0.3 compat work. The statement is corrected here
+because it was the premise for pushing the version check outside `init`.
 
 ## Design decision 2 — branch inside `Client`, not a separate client type
 
@@ -378,23 +472,33 @@ type RestOperation record {|
     string method;                 # "GET" | "POST" | "DELETE"
     string pathTemplate;           # e.g. "/tasks/{id}:cancel"
     string[] pathParams;           # params consumed by pathTemplate
-    boolean hasBody;               # body: "*" — whole message as body
+    boolean hasBody;               # true only where the annotation has body: "*"
     boolean streaming;             # response is text/event-stream
 |};
 
 final readonly & map<RestOperation> REST_OPERATIONS = { /* 11 entries */ };
 ```
 
+`hasBody` is `true` for exactly the four POST operations
+(`SendMessage`, `SendStreamingMessage`, `CancelTask`,
+`CreateTaskPushNotificationConfig`) — the only ones whose annotation
+carries `body: "*"`. It is `false` for the six GETs **and for the
+DELETE**, whose annotation has no `body` member at all.
+
 Path params are substituted from `params` and — matching the reference
 SDK (M3/M4) — left in the body for `hasBody` operations, but removed
-from the query string for the rest. `tenant` is lifted out of `params`
-into the path prefix when present.
+entirely for the rest (they must not leak into the query string, which is
+why the DELETE's `hasBody: false` matters). `tenant` is lifted out of
+`params` into the path prefix when present.
 
 **v0.3 + REST is rejected at construction.** `compat_v03.bal`'s method-
 name table maps to v0.3 *JSON-RPC* method names, which have no meaning in
 a REST path. Constructing a `Client` with `binding = "HTTP+JSON"` against
-a card that `detectProtocolMode` resolves to `V0_3` returns
-`VersionNotSupportedError` from `init` — consistent with the existing
+a card that `detectProtocolModeForBinding(card, "HTTP+JSON")` resolves to
+`V0_3` returns `VersionNotSupportedError` from `init` (see §"`protocolVersion`
+must be read from the selected interface" for why the binding-aware
+overload is essential here — the index-0 reading would misfire on a
+mixed-version card) — consistent with the existing
 precedent of `listTasks` failing fast rather than sending a request the
 server cannot understand.
 
@@ -497,6 +601,27 @@ data is this same payload, passed to `toA2AErrorFromRest` with the
 stream's HTTP status (200), so a mid-stream error surfaces as the same
 typed error a unary call would produce.
 
+## Files touched
+
+- `a2a/client.bal` — `TransportBinding` type; `primaryUrl` gains a
+  defaulted `preferredBinding`; new `selectInterface`; `Client` gains a
+  `binding` field and `init` parameter plus the v0.3+REST rejection;
+  `rpcCall` and `openSseStream` gain the binding dispatch; new
+  `REST_OPERATIONS` descriptor table and REST request-building helper.
+- `a2a/compat_v03.bal` — new `detectProtocolModeForBinding` overload;
+  existing `detectProtocolMode` delegates to it with `"JSONRPC"`.
+- `a2a/errors.bal` — new `toA2AErrorFromRest`, plus the reason→type and
+  reason→JSON-RPC-code tables it maps through.
+- `a2a/sse.bal` — `readSseStream`/`A2AStreamGenerator` take the binding;
+  `decodeEvent` skips envelope unwrapping for REST; the generator begins
+  inspecting `SseEvent.event` to detect `error` frames.
+- `a2a/types.bal` — no changes required for REST itself (the shared v1.0
+  types are reused verbatim). Optional, if the M1/M2 pre-existing gaps
+  are addressed alongside: a `DeviceCodeOAuthFlow` type and its
+  `OAuthFlows` member.
+- `a2a/tests/` — new REST request-shape, binding-selection, streaming,
+  error-mapping, and cross-binding equivalence tests (see §Testing).
+
 ## Testing
 
 - **Unit tests** (mock-based, `tests/`, following `testutil.bal`
@@ -530,6 +655,12 @@ typed error a unary call would produce.
   Implementation should first re-check each reference agent's card for an
   `HTTP+JSON` entry, and if none exists, record the gap in the interop
   repo's findings the same way the push-notification CRUD gap was
-  recorded. **`SubscribeToTask`'s GET-vs-POST divergence is the specific
-  thing a real server is needed to settle**; it cannot be resolved by a
-  mock, since the mock would simply implement whatever the client sends.
+  recorded. `SubscribeToTask`'s GET-vs-POST divergence is worth
+  confirming here rather than by mock (a mock implements whatever the
+  client sends), though the reference server accepting both verbs makes
+  this a low-likelihood risk rather than a blocking one.
+- **`SubscribeToTask` verb-fallback test**: a mock that rejects GET with
+  `404`/`405`/`501` and accepts POST, asserting the single retry fires
+  and that it does *not* fire for any other operation. Mock-only by
+  nature — this path exists for hypothetical non-reference servers, so
+  it cannot be exercised against the reference server, which routes GET.
