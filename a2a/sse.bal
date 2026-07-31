@@ -113,6 +113,13 @@ class ReconnectingStreamGenerator {
     private stream<StreamResponse, error?> current;
     private final Client a2aClient;
     private final string taskId;
+    // The per-call tenant override (if any) from the originating
+    // sendMessageStream/subscribeToTask call. Must be threaded through to
+    // the reconnect's openTaskSubscriptionStream call below — otherwise a
+    // reconnect silently falls back to the client-level default tenant
+    // (or no tenant), resubscribing under the wrong tenant in a
+    // multi-tenant deployment.
+    private final string? tenant;
     private final int maxAttempts;
     private int attemptsUsed = 0;
     private boolean done = false;
@@ -122,12 +129,13 @@ class ReconnectingStreamGenerator {
     // own first result, so the caller never observes that a peek happened.
     private record {| StreamResponse value; |}? bufferedFirst;
 
-    isolated function init(stream<StreamResponse, error?> initial, Client a2aClient, string taskId, int maxAttempts, record {| StreamResponse value; |}? bufferedFirst = ()) {
+    isolated function init(stream<StreamResponse, error?> initial, Client a2aClient, string taskId, int maxAttempts, record {| StreamResponse value; |}? bufferedFirst = (), string? tenant = ()) {
         self.current = initial;
         self.a2aClient = a2aClient;
         self.taskId = taskId;
         self.maxAttempts = maxAttempts;
         self.bufferedFirst = bufferedFirst;
+        self.tenant = tenant;
     }
 
     public isolated function next() returns record {| StreamResponse value; |}|error? {
@@ -152,7 +160,7 @@ class ReconnectingStreamGenerator {
             // bound instead of ever giving up. See
             // openTaskSubscriptionStream's doc comment for the full
             // rationale.
-            stream<StreamResponse, error?>|error reconnected = self.a2aClient.openTaskSubscriptionStream(self.taskId);
+            stream<StreamResponse, error?>|error reconnected = self.a2aClient.openTaskSubscriptionStream(self.taskId, self.tenant);
             if reconnected is stream<StreamResponse, error?> {
                 // Best-effort close of the errored/dropped stream before
                 // swapping in the reconnected one; a failure here doesn't

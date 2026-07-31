@@ -48,8 +48,10 @@ isolated function encodeBase64Url(byte[] data) returns string {
 
 # Verifies one of an AgentCard's JWS signatures (RFC 7515) against a
 # caller-supplied public key. The JWS payload is the AgentCard's own JSON
-# serialization with the `signatures` field itself removed (a signature
-# can't cover itself) — reconstructed here rather than trusting any
+# serialization with the `signatures` field itself emptied to `[]` (it's
+# non-optional, so it's still present in the serialized JSON as an empty
+# array, not actually removed — a signature can't cover itself)
+# — reconstructed here rather than trusting any
 # embedded payload, since JWS's compact form for a detached signature
 # carries no payload of its own.
 #
@@ -90,7 +92,7 @@ isolated function encodeBase64Url(byte[] data) returns string {
 public isolated function verifyAgentCardSignature(
         AgentCard card,
         crypto:PublicKey publicKey,
-        int signatureIndex = 0) returns boolean|error {
+        int signatureIndex = 0) returns boolean|SignatureVerificationError|UnsupportedSignatureAlgorithmError {
     if signatureIndex < 0 || signatureIndex >= card.signatures.length() {
         return error SignatureVerificationError(string `signatureIndex ${signatureIndex} out of range: card has ${card.signatures.length()} signature(s)`);
     }

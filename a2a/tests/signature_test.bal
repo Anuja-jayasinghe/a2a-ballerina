@@ -4,7 +4,7 @@
 // keypair (via the JDK's keytool, since ballerina/crypto has no
 // key-generation function) and a real signature computed by actually
 // running crypto:signRsaSha256 over this exact card's JSON (with
-// `signatures` removed) using that keypair's private key — not a
+// `signatures` emptied to `[]`) using that keypair's private key — not a
 // hand-crafted string. The tampered-card test is what actually proves
 // verifyAgentCardSignature does real cryptographic work: if it were
 // replaced with `return true;`, only that test would fail.

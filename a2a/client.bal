@@ -150,7 +150,16 @@ public type CachedAgentCard record {|
 # + headers - Optional default headers, for API key authentication
 # + previous - A card previously returned by this function, to enable a
 #              conditional (If-None-Match) request
-# + return - The parsed AgentCard plus its caching metadata, or an error
+# + return - The parsed AgentCard plus its caching metadata, or an error.
+#            Note: like resolveAgentCard, this is a bare `error` rather
+#            than a narrowed A2A error union — it shares
+#            fetchAgentCardWithCaching with resolveAgentCard, which
+#            propagates raw, un-wrapped http/JSON errors (e.g. connection
+#            failures, malformed JSON) via `check` alongside the typed
+#            A2AInternalError cases it constructs itself. Callers that
+#            need to distinguish typed A2A errors from these raw
+#            passthroughs must still pattern-match on the concrete error
+#            type.
 public isolated function resolveAgentCardCached(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
@@ -305,8 +314,11 @@ public isolated client class Client {
     }
 
     # Returns the extensions the remote agent granted on the most recent
-    # call, per the response's A2A-Extensions header. Empty until the
-    # first call completes, or if the agent never sent the header.
+    # call that reported them, per the response's A2A-Extensions header.
+    # Empty until the first call completes. Note: a call whose response
+    # omits the header does not clear a previous grant — this reflects the
+    # most recent call that reported an A2A-Extensions header, not
+    # necessarily literally the single most recent call.
     #
     # + return - the granted extension URIs
     public isolated function lastGrantedExtensions() returns string[] {
@@ -555,13 +567,13 @@ public isolated client class Client {
             return peeked;
         }
         if peeked is () {
-            stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0));
+            stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, tenant = effectiveTenant));
             return wrapped;
         }
         Task? maybeTask = peeked.value?.task;
         if maybeTask is Task {
             stream<StreamResponse, error?> wrapped =
-                new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked));
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked, effectiveTenant));
             return wrapped;
         }
         // A stream can also legitimately open with a status update rather
@@ -571,10 +583,10 @@ public isolated client class Client {
         string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
         if maybeTaskId is string {
             stream<StreamResponse, error?> wrapped =
-                new (new ReconnectingStreamGenerator(rawStream, self, maybeTaskId, self.maxReconnectAttempts, peeked));
+                new (new ReconnectingStreamGenerator(rawStream, self, maybeTaskId, self.maxReconnectAttempts, peeked, effectiveTenant));
             return wrapped;
         }
-        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked));
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked, effectiveTenant));
         return wrapped;
     }
 
@@ -660,7 +672,7 @@ public isolated client class Client {
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
         }
-        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts));
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts, tenant = tenant));
         return wrapped;
     }
 

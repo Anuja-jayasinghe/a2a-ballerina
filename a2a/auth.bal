@@ -29,6 +29,11 @@ public type ResolvedAuth record {|
 # + credentials - one credential string per scheme name this call should
 #                 satisfy; a scheme absent from securityRequirements is
 #                 ignored even if a credential is supplied for it
+# Only card.securityRequirements (the top-level AgentCard field) is
+# considered — per-skill AgentSkill.securityRequirements is out of scope
+# for this pass. A card that declares security only at the skill level
+# currently fails auto-wiring here even with otherwise-valid credentials.
+#
 # + return - resolved auth config, or an AuthResolutionError if no
 #            SecurityRequirement entry can be fully satisfied by the given
 #            credentials
@@ -52,6 +57,19 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
             string credential = credentials.get(schemeName);
             if scheme is ApiKeySecurityScheme {
                 if scheme.'in == "header" {
+                    // Reject a declared header name that collides with a
+                    // protocol-reserved header. Client.buildHeaders()
+                    // applies these auto-wired headers after
+                    // defaultHeaders, so an unverified (potentially
+                    // malicious or malformed) AgentCard's declared API-key
+                    // header name could otherwise silently override
+                    // A2A-Version or Content-Type on every outbound
+                    // request.
+                    string lowerName = scheme.name.toLowerAscii();
+                    if lowerName == "a2a-version" || lowerName == "content-type" {
+                        return error AuthResolutionError(
+                            string `apiKey scheme "${schemeName}" declares header name "${scheme.name}", which collides with a protocol-reserved header — refusing to auto-wire it`);
+                    }
                     headers[scheme.name] = credential;
                 } else {
                     return error AuthResolutionError(

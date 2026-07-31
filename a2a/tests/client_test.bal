@@ -1453,8 +1453,23 @@ function testResolveAgentCardHonors304() returns error? {
     test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
 
     setWellKnownConditionalOverride(304);
+    // Deliberately re-script the well-known endpoint to serve a DIFFERENT
+    // card body (a different name) while the conditional-304 logic stays
+    // active (setWellKnownOverride preserves the existing ETag and
+    // conditionalStatus). If the client failed to send If-None-Match — or
+    // if it did but then didn't correctly reuse the cached body — the mock
+    // would serve this different, fresh 200 body instead of a genuine 304,
+    // and `second.card` would end up equal to this different card rather
+    // than the original. Only a real conditional round-trip (If-None-Match
+    // sent, genuine 304 received, cached body reused) makes this test pass.
+    json differentCard = defaultMockAgentCard();
+    map<json> differentCardMap = <map<json>>differentCard;
+    differentCardMap["name"] = "A Completely Different Mock Agent";
+    setWellKnownOverride(differentCardMap, 200);
+
     CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
-    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached card unchanged");
+    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached (original) card unchanged, not the newly-scripted different body");
+    test:assertNotEquals(second.card.name, differentCardMap["name"], "a genuine 304 must never surface the newly-scripted different card body");
 
     setWellKnownOverride(());
 }
@@ -1588,6 +1603,40 @@ function testSubscribeToTaskReconnectsOnDrop() returns error? {
     ]);
     StreamResponse second = check expectValue(s.next());
     test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+# Regression test for a real bug caught during review: on reconnect,
+# ReconnectingStreamGenerator used to call
+# self.a2aClient.openTaskSubscriptionStream(self.taskId) with no tenant
+# argument, so a reconnect always fell back to the client-level default
+# tenant (or no tenant at all) — even when the originating
+# subscribeToTask(id, tenant = "x") call specified a per-call tenant
+# override. In a multi-tenant deployment this silently resubscribes under
+# the wrong tenant after a drop. This client is constructed with NO
+# client-level default tenant, and the originating call passes a per-call
+# tenant override; the mock's captured request body on the reconnect must
+# still carry that same per-call tenant, not omit it or substitute a
+# different one.
+@test:Config {}
+function testSubscribeToTaskReconnectPreservesPerCallTenant() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: statusUpdateJson("task-10", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-10", tenant = "acme-corp");
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-10", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.tenant, "acme-corp", "reconnect must resubscribe using the originating call's per-call tenant override, not the client-level default (or no tenant)");
 }
 
 # Proves attempt exhaustion actually surfaces the final error to the
