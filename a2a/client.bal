@@ -637,6 +637,35 @@ public isolated client class Client {
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        stream<StreamResponse, error?> rawStream = check self.openTaskSubscriptionStream(taskId, tenant);
+        if self.maxReconnectAttempts <= 0 {
+            return rawStream;
+        }
+        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts));
+        return wrapped;
+    }
+
+    # Opens the raw, unwrapped subscribeToTask stream — the same request
+    # subscribeToTask itself sends, but without any reconnect wrapping.
+    #
+    # Used internally by both subscribeToTask (which wraps this in a
+    # ReconnectingStreamGenerator when maxReconnectAttempts > 0) and by
+    # ReconnectingStreamGenerator itself when it resubscribes on a drop.
+    # The latter must go through this raw helper rather than the public
+    # subscribeToTask remote function: calling the public
+    # subscribeToTask would construct a brand-new
+    # ReconnectingStreamGenerator with its own fresh
+    # attemptsUsed/maxAttempts budget on every single reconnect, silently
+    # resetting the attempt count each time and defeating
+    # maxReconnectAttempts entirely — against a persistently-failing
+    # agent, reconnection would recurse without bound instead of ever
+    # giving up. Going through this raw helper keeps exactly one budget
+    # (the outer generator's own) governing the whole reconnect chain.
+    #
+    # + taskId - The task to subscribe to
+    # + tenant - Optional per-call tenant override
+    # + return - A stream of StreamResponse values, or an error
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
         map<json> params = {"id": taskId};
         string? effectiveTenant = tenant ?: self.tenant;
         // tenant routing is a v1.0-only concept (per-AgentInterface tenant
@@ -646,12 +675,7 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        stream<StreamResponse, error?> rawStream = check self.openSseStream("SubscribeToTask", params);
-        if self.maxReconnectAttempts <= 0 {
-            return rawStream;
-        }
-        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts));
-        return wrapped;
+        return self.openSseStream("SubscribeToTask", params);
     }
 
     # Lists tasks matching an optional filter, with cursor-based pagination.

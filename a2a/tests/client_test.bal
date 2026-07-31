@@ -1485,3 +1485,125 @@ function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
     record {| StreamResponse value; |}|error? third = s.next();
     test:assertTrue(third is error, "with maxReconnectAttempts = 0 (the default), a dropped stream should surface its error immediately, not reconnect");
 }
+
+# Edge case called out explicitly in the design: a bare Message (no task)
+# as sendMessageStream's first event carries nothing to resubscribe with,
+# so wrapping must be a no-op even when maxReconnectAttempts > 0 — a
+# dropped connection after a Message-only reply surfaces its error
+# immediately, exactly like the maxReconnectAttempts = 0 case, rather than
+# attempting (and failing) to call subscribeToTask with no taskId.
+@test:Config {}
+function testSendMessageStreamDoesNotReconnectAfterBareMessage() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: messageJson("reply-1")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m5", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.message is Message, "first event should be the bare Message reply");
+
+    // Script what a reconnect *would* receive, to prove it is never
+    // called: if a reconnect were attempted despite there being no taskId
+    // to resubscribe with, this scripted event would surface instead of
+    // the drop's error.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-should-not-exist", "TASK_STATE_COMPLETED")}
+    ]);
+    record {| StreamResponse value; |}|error? second = s.next();
+    test:assertTrue(second is error, "a bare Message first event has no task to resubscribe to, so a dropped connection should surface its error immediately, not reconnect");
+}
+
+# subscribeToTask is the reconnect primitive ReconnectingStreamGenerator
+# calls internally, but its own wrapping (simpler than
+# sendMessageStream's — the taskId is already the input parameter, no
+# peeking needed) had no direct coverage; this exercises it in isolation,
+# not just as a side effect of sendMessageStream's reconnect.
+@test:Config {}
+function testSubscribeToTaskReconnectsOnDrop() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: statusUpdateJson("task-7", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-7");
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the reconnect's response — the drop happens on this next() call.
+    setNextSseResponse([
+        {'event: "message", data: statusUpdateJson("task-7", "TASK_STATE_COMPLETED")}
+    ]);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+# Proves attempt exhaustion actually surfaces the final error to the
+# caller, rather than retrying indefinitely or swallowing it: with
+# maxReconnectAttempts = 1, a second consecutive drop (the resubscribed
+# stream itself failing immediately) must exhaust the single allotted
+# attempt and return that second drop's error, not silently retry again.
+@test:Config {}
+function testSendMessageStreamGivesUpAfterExhaustingReconnectAttempts() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-8")},
+        {'event: "message", data: statusUpdateJson("task-8", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
+    Message msg = {messageId: "m6", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // Script the resubscribe's response to fail immediately (no events at
+    // all before the drop) — the single reconnect attempt succeeds in
+    // opening a new stream, but that stream itself then drops right away,
+    // with no attempts left to retry again.
+    setNextSseResponseThenDrop([]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "a second consecutive drop after the single allotted reconnect attempt should surface as an error, not retry again or hang");
+}
+
+# Regression test for a real bug caught during review: ReconnectingStreamGenerator
+# used to reconnect by calling the *public* subscribeToTask remote function,
+# which wraps its own returned stream in a brand-new
+# ReconnectingStreamGenerator with a fresh attemptsUsed = 0 and the full
+# maxReconnectAttempts budget every time. Since each reconnect attempt
+# went through that same public, budget-resetting path, the attempt count
+# was silently reset on every single reconnect — against a mock (or
+# agent) that fails every single reconnect attempt, not just once,
+# reconnection never actually exhausted and recursed effectively without
+# bound (confirmed to hang indefinitely before the fix, extracting the raw
+# openTaskSubscriptionStream helper in client.bal). This scripts a target
+# that keeps failing every reconnect attempt (not just the first) with
+# maxReconnectAttempts = 2, so a persistently-unreachable agent must still
+# give up after exactly 2 reconnect attempts, quickly, not hang.
+@test:Config {}
+function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns error? {
+    setNextSseResponseThenDrop([
+        {'event: "message", data: taskJson("task-9")},
+        {'event: "message", data: statusUpdateJson("task-9", "TASK_STATE_WORKING")}
+    ]);
+    Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 2);
+    Message msg = {messageId: "m7", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+
+    // From here on the mock keeps replaying this same "drop immediately"
+    // script for every subsequent request — including both reconnect
+    // attempts the generator will make — simulating a target that is
+    // persistently failing, not just failing once.
+    setNextSseResponseThenDrop([]);
+    record {| StreamResponse value; |}|error? third = s.next();
+    test:assertTrue(third is error, "with every reconnect attempt failing, both allotted attempts should be exhausted and the error surfaced, not recurse indefinitely");
+}

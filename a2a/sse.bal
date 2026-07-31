@@ -142,11 +142,30 @@ class ReconnectingStreamGenerator {
         record {| StreamResponse value; |}|error? result = self.current.next();
         if result is error && self.attemptsUsed < self.maxAttempts {
             self.attemptsUsed += 1;
-            stream<StreamResponse, error?>|error reconnected = self.a2aClient->subscribeToTask(self.taskId);
+            // Deliberately calls the raw, unwrapped openTaskSubscriptionStream
+            // helper rather than the public subscribeToTask remote function.
+            // Going through subscribeToTask here would wrap each
+            // resubscribed stream in a brand-new ReconnectingStreamGenerator
+            // with its own fresh attemptsUsed/maxAttempts budget, silently
+            // resetting the attempt count on every reconnect — against a
+            // persistently-failing agent, reconnection would recurse without
+            // bound instead of ever giving up. See
+            // openTaskSubscriptionStream's doc comment for the full
+            // rationale.
+            stream<StreamResponse, error?>|error reconnected = self.a2aClient.openTaskSubscriptionStream(self.taskId);
             if reconnected is stream<StreamResponse, error?> {
                 self.current = reconnected;
                 return self.next();
             }
+            // Intentional: if the resubscribe call itself fails (e.g. the
+            // agent is unreachable), that failure is not surfaced —
+            // `result` still holds the original drop error, which falls
+            // through to be returned below. This attempt still counted
+            // against attemptsUsed above, so a persistently-unreachable
+            // agent still gives up after maxAttempts rather than retrying
+            // forever; the caller just sees the original connection-drop
+            // error rather than the (usually less informative) resubscribe
+            // failure.
         }
         if result is () || result is error {
             self.done = true;

@@ -209,6 +209,18 @@ public isolated function taskJson(string taskId, string state = "TASK_STATE_SUBM
     return string `{"jsonrpc":"2.0","id":"1","result":{"task":{"id":"${taskId}","status":{"state":"${state}"}}}}`;
 }
 
+# Builds a JSON-RPC-enveloped {"message": {...}} SSE data payload — the
+# other valid shape sendMessageStream can open with per specification
+# section 3.1.1: a plain conversational reply with no task. Used to
+# exercise the no-op reconnect-wrapping path, since a bare Message carries
+# no taskId to resubscribe with.
+#
+# + messageId - the message identifier to stamp on the reply
+# + return - the SSE event's `data:` field content
+public isolated function messageJson(string messageId) returns string {
+    return string `{"jsonrpc":"2.0","id":"1","result":{"message":{"messageId":"${messageId}","role":"ROLE_AGENT","parts":[{"text":"a direct reply"}]}}}`;
+}
+
 # Builds a JSON-RPC-enveloped TaskStatusUpdateEvent SSE data payload, for
 # tests scripting a status-update SSE event without repeating the envelope
 # shape inline (follows the same {"jsonrpc":"2.0","id":"1","result":{...}}
