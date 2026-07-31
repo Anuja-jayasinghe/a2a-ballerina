@@ -55,6 +55,38 @@ isolated MockWellKnownScript wellKnownScript = {};
 isolated json lastRequestBody = {};
 isolated map<string> lastRequestHeaders = {};
 
+type MockRestScript record {|
+    json jsonBody = {};
+    int statusCode = 200;
+    map<string> lastQueryParams = {};
+    string lastPath = "";
+    string lastMethod = "";
+    boolean hasResponseBody = true;
+|};
+
+isolated MockRestScript restScript = {};
+
+# Scripts the next REST request to receive a plain JSON response.
+#
+# + body - the JSON body to respond with
+# + statusCode - the HTTP status code to respond with
+# + hasResponseBody - false for e.g. a DELETE's empty 204 response
+public isolated function setNextRestResponse(json body, int statusCode = 200, boolean hasResponseBody = true) {
+    lock {
+        restScript = {jsonBody: body.clone(), statusCode, hasResponseBody};
+    }
+}
+
+# Returns the method, path, and query params of the last REST request the
+# mock received, so tests can assert on exactly what the Client sent.
+#
+# + return - a record with the last request's method, path, and query params
+public isolated function getLastRestRequest() returns record {| string method; string path; map<string> queryParams; |} {
+    lock {
+        return {method: restScript.lastMethod, path: restScript.lastPath, queryParams: restScript.lastQueryParams.clone()};
+    }
+}
+
 # Returns the JSON body of the last request the mock JSON-RPC endpoint
 # received, so tests can assert on what the Client actually sent on the
 # wire (e.g. tenant propagation).
@@ -399,6 +431,43 @@ service / on mockListener {
             res.setJsonPayload(script.jsonBody);
             respondIgnoringClientGoneAway(caller, res);
         }
+    }
+
+    // Method-agnostic catch-all for the REST/HTTP+JSON binding's
+    // resources (e.g. /tasks/{id}, /tasks/{id}:cancel,
+    // /tasks/{taskId}/pushNotificationConfigs). Confirmed empirically to
+    // be the only mechanism that can express a `/tasks/{id}:cancel`-shaped
+    // path: a resource path segment cannot combine a bracketed path-param
+    // with an adjacent literal suffix like `:cancel`, so per-operation
+    // resource routing isn't possible here. This 'default resource
+    // matches any HTTP method not already matched by a more specific
+    // resource above (e.g. the well-known card GET or the JSON-RPC root
+    // POST), and yields the full raw path via the [string... path] rest
+    // parameter.
+    resource function 'default [string... path](http:Caller caller, http:Request req) returns error? {
+        MockRestScript script;
+        lock {
+            script = restScript.clone();
+        }
+        map<string> queryParams = {};
+        foreach string k in req.getQueryParams().keys() {
+            string? v = req.getQueryParamValue(k);
+            if v is string {
+                queryParams[k] = v;
+            }
+        }
+        string fullPath = "/" + string:'join("/", ...path);
+        lock {
+            restScript.lastMethod = req.method;
+            restScript.lastPath = fullPath;
+            restScript.lastQueryParams = queryParams.clone();
+        }
+        http:Response res = new;
+        res.statusCode = script.statusCode;
+        if script.hasResponseBody {
+            res.setJsonPayload(script.jsonBody);
+        }
+        check caller->respond(res);
     }
 }
 

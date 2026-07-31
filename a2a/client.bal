@@ -2,6 +2,7 @@
 
 import ballerina/a2a.transport;
 import ballerina/http;
+import ballerina/url;
 import ballerina/uuid;
 
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
@@ -228,6 +229,109 @@ public isolated function primaryUrl(
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
 }
 
+# How one operation maps onto the REST binding.
+type RestOperation record {|
+    string httpMethod;
+    string pathTemplate;
+    string[] pathParams;
+    boolean hasBody;
+    boolean streaming;
+|};
+
+final readonly & map<RestOperation> REST_OPERATIONS = {
+    "SendMessage": {httpMethod: "POST", pathTemplate: "/message:send", pathParams: [], hasBody: true, streaming: false},
+    "SendStreamingMessage": {httpMethod: "POST", pathTemplate: "/message:stream", pathParams: [], hasBody: true, streaming: true},
+    "GetTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}", pathParams: ["id"], hasBody: false, streaming: false},
+    "ListTasks": {httpMethod: "GET", pathTemplate: "/tasks", pathParams: [], hasBody: false, streaming: false},
+    "CancelTask": {httpMethod: "POST", pathTemplate: "/tasks/{id}:cancel", pathParams: ["id"], hasBody: true, streaming: false},
+    "SubscribeToTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}:subscribe", pathParams: ["id"], hasBody: false, streaming: true},
+    "CreateTaskPushNotificationConfig": {httpMethod: "POST", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: true, streaming: false},
+    "GetTaskPushNotificationConfig": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false},
+    "ListTaskPushNotificationConfigs": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: false, streaming: false},
+    "GetExtendedAgentCard": {httpMethod: "GET", pathTemplate: "/extendedAgentCard", pathParams: [], hasBody: false, streaming: false},
+    "DeleteTaskPushNotificationConfig": {httpMethod: "DELETE", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false}
+};
+
+# Builds the path (with tenant prefix and path-param substitution) and
+# body for one REST request, per the descriptor table above.
+#
+# Path params and tenant are substituted from `params`. Per the design
+# spec's M3/M4 findings (matching the reference a2a-python SDK exactly,
+# not "cleaning up" the duplication): for hasBody operations, tenant and
+# path params stay in the body as well as the path; for bodiless
+# operations, they are removed from the working param set so they don't
+# leak into the query string. Bodiless operations serialize every
+# remaining param as a URL-encoded query parameter; TaskState enum values
+# serialize as their symbolic name (already what a bare enum value is in
+# Ballerina — no conversion needed), and any value containing characters
+# needing escaping (e.g. an RFC 3339 timestamp's `:`/`+`) goes through
+# url:encode.
+#
+# + method - the JSON-RPC-style method name already used to key
+#            REST_OPERATIONS (e.g. "GetTask") — the same string every
+#            remote function already passes to rpcCall/openSseStream
+# + params - the same params map the JSON-RPC binding would have sent
+# + return - the full request path (including query string for bodiless
+#            operations) and the JSON body to send (nil for bodiless
+#            operations), or an error if method has no REST mapping
+isolated function buildRestRequest(string method, map<json> params) returns [string, json?]|error {
+    RestOperation? maybeOp = REST_OPERATIONS[method];
+    if maybeOp is () {
+        return error A2AInternalError(string `REST binding has no operation mapping for "${method}"`);
+    }
+    RestOperation op = maybeOp;
+    map<json> workingParams = params.clone();
+
+    string? tenant = ();
+    json? tenantJson = workingParams["tenant"];
+    if tenantJson is string {
+        tenant = tenantJson;
+        if !op.hasBody {
+            _ = workingParams.remove("tenant");
+        }
+    }
+
+    string path = op.pathTemplate;
+    foreach string pName in op.pathParams {
+        json? pValue = workingParams[pName];
+        if pValue is string {
+            // Plain string substitution, not regex: pathTemplate never
+            // contains a literal "{"/"}" outside of exactly these
+            // placeholder markers, so there's no need for regex escaping
+            // here. lang.string has no plain literal-replace function
+            // (only regex-based replaceAll/replaceFirst), so the
+            // placeholder is substituted manually via indexOf/substring.
+            string placeholder = string `{${pName}}`;
+            int? idx = path.indexOf(placeholder);
+            if idx is int {
+                path = path.substring(0, idx) + pValue + path.substring(idx + placeholder.length());
+            }
+            if !op.hasBody {
+                _ = workingParams.remove(pName);
+            }
+        }
+    }
+
+    if tenant is string {
+        path = string `/${tenant}${path}`;
+    }
+
+    if op.hasBody {
+        return [path, workingParams];
+    }
+
+    string[] queryParts = [];
+    foreach [string, json] [k, v] in workingParams.entries() {
+        string stringValue = v is string ? v : v.toString();
+        string encoded = check url:encode(stringValue, "UTF-8");
+        queryParts.push(string `${k}=${encoded}`);
+    }
+    if queryParts.length() > 0 {
+        path = path + "?" + string:'join("&", ...queryParts);
+    }
+    return [path, ()];
+}
+
 # An A2A protocol client for calling remote agents.
 public isolated client class Client {
     private final http:Client httpClient;
@@ -410,6 +514,9 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - the unwrapped result, or an error
     private isolated function rpcCall(string method, map<json> params) returns json|error {
+        if self.binding == "HTTP+JSON" {
+            return self.restCall(method, params);
+        }
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
@@ -434,6 +541,47 @@ public isolated client class Client {
             );
         }
         return result;
+    }
+
+    # Performs one REST binding call and returns the unwrapped result, or
+    # (), matching rpcCall's contract for callers that only need the
+    # unwrapped result on the JSON-RPC side. DeleteTaskPushNotificationConfig
+    # returns google.protobuf.Empty over the wire — an absent or empty
+    # body must be tolerated here rather than treated as
+    # InvalidAgentResponseError, unlike a genuinely malformed response.
+    #
+    # + method - the JSON-RPC-style method name (see buildRestRequest)
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - the unwrapped result json (or an empty map for a bodiless
+    #            success response), or a typed A2AError
+    private isolated function restCall(string method, map<json> params) returns json|error {
+        [string, json?] [path, body] = check buildRestRequest(method, params);
+        RestOperation op = REST_OPERATIONS.get(method);
+        map<string> headers = self.buildHeaders();
+        http:Response resp;
+        if op.httpMethod == "GET" {
+            resp = check self.httpClient->get(path, headers);
+        } else if op.httpMethod == "DELETE" {
+            resp = check self.httpClient->delete(path, headers = headers);
+        } else {
+            resp = check self.httpClient->post(path, body ?: {}, headers);
+        }
+        self.captureGrantedExtensions(resp);
+        if resp.statusCode >= 200 && resp.statusCode < 300 {
+            json|error payload = resp.getJsonPayload();
+            if payload is json {
+                return payload;
+            }
+            // No parseable body (e.g. 204 No Content) — treat as an
+            // empty successful result. Callers of a void operation like
+            // deleteTaskPushNotificationConfig discard this; callers of
+            // an operation expecting real content will fail their own
+            // cloneWithType, which is the correct place for that failure
+            // to surface, not here.
+            return {};
+        }
+        json? errorBody = resp.getJsonPayload() is json ? check resp.getJsonPayload() : ();
+        return toA2AErrorFromRest(resp.statusCode, errorBody);
     }
 
     # Sends a message to the remote agent.

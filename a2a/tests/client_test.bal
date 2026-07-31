@@ -1813,3 +1813,101 @@ function testClientInitDefaultBindingUnchangedWithNoCard() returns error? {
     // defaults to V1_0 when no card is given.
     Client _ = check new (getServerBaseUrl(), binding = "HTTP+JSON");
 }
+
+// ---- REST/HTTP+JSON binding: non-streaming operations -----------------
+
+@test:Config {}
+function testRestSendMessageSendsCorrectPathAndBody() returns error? {
+    setNextRestResponse({"task": defaultTaskJson()});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/message:send");
+}
+
+@test:Config {}
+function testRestGetTaskSendsCorrectPathAndQuery() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->getTask("task-123", historyLength = 5);
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-123");
+    test:assertEquals(req.queryParams["historyLength"], "5");
+}
+
+@test:Config {}
+function testRestCancelTaskSendsIdInPathAndBody() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->cancelTask("task-123");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/tasks/task-123:cancel");
+}
+
+@test:Config {}
+function testRestListTasksEncodesFilterAsQueryString() returns error? {
+    setNextRestResponse({"tasks": [], "nextPageToken": "", "pageSize": 10, "totalSize": 0});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    ListTasksResult _ = check c->listTasks(filter = {
+        contextId: "ctx-1",
+        status: TASK_STATE_WORKING,
+        pageSize: 10,
+        statusTimestampAfter: "2023-10-27T10:00:00+05:30"
+    });
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks");
+    test:assertEquals(req.queryParams["status"], "TASK_STATE_WORKING", "TaskState must serialize as its symbolic enum name in the query string, not an ordinal");
+    test:assertEquals(req.queryParams["contextId"], "ctx-1");
+}
+
+@test:Config {}
+function testRestCreateTaskPushNotificationConfigSendsTaskIdInPathAndBody() returns error? {
+    setNextRestResponse({"url": "http://webhook.example", "id": "cfg-1", "taskId": "task-1"});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    TaskPushNotificationConfig _ = check c->createTaskPushNotificationConfig({url: "http://webhook.example", taskId: "task-1"});
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs");
+}
+
+@test:Config {}
+function testRestDeleteTaskPushNotificationConfigToleratesEmptyBody() returns error? {
+    setNextRestResponse({}, statusCode = 204, hasResponseBody = false);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    error? result = c->deleteTaskPushNotificationConfig("task-1", "cfg-1");
+    test:assertTrue(result is (), "a 204 with no body must be treated as success, not InvalidAgentResponseError");
+}
+
+@test:Config {}
+function testRestGetExtendedAgentCardSendsCorrectPath() returns error? {
+    setNextRestResponse(defaultMockAgentCard());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    AgentCard _ = check c->getExtendedAgentCard();
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/extendedAgentCard");
+}
+
+@test:Config {}
+function testRestOperationWithTenantPrefixesPath() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON", tenant = "acme-corp");
+    Task _ = check c->getTask("task-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/acme-corp/tasks/task-1");
+}
+
+@test:Config {}
+function testRestErrorResponseMapsToTypedError() returns error? {
+    setNextRestResponse({
+        "error": {"message": "no such task", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_FOUND"}]}
+    }, statusCode = 404);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error result = c->getTask("nonexistent");
+    test:assertTrue(result is TaskNotFoundError);
+}
