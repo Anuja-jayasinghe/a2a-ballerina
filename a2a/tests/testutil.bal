@@ -197,6 +197,20 @@ public isolated function defaultTaskJson() returns json {
     return {id: "task-1", status: {state: "TASK_STATE_COMPLETED"}};
 }
 
+# Builds a Task JSON body with the specified task ID and state, wrapped in a
+# JSON-RPC response envelope for use with setNextJsonResponse().
+#
+# + taskId - the task identifier to stamp on the task
+# + state - the TaskState string value (e.g. "TASK_STATE_FAILED")
+# + return - the JSON-RPC response body with the task
+public isolated function taskJsonWithState(string taskId, string state) returns json {
+    return {
+        jsonrpc: "2.0",
+        id: "1",
+        result: {id: taskId, status: {state: state}}
+    };
+}
+
 # Builds a JSON-RPC-enveloped {"task": {...}} SSE data payload — the shape
 # a real sendMessageStream response opens with per specification section
 # 3.1.1 (the stream opens with a Task or a Message, then delivers zero or

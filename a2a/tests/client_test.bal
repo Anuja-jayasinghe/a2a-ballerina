@@ -500,6 +500,30 @@ function testGetTaskNotFoundErrorMapping() returns error? {
 }
 
 @test:Config {}
+function testGetTaskReturnsFailedState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-x", "TASK_STATE_FAILED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-x");
+    test:assertEquals(task.status.state, TASK_STATE_FAILED);
+}
+
+@test:Config {}
+function testGetTaskReturnsRejectedState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-y", "TASK_STATE_REJECTED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-y");
+    test:assertEquals(task.status.state, TASK_STATE_REJECTED);
+}
+
+@test:Config {}
+function testGetTaskReturnsAuthRequiredState() returns error? {
+    setNextJsonResponse(taskJsonWithState("task-z", "TASK_STATE_AUTH_REQUIRED"));
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-z");
+    test:assertEquals(task.status.state, TASK_STATE_AUTH_REQUIRED);
+}
+
+@test:Config {}
 function testSendMessageMalformedEnvelopeMapping() returns error? {
     // Neither result nor error — a malformed JSON-RPC envelope.
     setNextJsonResponse({jsonrpc: "2.0", id: "1"});
@@ -971,6 +995,33 @@ function testListTasksOmitsUnsetFilterFields() returns error? {
     map<json> paramsMap = check params.ensureType();
     test:assertFalse(paramsMap.hasKey("contextId"), "contextId should be absent when no filter is passed");
     test:assertFalse(paramsMap.hasKey("pageSize"), "pageSize should be absent when no filter is passed");
+}
+
+@test:Config {}
+function testListTasksSendsAllFilterFields() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {tasks: [], nextPageToken: "", pageSize: 0, totalSize: 0}
+    });
+    Client c = check new (getServerBaseUrl());
+    ListTasksResult _ = check c->listTasks(filter = {
+        contextId: "ctx-1",
+        status: TASK_STATE_WORKING,
+        pageSize: 10,
+        pageToken: "cursor-abc",
+        historyLength: 5,
+        statusTimestampAfter: "2026-01-01T00:00:00Z",
+        includeArtifacts: true
+    });
+    json body = getLastRequestBody();
+    map<json> params = check (check body.params).ensureType();
+    test:assertEquals(params["contextId"], "ctx-1");
+    test:assertEquals(params["status"], "TASK_STATE_WORKING");
+    test:assertEquals(params["pageSize"], 10);
+    test:assertEquals(params["pageToken"], "cursor-abc");
+    test:assertEquals(params["historyLength"], 5);
+    test:assertEquals(params["statusTimestampAfter"], "2026-01-01T00:00:00Z");
+    test:assertEquals(params["includeArtifacts"], true);
 }
 
 # ListTasks has no v0.3 equivalent (confirmed "(NEW)" in the migration
