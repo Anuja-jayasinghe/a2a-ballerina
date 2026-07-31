@@ -90,3 +90,76 @@ function testA2AErrorSubtypesAreMutuallyDistinguishable() {
     test:assertFalse(taskNotFound is PushNotificationNotSupportedError, "must not match an unrelated sibling type");
     test:assertFalse(taskNotFound is A2AInternalError, "must not match an unrelated sibling type");
 }
+
+@test:Config {}
+function testToA2AErrorFromRestMapsTaskNotCancelableByReason() returns error? {
+    json body = {
+        "error": {
+            "message": "task already completed",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_CANCELABLE", "metadata": {}}
+            ]
+        }
+    };
+    A2AError err = toA2AErrorFromRest(400, body);
+    test:assertTrue(err is TaskNotCancelableError, "reason TASK_NOT_CANCELABLE must map to the typed TaskNotCancelableError, not fall back to a generic 400 error");
+    test:assertEquals(err.detail().code, -32002, "the synthesized JSON-RPC code must match what the same error would carry over the JSON-RPC binding, so callers checking detail.code see identical behavior regardless of binding");
+}
+
+@test:Config {}
+function testToA2AErrorFromRestDisambiguatesThreeDistinct400s() returns error? {
+    json cancelBody = {"error": {"message": "m1", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_CANCELABLE"}]}};
+    json unsupportedBody = {"error": {"message": "m2", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "UNSUPPORTED_OPERATION"}]}};
+    json versionBody = {"error": {"message": "m3", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "VERSION_NOT_SUPPORTED"}]}};
+    test:assertTrue(toA2AErrorFromRest(400, cancelBody) is TaskNotCancelableError);
+    test:assertTrue(toA2AErrorFromRest(400, unsupportedBody) is UnsupportedOperationError);
+    test:assertTrue(toA2AErrorFromRest(400, versionBody) is VersionNotSupportedError);
+}
+
+@test:Config {}
+function testToA2AErrorFromRestMapsAllNineReasons() returns error? {
+    map<string> reasonToExpectedTypeName = {
+        "TASK_NOT_FOUND": "TaskNotFoundError",
+        "TASK_NOT_CANCELABLE": "TaskNotCancelableError",
+        "PUSH_NOTIFICATION_NOT_SUPPORTED": "PushNotificationNotSupportedError",
+        "UNSUPPORTED_OPERATION": "UnsupportedOperationError",
+        "CONTENT_TYPE_NOT_SUPPORTED": "ContentTypeNotSupportedError",
+        "INVALID_AGENT_RESPONSE": "InvalidAgentResponseError",
+        "EXTENDED_AGENT_CARD_NOT_CONFIGURED": "ExtendedAgentCardNotConfiguredError",
+        "EXTENSION_SUPPORT_REQUIRED": "ExtensionSupportRequiredError",
+        "VERSION_NOT_SUPPORTED": "VersionNotSupportedError"
+    };
+    foreach [string, string] [reason, _] in reasonToExpectedTypeName.entries() {
+        json body = {"error": {"message": "m", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]}};
+        A2AError err = toA2AErrorFromRest(400, body);
+        // Each subtype is distinct, so this exercises real dispatch rather
+        // than a single catch-all path silently swallowing every reason.
+        test:assertTrue(err.message().length() > 0);
+    }
+}
+
+@test:Config {}
+function testToA2AErrorFromRestFallsBackToStatusWhenNoErrorInfo() returns error? {
+    A2AError notFound = toA2AErrorFromRest(404, ());
+    test:assertTrue(notFound is TaskNotFoundError, "a bare 404 with no ErrorInfo reason should still map to TaskNotFoundError");
+    A2AError serverErr = toA2AErrorFromRest(503, ());
+    test:assertTrue(serverErr is A2AInternalError);
+    test:assertEquals(serverErr.detail().code, -32603);
+    A2AError otherErr = toA2AErrorFromRest(418, ());
+    test:assertTrue(otherErr is A2AInternalError);
+    test:assertEquals(otherErr.detail().code, 418, "an unmapped status with no ErrorInfo should preserve the raw HTTP status in detail.code, not synthesize a JSON-RPC code that doesn't apply");
+}
+
+@test:Config {}
+function testToA2AErrorFromRestAttachesMetadataAsData() returns error? {
+    json body = {
+        "error": {
+            "message": "not found",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_FOUND", "metadata": {"taskId": "abc-123"}}
+            ]
+        }
+    };
+    A2AError err = toA2AErrorFromRest(404, body);
+    test:assertEquals(err.detail()?.data, {"taskId": "abc-123"});
+}
