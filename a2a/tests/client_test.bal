@@ -1960,3 +1960,29 @@ function testRestStreamErrorEventMapsToTypedError() returns error? {
     record {| StreamResponse value; |}|error? result = s.next();
     test:assertTrue(result is InvalidAgentResponseError, "a named 'error' SSE frame must route through toA2AErrorFromRest and surface as the typed error, not attempt to parse it as a StreamResponse");
 }
+
+@test:Config {}
+function testRestSubscribeToTaskRetriesWithPostOn405() returns error? {
+    // Script the mock to reject GET with 405 for this one operation, then
+    // accept POST — assert the client retries and succeeds, not that it
+    // surfaces the 405 as an error.
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"statusUpdate": {"taskId": "task-1", "contextId": "ctx-1", "status": {"state": "TASK_STATE_WORKING"}}}`}
+    ]);
+    setRestRejectMethod("GET", 405);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.taskId, "task-1");
+}
+
+@test:Config {}
+function testRestFallbackDoesNotFireForOtherOperations() returns error? {
+    // A 405 on any operation OTHER than SubscribeToTask must surface as
+    // a normal error, not trigger a retry — the fallback is scoped to
+    // exactly this one operation.
+    setNextRestResponse({}, statusCode = 405);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error result = c->getTask("task-1");
+    test:assertTrue(result is error, "a 405 on GetTask must surface as an error, not silently retry with a different verb");
+}

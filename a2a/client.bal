@@ -724,6 +724,15 @@ public isolated client class Client {
         http:Response resp;
         if op.httpMethod == "GET" {
             resp = check self.httpClient->get(path, headers);
+            // SubscribeToTask's proto annotation says GET, but a
+            // non-reference server that hand-rolled its REST routes
+            // following the reference *client* (which sends POST) might
+            // only have registered POST. Scoped to exactly this one
+            // operation — retrying broadly for every operation would
+            // mask genuine method-not-allowed errors elsewhere.
+            if method == "SubscribeToTask" && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
+                resp = check self.httpClient->post(path, body ?: {}, headers);
+            }
         } else {
             resp = check self.httpClient->post(path, body ?: {}, headers);
         }
