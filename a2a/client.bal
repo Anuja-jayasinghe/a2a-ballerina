@@ -666,6 +666,9 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - a stream of StreamResponse values, or an error
     private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        if self.binding == "HTTP+JSON" {
+            return self.openRestSseStream(method, params);
+        }
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
@@ -704,7 +707,32 @@ public isolated client class Client {
             );
         }
 
-        return readSseStream(resp, self.mode);
+        return readSseStream(resp, self.mode, self.binding);
+    }
+
+    # Opens a REST binding SSE stream for a streaming operation
+    # (SendStreamingMessage or SubscribeToTask).
+    #
+    # + method - the JSON-RPC-style method name (see buildRestRequest)
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - a stream of StreamResponse values, or a typed A2AError
+    private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        [string, json?] [path, body] = check buildRestRequest(method, params);
+        RestOperation op = REST_OPERATIONS.get(method);
+        map<string> headers = self.buildHeaders();
+        headers["Accept"] = "text/event-stream";
+        http:Response resp;
+        if op.httpMethod == "GET" {
+            resp = check self.httpClient->get(path, headers);
+        } else {
+            resp = check self.httpClient->post(path, body ?: {}, headers);
+        }
+        self.captureGrantedExtensions(resp);
+        if !resp.getContentType().startsWith("text/event-stream") {
+            json|error errBody = resp.getJsonPayload();
+            return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());
+        }
+        return readSseStream(resp, self.mode, self.binding);
     }
 
     # Sends a message and receives updates in real time over SSE.

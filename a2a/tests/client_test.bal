@@ -1937,3 +1937,26 @@ function testRestErrorResponseMapsToTypedError() returns error? {
     Task|error result = c->getTask("nonexistent");
     test:assertTrue(result is TaskNotFoundError);
 }
+
+@test:Config {}
+function testRestSendMessageStreamDecodesBareStreamResponseNoEnvelope() returns error? {
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.task?.id, "task-1");
+}
+
+@test:Config {}
+function testRestStreamErrorEventMapsToTypedError() returns error? {
+    setNextRestSseResponse([
+        {'event: "error", data: string `{"error": {"message": "boom", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "INVALID_AGENT_RESPONSE"}]}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
+    record {| StreamResponse value; |}|error? result = s.next();
+    test:assertTrue(result is InvalidAgentResponseError, "a named 'error' SSE frame must route through toA2AErrorFromRest and surface as the typed error, not attempt to parse it as a StreamResponse");
+}

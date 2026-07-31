@@ -58,11 +58,20 @@ isolated map<string> lastRequestHeaders = {};
 type MockRestScript record {|
     json jsonBody = {};
     int statusCode = 200;
+    boolean hasResponseBody = true;
     map<string> lastQueryParams = {};
     string lastPath = "";
     string lastMethod = "";
-    boolean hasResponseBody = true;
     json lastBody = {};
+    http:SseEvent[] sseEvents = [];
+    boolean isSse = false;
+    boolean simulateDropError = false;
+    // Task 6's SubscribeToTask GET-vs-POST fallback support: when set,
+    // the mock rejects exactly one request of this method with this
+    // status, then clears itself so the retry (a different method)
+    // succeeds normally. () means no rejection scripted.
+    string? rejectMethod = ();
+    int rejectStatusCode = 0;
 |};
 
 isolated MockRestScript restScript = {};
@@ -75,6 +84,34 @@ isolated MockRestScript restScript = {};
 public isolated function setNextRestResponse(json body, int statusCode = 200, boolean hasResponseBody = true) {
     lock {
         restScript = {jsonBody: body.clone(), statusCode, hasResponseBody};
+    }
+}
+
+# Scripts the next REST request to receive an SSE stream response, with
+# bare StreamResponse JSON event data (no JSON-RPC envelope) — the REST
+# binding's actual wire shape.
+#
+# + events - the canned SSE events to stream back
+public isolated function setNextRestSseResponse(http:SseEvent[] events) {
+    lock {
+        restScript.sseEvents = events.clone();
+        restScript.isSse = true;
+        restScript.simulateDropError = false;
+    }
+}
+
+# Scripts the mock to reject exactly the next request of the given HTTP
+# method with the given status code (e.g. simulating a server that only
+# routes POST for an operation the proto annotates as GET), then clear
+# the rejection so a subsequent request — the client's retry with a
+# different method — succeeds normally against whatever else is scripted.
+#
+# + httpMethod - the method to reject once, e.g. "GET"
+# + statusCode - the status to reject it with, e.g. 405
+public isolated function setRestRejectMethod(string httpMethod, int statusCode) {
+    lock {
+        restScript.rejectMethod = httpMethod;
+        restScript.rejectStatusCode = statusCode;
     }
 }
 
@@ -485,12 +522,36 @@ service / on mockListener {
             restScript.lastQueryParams = queryParams.clone();
             restScript.lastBody = capturedBody.clone();
         }
-        http:Response res = new;
-        res.statusCode = script.statusCode;
-        if script.hasResponseBody {
-            res.setJsonPayload(script.jsonBody);
+
+        if script.rejectMethod is string && req.method == script.rejectMethod {
+            http:Response rejectRes = new;
+            rejectRes.statusCode = script.rejectStatusCode;
+            lock {
+                restScript.rejectMethod = ();
+            }
+            check caller->respond(rejectRes);
+            return;
         }
-        check caller->respond(res);
+
+        http:Response res = new;
+        if script.isSse {
+            // caller->respond() with a raw stream defaults POST responses
+            // to 201; the Client checks for exactly 200, so set it explicitly.
+            res.statusCode = 200;
+            if script.simulateDropError {
+                stream<http:SseEvent, error?> dropStream = new (new DropAfterEventsGenerator(script.sseEvents));
+                res.setPayload(dropStream);
+            } else {
+                res.setPayload(script.sseEvents.toStream());
+            }
+            respondIgnoringClientGoneAway(caller, res);
+        } else {
+            res.statusCode = script.statusCode;
+            if script.hasResponseBody {
+                res.setJsonPayload(script.jsonBody);
+            }
+            check caller->respond(res);
+        }
     }
 }
 
