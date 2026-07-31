@@ -33,6 +33,98 @@ public type Part record {|
     json...;
 |};
 
+# The set of field names that can hold, directly or transitively, a Part
+# (or a structure containing one) somewhere in the v1.0 type hierarchy:
+# Message.parts, Artifact.parts, Task.history (Message[]), Task.artifacts
+# (Artifact[]), TaskStatus.message, TaskStatusUpdateEvent.status,
+# TaskArtifactUpdateEvent.artifact, StreamResponse.task/.message/
+# .statusUpdate/.artifactUpdate, SendMessageResult.task/.message, and
+# ListTasksResult.tasks. `encodeRawBytesForWire`/`decodeRawBytesFromWire`
+# only ever recurse into these exact key names — this is what keeps the
+# walkers from touching free-form fields such as `metadata` (map<json> on
+# Message/Task/Artifact/the two update events) or a data-Part's own
+# `data` field, even when those free-form trees happen to contain a key
+# literally named "raw" that has nothing to do with Part.raw.
+final readonly & string[] partBearingContainerKeys = [
+    "history", "artifacts", "message", "status", "task", "statusUpdate",
+    "artifactUpdate", "artifact", "tasks"
+];
+
+isolated function isPartBearingContainerKey(string k) returns boolean {
+    return partBearingContainerKeys.indexOf(k) is int;
+}
+
+# Rewrites the "raw" field of each Part-shaped element of a `parts` array
+# (as produced by Message.parts/Artifact.parts) from the integer-array
+# shape Ballerina's default byte[] serialization produces into a base64
+# string. Only ever touches the "raw" key directly on a Part object; a
+# Part's own `data`/`metadata` fields are left completely untouched, so a
+# data-Part whose arbitrary JSON payload happens to contain a "raw" key is
+# never mistaken for Part.raw.
+#
+# + partsValue - the json value of a `parts` field; expected to be a
+#                json[] of Part-shaped objects, but tolerates other shapes
+#                by returning them unchanged
+# + return - the same array with every Part.raw integer-array rewritten to
+#            a base64 string
+isolated function encodePartsRawField(json partsValue) returns json {
+    if partsValue !is json[] {
+        return partsValue;
+    }
+    json[] result = [];
+    foreach json part in partsValue {
+        if part !is map<json> {
+            result.push(part);
+            continue;
+        }
+        map<json> partResult = {};
+        foreach [string, json] [pk, pv] in part.entries() {
+            if pk == "raw" && pv is json[] {
+                byte[]|error asBytes = trap pv.cloneWithType();
+                if asBytes is byte[] {
+                    partResult[pk] = array:toBase64(asBytes);
+                    continue;
+                }
+            }
+            partResult[pk] = pv;
+        }
+        result.push(partResult);
+    }
+    return result;
+}
+
+# The reverse of encodePartsRawField: converts each Part-shaped element's
+# "raw" field, when it is a base64 string, back into the integer-array
+# shape cloneWithType expects for a byte[] field.
+#
+# + partsValue - the json value of a `parts` field
+# + return - the same array with every Part.raw base64 string rewritten to
+#            an integer-array, or an error if a "raw" string on an actual
+#            Part isn't valid base64
+isolated function decodePartsRawField(json partsValue) returns json|error {
+    if partsValue !is json[] {
+        return partsValue;
+    }
+    json[] result = [];
+    foreach json part in partsValue {
+        if part !is map<json> {
+            result.push(part);
+            continue;
+        }
+        map<json> partResult = {};
+        foreach [string, json] [pk, pv] in part.entries() {
+            if pk == "raw" && pv is string {
+                byte[] decoded = check array:fromBase64(pv);
+                partResult[pk] = decoded.toJson();
+                continue;
+            }
+            partResult[pk] = pv;
+        }
+        result.push(partResult);
+    }
+    return result;
+}
+
 # Recursively walks a json value (already produced by a type's default
 # .toJson()), converting any Part's raw field from the integer-array shape
 # Ballerina's default byte[] serialization produces into a base64 string —
@@ -43,10 +135,15 @@ public type Part record {|
 # (compat_v03.bal's encodeV03Part) already handles this correctly on its
 # own dialect-specific path and needs no change.
 #
-# Only the "raw" key is special-cased; "raw" does not appear as a field
-# name anywhere else in this type model (confirmed: Part.raw is the only
-# byte[] field in the entire type hierarchy), so this cannot misfire on
-# an unrelated field.
+# Structure-aware, not key-name-driven: this only ever recurses into the
+# fixed set of key names that can actually hold a Part somewhere beneath
+# them (see `partBearingContainerKeys`), and within a `parts` array only
+# ever touches the "raw" key of each Part-shaped element. Free-form
+# fields — `metadata` on Message/Task/Artifact/the update events, and a
+# data-Part's own `data` field — are never in that allow-list, so a
+# caller's own JSON containing an unrelated key named "raw" (e.g.
+# `metadata: {"raw": [1, 2, 3]}`) is passed through completely unchanged
+# instead of being silently mistaken for Part.raw.
 #
 # + value - a json value (or subtree) to walk
 # + return - the same tree with every Part.raw integer-array rewritten to
@@ -62,14 +159,13 @@ public isolated function encodeRawBytesForWire(json value) returns json {
     if value is map<json> {
         map<json> result = {};
         foreach [string, json] [k, v] in value.entries() {
-            if k == "raw" && v is json[] {
-                byte[]|error asBytes = trap v.cloneWithType();
-                if asBytes is byte[] {
-                    result[k] = array:toBase64(asBytes);
-                    continue;
-                }
+            if k == "parts" {
+                result[k] = encodePartsRawField(v);
+            } else if isPartBearingContainerKey(k) {
+                result[k] = encodeRawBytesForWire(v);
+            } else {
+                result[k] = v;
             }
-            result[k] = encodeRawBytesForWire(v);
         }
         return result;
     }
@@ -85,10 +181,16 @@ public isolated function encodeRawBytesForWire(json value) returns json {
 # called, or a real server's base64-encoded response would fail to parse
 # entirely.
 #
+# Structure-aware, not key-name-driven: same traversal allow-list as
+# encodeRawBytesForWire (see `partBearingContainerKeys`), so a response
+# whose free-form `metadata` happens to contain a "raw" key holding
+# arbitrary non-base64 text no longer fails to decode — that key is
+# simply never visited, because `metadata` is not in the allow-list.
+#
 # + value - a json value (or subtree) to walk
 # + return - the same tree with every Part.raw base64 string rewritten to
-#            an integer-array, or an error if a "raw" string isn't valid
-#            base64
+#            an integer-array, or an error if a "raw" string on an actual
+#            Part isn't valid base64
 public isolated function decodeRawBytesFromWire(json value) returns json|error {
     if value is json[] {
         json[] result = [];
@@ -100,12 +202,13 @@ public isolated function decodeRawBytesFromWire(json value) returns json|error {
     if value is map<json> {
         map<json> result = {};
         foreach [string, json] [k, v] in value.entries() {
-            if k == "raw" && v is string {
-                byte[] decoded = check array:fromBase64(v);
-                result[k] = decoded.toJson();
-                continue;
+            if k == "parts" {
+                result[k] = check decodePartsRawField(v);
+            } else if isPartBearingContainerKey(k) {
+                result[k] = check decodeRawBytesFromWire(v);
+            } else {
+                result[k] = v;
             }
-            result[k] = check decodeRawBytesFromWire(v);
         }
         return result;
     }

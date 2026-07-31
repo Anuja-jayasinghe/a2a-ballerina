@@ -1920,12 +1920,66 @@ function testRestGetExtendedAgentCardSendsCorrectPath() returns error? {
 }
 
 @test:Config {}
+function testRestGetTaskPushNotificationConfigSendsCorrectPath() returns error? {
+    // The only bodiless GET template with TWO path params — the one case
+    // where path-param-substitution order and removing substituted
+    // params from workingParams (so they don't leak into the query
+    // string) could go wrong.
+    setNextRestResponse({"url": "http://webhook.example", "id": "cfg-1", "taskId": "task-1"});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig("task-1", "cfg-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs/cfg-1");
+    test:assertEquals(req.queryParams.length(), 0, "both path params must be removed from the working param set so neither taskId nor id leaks into the query string");
+}
+
+@test:Config {}
+function testRestListTaskPushNotificationConfigsSendsCorrectPathAndQuery() returns error? {
+    setNextRestResponse({"configs": [], "nextPageToken": ""});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1", pageSize = 10, pageToken = "cursor-abc");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs");
+    test:assertEquals(req.queryParams["pageSize"], "10");
+    test:assertEquals(req.queryParams["pageToken"], "cursor-abc");
+}
+
+@test:Config {}
+function testRestSendStreamingMessageSendsCorrectPath() returns error? {
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse _ = check expectValue(s.next());
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/message:stream");
+}
+
+@test:Config {}
 function testRestOperationWithTenantPrefixesPath() returns error? {
     setNextRestResponse(defaultTaskJson());
     Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON", tenant = "acme-corp");
     Task _ = check c->getTask("task-1");
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.path, "/acme-corp/tasks/task-1");
+}
+
+@test:Config {}
+function testRestPathParamWithSlashIsPercentEncodedNotLeftRaw() returns error? {
+    // A taskId containing "/" must not be spliced into the path raw — it
+    // would otherwise restructure the path into extra segments (or, for
+    // other characters, into a bogus query string / path-traversal
+    // shape). Confirms the value is percent-encoded, not left as-is.
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->getTask("task/with/slashes");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/tasks/task%2Fwith%2Fslashes", "a '/' in a path param must be percent-encoded, not left raw to restructure the path into extra segments");
 }
 
 @test:Config {}
@@ -1974,6 +2028,9 @@ function testRestSubscribeToTaskRetriesWithPostOn405() returns error? {
     stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
     StreamResponse first = check expectValue(s.next());
     test:assertEquals(first?.statusUpdate?.taskId, "task-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST", "after the 405, the retry must have actually used POST");
+    test:assertEquals(req.path, "/tasks/task-1:subscribe", "the retried request must hit the same SubscribeToTask path, not some other operation's path");
 }
 
 @test:Config {}

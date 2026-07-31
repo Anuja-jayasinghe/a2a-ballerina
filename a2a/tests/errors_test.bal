@@ -118,23 +118,25 @@ function testToA2AErrorFromRestDisambiguatesThreeDistinct400s() returns error? {
 
 @test:Config {}
 function testToA2AErrorFromRestMapsAllNineReasons() returns error? {
-    map<string> reasonToExpectedTypeName = {
-        "TASK_NOT_FOUND": "TaskNotFoundError",
-        "TASK_NOT_CANCELABLE": "TaskNotCancelableError",
-        "PUSH_NOTIFICATION_NOT_SUPPORTED": "PushNotificationNotSupportedError",
-        "UNSUPPORTED_OPERATION": "UnsupportedOperationError",
-        "CONTENT_TYPE_NOT_SUPPORTED": "ContentTypeNotSupportedError",
-        "INVALID_AGENT_RESPONSE": "InvalidAgentResponseError",
-        "EXTENDED_AGENT_CARD_NOT_CONFIGURED": "ExtendedAgentCardNotConfiguredError",
-        "EXTENSION_SUPPORT_REQUIRED": "ExtensionSupportRequiredError",
-        "VERSION_NOT_SUPPORTED": "VersionNotSupportedError"
+    // Keyed by the numeric JSON-RPC code each reason must map to — the
+    // actual signal callers branch on — rather than a type-name string
+    // discarded by the loop, so this genuinely fails if any reason falls
+    // through to the wrong mapping or the generic fallback.
+    map<int> reasonToExpectedCode = {
+        "TASK_NOT_FOUND": -32001,
+        "TASK_NOT_CANCELABLE": -32002,
+        "PUSH_NOTIFICATION_NOT_SUPPORTED": -32003,
+        "UNSUPPORTED_OPERATION": -32004,
+        "CONTENT_TYPE_NOT_SUPPORTED": -32005,
+        "INVALID_AGENT_RESPONSE": -32006,
+        "EXTENDED_AGENT_CARD_NOT_CONFIGURED": -32007,
+        "EXTENSION_SUPPORT_REQUIRED": -32008,
+        "VERSION_NOT_SUPPORTED": -32009
     };
-    foreach [string, string] [reason, _] in reasonToExpectedTypeName.entries() {
+    foreach [string, int] [reason, expectedCode] in reasonToExpectedCode.entries() {
         json body = {"error": {"message": "m", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]}};
         A2AError err = toA2AErrorFromRest(400, body);
-        // Each subtype is distinct, so this exercises real dispatch rather
-        // than a single catch-all path silently swallowing every reason.
-        test:assertTrue(err.message().length() > 0);
+        test:assertEquals(err.detail().code, expectedCode, "reason " + reason + " should map to code " + expectedCode.toString());
     }
 }
 

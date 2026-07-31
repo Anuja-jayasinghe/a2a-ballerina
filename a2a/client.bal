@@ -294,26 +294,34 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
     string path = op.pathTemplate;
     foreach string pName in op.pathParams {
         json? pValue = workingParams[pName];
-        if pValue is string {
-            // Plain string substitution, not regex: pathTemplate never
-            // contains a literal "{"/"}" outside of exactly these
-            // placeholder markers, so there's no need for regex escaping
-            // here. lang.string has no plain literal-replace function
-            // (only regex-based replaceAll/replaceFirst), so the
-            // placeholder is substituted manually via indexOf/substring.
-            string placeholder = string `{${pName}}`;
-            int? idx = path.indexOf(placeholder);
-            if idx is int {
-                path = path.substring(0, idx) + pValue + path.substring(idx + placeholder.length());
-            }
-            if !op.hasBody {
-                _ = workingParams.remove(pName);
-            }
+        if pValue !is string {
+            return error A2AInternalError(string `REST binding for "${method}" requires path parameter "${pName}", but it was missing or not a string`);
+        }
+        // Plain string substitution, not regex: pathTemplate never
+        // contains a literal "{"/"}" outside of exactly these
+        // placeholder markers, so there's no need for regex escaping
+        // here. lang.string has no plain literal-replace function
+        // (only regex-based replaceAll/replaceFirst), so the
+        // placeholder is substituted manually via indexOf/substring.
+        // The substituted value itself is percent-encoded so a value
+        // containing "/", "?", "#", or "%" can't restructure the path
+        // (e.g. break out into the query string, or shape a
+        // path-traversal-looking segment) — only the literal template
+        // text (e.g. ":cancel"/":subscribe") is left unencoded.
+        string encodedValue = check url:encode(pValue, "UTF-8");
+        string placeholder = string `{${pName}}`;
+        int? idx = path.indexOf(placeholder);
+        if idx is int {
+            path = path.substring(0, idx) + encodedValue + path.substring(idx + placeholder.length());
+        }
+        if !op.hasBody {
+            _ = workingParams.remove(pName);
         }
     }
 
     if tenant is string {
-        path = string `/${tenant}${path}`;
+        string encodedTenant = check url:encode(tenant, "UTF-8");
+        path = string `/${encodedTenant}${path}`;
     }
 
     if op.hasBody {

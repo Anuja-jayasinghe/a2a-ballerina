@@ -507,7 +507,15 @@ service / on mockListener {
                 queryParams[k] = v;
             }
         }
-        string fullPath = "/" + string:'join("/", ...path);
+        // req.rawPath is the actual wire path (percent-encoding intact),
+        // plus the query string; the [string... path] rest param, by
+        // contrast, gives each segment already percent-decoded by the
+        // routing layer, which would hide a real encoding bug (e.g. "/"
+        // in a path param must arrive as "%2F", not a literal "/"). Strip
+        // just the query string, keep everything else as sent.
+        string rawPath = req.rawPath;
+        int? qIdx = rawPath.indexOf("?");
+        string fullPath = qIdx is int ? rawPath.substring(0, qIdx) : rawPath;
         // GET/DELETE requests never carry a body -- getJsonPayload() on a
         // bodiless request is an error, not a useful {} value, so this is
         // guarded rather than `check`ed; a genuinely malformed body on a
