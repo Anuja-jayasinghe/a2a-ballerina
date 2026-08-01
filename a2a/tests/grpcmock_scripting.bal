@@ -4,7 +4,7 @@
 // this state to decide what to return.
 import ballerina/grpc;
 
-isolated int grpcMockPort = 19198;
+isolated int grpcMockPort = GRPC_MOCK_PORT;
 
 # Base URL for the scripted mock gRPC A2AService used by gRPC-binding Client
 # tests, mirroring testutil.bal's getServerBaseUrl() for the HTTP mock.

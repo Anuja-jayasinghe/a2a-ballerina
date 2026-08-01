@@ -12,15 +12,17 @@
 // arriving via a ContextXxx wrapper's `.headers` field rather than a
 // second function parameter or a grpc:Caller.
 //
-// google.protobuf.Empty (DeleteTaskPushNotificationConfig's response) does
-// not surface as a generated grpcstub:Empty type -- the client stub's
-// non-Context DeleteTaskPushNotificationConfig remote function returns
+// google.protobuf.Empty (DeleteTaskPushNotificationConfig's response) has no
+// generated representation under the grpcstub: namespace with an "Empty"
+// name -- it does exist as empty:ContextNil (via ballerina/protobuf.types.empty,
+// used by the Context-variant remote function in a2a_pb.bal), but the client
+// stub's non-Context DeleteTaskPushNotificationConfig remote function returns
 // plain `grpc:Error?`, and the service-mode skeleton generated the same
 // shape (`returns error?`), so this mock follows suit.
 import ballerina/a2a.grpcstub;
 import ballerina/grpc;
 
-listener grpc:Listener grpcMockListener = new (19198);
+listener grpc:Listener grpcMockListener = new (GRPC_MOCK_PORT);
 
 @grpc:Descriptor {value: grpcstub:A2A_DESC}
 service "A2AService" on grpcMockListener {
