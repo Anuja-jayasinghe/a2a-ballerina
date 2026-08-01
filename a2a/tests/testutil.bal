@@ -9,6 +9,15 @@ public isolated function getServerBaseUrl() returns string {
     return "http://localhost:19199";
 }
 
+# Port of the scripted mock gRPC A2AService used by gRPC-binding Client
+# tests (see tests/grpcmock/service.bal), distinct from the HTTP mock's
+# 19199.
+#
+# + return - the port the gRPC mock listens on
+public isolated function getGrpcMockPort() returns int {
+    return 19198;
+}
+
 // ---- Scriptable mock A2A server -------------------------------------
 //
 // One listener, two resources: a static (optionally overridable) Agent
