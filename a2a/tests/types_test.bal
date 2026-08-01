@@ -54,6 +54,99 @@ function testPartDataVariantRoundTrip() returns error? {
 }
 
 @test:Config {}
+function testEncodeRawBytesForWireConvertsIntArrayToBase64() returns error? {
+    Part original = {raw: "hello world".toBytes(), mediaType: "application/octet-stream"};
+    // The walker is structure-aware: it only descends into a "parts"
+    // array, matching how client.bal always invokes it (on a whole
+    // Message/Task/etc. tree, never on a bare Part), so wrap the Part the
+    // same way a real Message would.
+    Message container = {messageId: "msg-1", role: ROLE_USER, parts: [original]};
+    json defaultEncoded = container.toJson();
+    // Confirm the bug is real: default toJson() produces an int array, not a string.
+    map<json> defaultMap = check defaultEncoded.ensureType();
+    json[] defaultParts = check defaultMap["parts"].ensureType();
+    map<json> defaultPart = check defaultParts[0].ensureType();
+    test:assertTrue(defaultPart["raw"] is json[], "sanity check: Ballerina's default toJson() must produce an int array for byte[] — if this fails, the underlying Ballerina behavior changed and this whole fix may be unnecessary");
+
+    json fixed = encodeRawBytesForWire(defaultEncoded);
+    map<json> fixedMap = check fixed.ensureType();
+    json[] fixedParts = check fixedMap["parts"].ensureType();
+    map<json> fixedPart = check fixedParts[0].ensureType();
+    test:assertTrue(fixedPart["raw"] is string, "after encodeRawBytesForWire, Part.raw must be a base64 string, matching the wire encoding every real A2A implementation expects");
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireRoundTripsThroughEncodeRawBytesForWire() returns error? {
+    byte[] originalBytes = "hello world, some bytes".toBytes();
+    Part original = {raw: originalBytes, mediaType: "application/octet-stream"};
+    Message container = {messageId: "msg-1", role: ROLE_USER, parts: [original]};
+    json wireForm = encodeRawBytesForWire(container.toJson());
+    json restoredForm = check decodeRawBytesFromWire(wireForm);
+    Message decoded = check restoredForm.cloneWithType(Message);
+    test:assertEquals(decoded.parts[0]?.raw, originalBytes);
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireLeavesUnrelatedMetadataRawKeyUntouched() returns error? {
+    // A response whose free-form metadata happens to contain a key
+    // literally named "raw" holding arbitrary non-base64 text must not
+    // fail to decode, and the metadata must pass through byte-for-byte —
+    // metadata is never in the walker's traversal allow-list.
+    json payload = {
+        "id": "task-1",
+        "status": {"state": "TASK_STATE_COMPLETED"},
+        "metadata": {"raw": "arbitrary non-base64 text", "other": 42},
+        "history": [
+            {
+                "messageId": "msg-1",
+                "role": "ROLE_AGENT",
+                "parts": [{"raw": "aGVsbG8=", "mediaType": "text/plain"}]
+            }
+        ]
+    };
+    json decoded = check decodeRawBytesFromWire(payload);
+    Task task = check decoded.cloneWithType(Task);
+
+    test:assertEquals(task?.metadata, {"raw": "arbitrary non-base64 text", "other": 42});
+    test:assertEquals(task.history[0].parts[0]?.raw, "hello".toBytes());
+}
+
+@test:Config {}
+function testEncodeRawBytesForWireLeavesDataPartRawKeyUntouched() returns error? {
+    // A data-Part's own arbitrary JSON payload may legitimately contain a
+    // key named "raw" that has nothing to do with Part.raw — the encode
+    // walker must never mistake it for bytes to base64-encode, since
+    // Part.data is free-form json, not in the traversal allow-list.
+    Part dataPart = {data: {"raw": [1, 2, 3], "note": "caller's own data"}, mediaType: "application/json"};
+    Message container = {messageId: "msg-1", role: ROLE_USER, parts: [dataPart]};
+
+    json encoded = encodeRawBytesForWire(container.toJson());
+    map<json> encodedMap = check encoded.ensureType();
+    json[] encodedParts = check encodedMap["parts"].ensureType();
+    Part decodedPart = check encodedParts[0].cloneWithType(Part);
+
+    test:assertEquals(decodedPart?.data, {"raw": [1, 2, 3], "note": "caller's own data"});
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireHandlesRealisticExternalPayload() returns error? {
+    // Simulates what a real, spec-conformant external server would actually
+    // send on the wire: a base64 string, not Ballerina's own int-array
+    // shape — this is the case that matters for real interop, not just
+    // round-tripping through our own encode function.
+    json externalPayload = {
+        "parts": [
+            {"raw": "aGVsbG8gd29ybGQ=", "mediaType": "text/plain"} // "hello world" in base64
+        ]
+    };
+    json decoded = check decodeRawBytesFromWire(externalPayload);
+    map<json> decodedMap = check decoded.ensureType();
+    json[] parts = check decodedMap["parts"].ensureType();
+    Part firstPart = check parts[0].cloneWithType(Part);
+    test:assertEquals(firstPart?.raw, "hello world".toBytes());
+}
+
+@test:Config {}
 function testPartToleratesUnrecognizedField() returns error? {
     json payload = {
         text: "What is the weather in Colombo?",

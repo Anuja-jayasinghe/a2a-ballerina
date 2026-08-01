@@ -16,11 +16,14 @@ import ballerina/http;
 # + resp - the HTTP response opened with `Accept: text/event-stream`
 # + mode - which wire dialect to decode events as; defaults to V1_0,
 #          preserving every existing caller's behavior unchanged
+# + binding - which transport binding's wire shape to decode events as;
+#             defaults to JSONRPC, preserving every existing caller's
+#             behavior unchanged
 # + return - a stream of decoded StreamResponse values
-isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0")
+isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = "JSONRPC")
         returns stream<StreamResponse, error?>|error {
     stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
-    A2AStreamGenerator generator = new (sseStream, mode);
+    A2AStreamGenerator generator = new (sseStream, mode, binding);
     stream<StreamResponse, error?> result = new (generator);
     return result;
 }
@@ -33,10 +36,12 @@ class A2AStreamGenerator {
     private stream<http:SseEvent, error?> sseStream;
     private boolean closed = false;
     private ProtocolMode mode;
+    private TransportBinding binding;
 
-    isolated function init(stream<http:SseEvent, error?> sseStream, ProtocolMode mode = "V1_0") {
+    isolated function init(stream<http:SseEvent, error?> sseStream, ProtocolMode mode = "V1_0", TransportBinding binding = "JSONRPC") {
         self.sseStream = sseStream;
         self.mode = mode;
+        self.binding = binding;
     }
 
     public isolated function next() returns record {| StreamResponse value; |}|error? {
@@ -62,6 +67,17 @@ class A2AStreamGenerator {
                 continue;
             }
 
+            // REST binding signals a mid-stream error via a named "error"
+            // SSE frame, whose data is a REST error payload — not a
+            // StreamResponse at all. The JSON-RPC binding has no
+            // equivalent (its errors travel inside the envelope), so this
+            // check is REST-only.
+            if self.binding == "HTTP+JSON" && chunk.value.'event == "error" {
+                json|error errBody = data.fromJsonString();
+                self.closed = true;
+                return toA2AErrorFromRest(200, errBody is json ? errBody : ());
+            }
+
             StreamResponse|error result = self.decodeEvent(data);
             if result is error {
                 self.closed = true;
@@ -76,6 +92,12 @@ class A2AStreamGenerator {
     }
 
     private isolated function decodeEvent(string data) returns StreamResponse|error {
+        if self.binding == "HTTP+JSON" {
+            // REST events carry a bare StreamResponse with no JSON-RPC
+            // envelope, unlike the JSON-RPC binding's enveloped events.
+            json restEnvelope = check data.fromJsonString();
+            return check (check decodeRawBytesFromWire(restEnvelope)).cloneWithType(StreamResponse);
+        }
         json envelope = check data.fromJsonString();
         transport:JsonRpcResponse rpcResp = check envelope.cloneWithType(transport:JsonRpcResponse);
 
@@ -91,7 +113,7 @@ class A2AStreamGenerator {
                 message = "SSE event contained neither result nor error"
             );
         }
-        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check result.cloneWithType(StreamResponse);
+        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(StreamResponse);
     }
 
     public isolated function close() returns error? {

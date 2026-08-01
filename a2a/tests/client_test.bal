@@ -146,6 +146,76 @@ function testPrimaryUrlErrorsWhenNeitherIsSet() {
 }
 
 @test:Config {}
+function testSelectInterfaceFindsJsonRpcByDefault() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", tenant: "acme"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card);
+    test:assertEquals(iface.url, "http://jsonrpc.example");
+    test:assertEquals(iface?.tenant, "acme");
+}
+
+@test:Config {}
+function testSelectInterfaceFindsHttpJsonWhenPreferred() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"},
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON", tenant: "acme-rest"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card, "HTTP+JSON");
+    test:assertEquals(iface.url, "http://rest.example");
+    test:assertEquals(iface?.tenant, "acme-rest");
+}
+
+@test:Config {}
+function testSelectInterfaceErrorsWhenNoMatchAndNoLegacyUrl() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    AgentInterface|error result = selectInterface(card, "HTTP+JSON");
+    test:assertTrue(result is error, "no HTTP+JSON interface and no legacy url should error, not silently fall back to a JSONRPC endpoint");
+}
+
+@test:Config {}
+function testPrimaryUrlDefaultsToJsonRpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON"},
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    string url = check primaryUrl(card);
+    test:assertEquals(url, "http://jsonrpc.example", "primaryUrl with no argument must keep resolving JSONRPC, unchanged from today");
+}
+
+@test:Config {}
+function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        url: "http://legacy.example",
+        supportedInterfaces: [],
+        skills: []
+    };
+    AgentInterface|error restResult = selectInterface(card, "HTTP+JSON");
+    test:assertTrue(restResult is error, "a pre-v1.0 card's legacy url field predates HTTP+JSON entirely and must not be treated as a REST endpoint");
+    string jsonRpcUrl = check primaryUrl(card);
+    test:assertEquals(jsonRpcUrl, "http://legacy.example");
+}
+
+@test:Config {}
 function testSendMessageHappyPath() returns error? {
     setNextJsonResponse({
         jsonrpc: "2.0",
@@ -1706,4 +1776,377 @@ function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns er
     setNextSseResponseThenDrop([]);
     record {| StreamResponse value; |}|error? third = s.next();
     test:assertTrue(third is error, "with every reconnect attempt failing, both allotted attempts should be exhausted and the error surfaced, not recurse indefinitely");
+}
+
+@test:Config {}
+function testClientInitRejectsV03WithHttpJsonBinding() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getServerBaseUrl(), protocolBinding: "HTTP+JSON", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client|error result = new (getServerBaseUrl(), agentCard = card, binding = "HTTP+JSON");
+    test:assertTrue(result is VersionNotSupportedError,
+            "constructing an HTTP+JSON client against a card that resolves to V0_3 must fail fast with a typed error, not send a v0.3 JSON-RPC method name to a REST path");
+}
+
+@test:Config {}
+function testClientInitAllowsV03WithJsonRpcBinding() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getServerBaseUrl(), protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    // binding defaults to "JSONRPC" — v0.3 + JSONRPC is the existing,
+    // already-supported combination and must still construct cleanly.
+    Client _ = check new (getServerBaseUrl(), agentCard = card);
+}
+
+@test:Config {}
+function testClientInitDefaultBindingUnchangedWithNoCard() returns error? {
+    // Omitting agentCard entirely must construct exactly as before,
+    // regardless of the new binding parameter's value, since self.mode
+    // defaults to V1_0 when no card is given.
+    Client _ = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+}
+
+// ---- REST/HTTP+JSON binding: non-streaming operations -----------------
+
+@test:Config {}
+function testRestSendMessageSendsCorrectPathAndBody() returns error? {
+    setNextRestResponse({"task": defaultTaskJson()});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    Task|Message _ = check c->sendMessage(msg);
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/message:send");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertTrue(body.hasKey("message"), "the REST request body must carry the message");
+    map<json> messageBody = check body.get("message").ensureType();
+    test:assertEquals(messageBody["messageId"], "m1");
+}
+
+@test:Config {}
+function testRestGetTaskSendsCorrectPathAndQuery() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->getTask("task-123", historyLength = 5);
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-123");
+    test:assertEquals(req.queryParams["historyLength"], "5");
+}
+
+@test:Config {}
+function testRestCancelTaskSendsIdInPathAndBody() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->cancelTask("task-123");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/tasks/task-123:cancel");
+    // M4: id is duplicated into the body for hasBody operations, matching
+    // the reference a2a-python SDK exactly rather than "cleaning up" the
+    // path/body duplication.
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["id"], "task-123", "CancelTask's id must be duplicated into the body per M4, not just substituted into the path");
+}
+
+@test:Config {}
+function testRestHasBodyOperationDuplicatesTenantIntoBody() returns error? {
+    // M3: tenant is duplicated into the body for hasBody operations too,
+    // not just removed once it's substituted into the path (as it is for
+    // bodiless operations, per testRestOperationWithTenantPrefixesPath).
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON", tenant = "acme-corp");
+    Task _ = check c->cancelTask("task-123");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/acme-corp/tasks/task-123:cancel");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["tenant"], "acme-corp", "M3: tenant must be duplicated into the body for hasBody operations");
+    test:assertEquals(body["id"], "task-123");
+}
+
+@test:Config {}
+function testRestListTasksEncodesFilterAsQueryString() returns error? {
+    setNextRestResponse({"tasks": [], "nextPageToken": "", "pageSize": 10, "totalSize": 0});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    ListTasksResult _ = check c->listTasks(filter = {
+        contextId: "ctx-1",
+        status: TASK_STATE_WORKING,
+        pageSize: 10,
+        statusTimestampAfter: "2023-10-27T10:00:00+05:30"
+    });
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks");
+    test:assertEquals(req.queryParams["status"], "TASK_STATE_WORKING", "TaskState must serialize as its symbolic enum name in the query string, not an ordinal");
+    test:assertEquals(req.queryParams["contextId"], "ctx-1");
+}
+
+@test:Config {}
+function testRestCreateTaskPushNotificationConfigSendsTaskIdInPathAndBody() returns error? {
+    setNextRestResponse({"url": "http://webhook.example", "id": "cfg-1", "taskId": "task-1"});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    TaskPushNotificationConfig _ = check c->createTaskPushNotificationConfig({url: "http://webhook.example", taskId: "task-1"});
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs");
+    map<json> body = check getLastRestBody().ensureType();
+    test:assertEquals(body["taskId"], "task-1", "taskId must be duplicated into the body per M4, not just substituted into the path");
+}
+
+@test:Config {}
+function testRestDeleteTaskPushNotificationConfigToleratesEmptyBody() returns error? {
+    setNextRestResponse({}, statusCode = 204, hasResponseBody = false);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    error? result = c->deleteTaskPushNotificationConfig("task-1", "cfg-1");
+    test:assertTrue(result is (), "a 204 with no body must be treated as success, not InvalidAgentResponseError");
+}
+
+@test:Config {}
+function testRestGetExtendedAgentCardSendsCorrectPath() returns error? {
+    setNextRestResponse(defaultMockAgentCard());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    AgentCard _ = check c->getExtendedAgentCard();
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/extendedAgentCard");
+}
+
+@test:Config {}
+function testRestGetTaskPushNotificationConfigSendsCorrectPath() returns error? {
+    // The only bodiless GET template with TWO path params — the one case
+    // where path-param-substitution order and removing substituted
+    // params from workingParams (so they don't leak into the query
+    // string) could go wrong.
+    setNextRestResponse({"url": "http://webhook.example", "id": "cfg-1", "taskId": "task-1"});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig("task-1", "cfg-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs/cfg-1");
+    test:assertEquals(req.queryParams.length(), 0, "both path params must be removed from the working param set so neither taskId nor id leaks into the query string");
+}
+
+@test:Config {}
+function testRestListTaskPushNotificationConfigsSendsCorrectPathAndQuery() returns error? {
+    setNextRestResponse({"configs": [], "nextPageToken": ""});
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1", pageSize = 10, pageToken = "cursor-abc");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "GET");
+    test:assertEquals(req.path, "/tasks/task-1/pushNotificationConfigs");
+    test:assertEquals(req.queryParams["pageSize"], "10");
+    test:assertEquals(req.queryParams["pageToken"], "cursor-abc");
+}
+
+@test:Config {}
+function testRestSendStreamingMessageSendsCorrectPath() returns error? {
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse _ = check expectValue(s.next());
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST");
+    test:assertEquals(req.path, "/message:stream");
+}
+
+@test:Config {}
+function testRestOperationWithTenantPrefixesPath() returns error? {
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON", tenant = "acme-corp");
+    Task _ = check c->getTask("task-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/acme-corp/tasks/task-1");
+}
+
+@test:Config {}
+function testRestPathParamWithSlashIsPercentEncodedNotLeftRaw() returns error? {
+    // A taskId containing "/" must not be spliced into the path raw — it
+    // would otherwise restructure the path into extra segments (or, for
+    // other characters, into a bogus query string / path-traversal
+    // shape). Confirms the value is percent-encoded, not left as-is.
+    setNextRestResponse(defaultTaskJson());
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task _ = check c->getTask("task/with/slashes");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.path, "/tasks/task%2Fwith%2Fslashes", "a '/' in a path param must be percent-encoded, not left raw to restructure the path into extra segments");
+}
+
+@test:Config {}
+function testRestErrorResponseMapsToTypedError() returns error? {
+    setNextRestResponse({
+        "error": {"message": "no such task", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_FOUND"}]}
+    }, statusCode = 404);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error result = c->getTask("nonexistent");
+    test:assertTrue(result is TaskNotFoundError);
+}
+
+@test:Config {}
+function testRestSendMessageStreamDecodesBareStreamResponseNoEnvelope() returns error? {
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.task?.id, "task-1");
+}
+
+@test:Config {}
+function testRestStreamErrorEventMapsToTypedError() returns error? {
+    setNextRestSseResponse([
+        {'event: "error", data: string `{"error": {"message": "boom", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "INVALID_AGENT_RESPONSE"}]}}`}
+    ]);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
+    record {| StreamResponse value; |}|error? result = s.next();
+    test:assertTrue(result is InvalidAgentResponseError, "a named 'error' SSE frame must route through toA2AErrorFromRest and surface as the typed error, not attempt to parse it as a StreamResponse");
+}
+
+@test:Config {}
+function testRestSubscribeToTaskRetriesWithPostOn405() returns error? {
+    // Script the mock to reject GET with 405 for this one operation, then
+    // accept POST — assert the client retries and succeeds, not that it
+    // surfaces the 405 as an error.
+    setNextRestSseResponse([
+        {'event: "message", data: string `{"statusUpdate": {"taskId": "task-1", "contextId": "ctx-1", "status": {"state": "TASK_STATE_WORKING"}}}`}
+    ]);
+    setRestRejectMethod("GET", 405);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
+    StreamResponse first = check expectValue(s.next());
+    test:assertEquals(first?.statusUpdate?.taskId, "task-1");
+    record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
+    test:assertEquals(req.method, "POST", "after the 405, the retry must have actually used POST");
+    test:assertEquals(req.path, "/tasks/task-1:subscribe", "the retried request must hit the same SubscribeToTask path, not some other operation's path");
+}
+
+@test:Config {}
+function testRestFallbackDoesNotFireForOtherOperations() returns error? {
+    // A 405 on any operation OTHER than SubscribeToTask must surface as
+    // a normal error, not trigger a retry — the fallback is scoped to
+    // exactly this one operation.
+    setNextRestResponse({}, statusCode = 405);
+    Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error result = c->getTask("task-1");
+    test:assertTrue(result is error, "a 405 on GetTask must surface as an error, not silently retry with a different verb");
+}
+
+# Integration-level proof that decodeRawBytesFromWire is actually wired
+# into getTask's response handling, not just unit-tested in isolation.
+# Scripts the mock server to return a Task whose history contains a Part
+# with a base64-encoded raw field — exactly what a real, spec-conformant
+# v1.0 server would send on the wire — and confirms getTask correctly
+# decodes it back to the original bytes.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testGetTaskDecodesBase64EncodedPartRawFromRealisticServerResponse() returns error? {
+    byte[] expectedBytes = "hello from a real server".toBytes();
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {
+            id: "task-raw-1",
+            status: {state: "TASK_STATE_COMPLETED"},
+            history: [
+                {
+                    messageId: "msg-1",
+                    role: "ROLE_AGENT",
+                    parts: [
+                        {"raw": "aGVsbG8gZnJvbSBhIHJlYWwgc2VydmVy", mediaType: "application/octet-stream"}
+                    ]
+                }
+            ]
+        }
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Task task = check c->getTask("task-raw-1");
+
+    Message[]? history = task?.history;
+    test:assertTrue(history is Message[], "history should decode");
+    Message[] hist = <Message[]>history;
+    test:assertEquals(hist.length(), 1);
+    Part firstPart = hist[0].parts[0];
+    test:assertEquals(firstPart?.raw, expectedBytes, "Part.raw nested inside Task.history must be decoded from base64 back into the original bytes");
+}
+
+# Integration-level proof that encodeRawBytesForWire is actually wired
+# into sendMessage's request encoding, not just unit-tested in isolation.
+# Sends a Message containing a Part.raw value and confirms the wire body
+# captured by getLastRequestBody() carries it as a base64 string — not
+# Ballerina's default integer-array shape, which no real server can parse.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testSendMessageEncodesPartRawAsBase64OnTheWire() returns error? {
+    setNextJsonResponse({
+        jsonrpc: "2.0",
+        id: "1",
+        result: {task: {id: "task-raw-2", status: {state: "TASK_STATE_COMPLETED"}}}
+    });
+
+    Client c = check new (getServerBaseUrl());
+    Message msg = {
+        messageId: "msg-raw-1",
+        role: ROLE_USER,
+        parts: [
+            {raw: "outbound file bytes".toBytes(), mediaType: "application/octet-stream"}
+        ]
+    };
+    Task|Message _ = check c->sendMessage(msg);
+
+    json params = check getLastRequestBody().params;
+    map<json> messageMap = check params.message.ensureType();
+    json[] parts = check messageMap["parts"].ensureType();
+    map<json> firstPart = check parts[0].ensureType();
+    test:assertTrue(firstPart["raw"] is string, "Part.raw in the outbound wire body must be a base64 string, not Ballerina's default integer-array shape");
+}
+
+@test:Config {}
+function testJsonRpcAndRestProduceIdenticalGetTaskResult() returns error? {
+    json taskBody = defaultTaskJson();
+
+    setNextJsonResponse({"jsonrpc": "2.0", "id": "1", "result": taskBody});
+    Client jsonRpcClient = check new (getServerBaseUrl());
+    Task jsonRpcResult = check jsonRpcClient->getTask("task-x");
+
+    setNextRestResponse(taskBody);
+    Client restClient = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task restResult = check restClient->getTask("task-x");
+
+    test:assertEquals(jsonRpcResult, restResult, "the same logical task must decode to an identical Task value regardless of which binding fetched it");
+}
+
+@test:Config {}
+function testJsonRpcAndRestProduceIdenticalErrorTypeAndCode() returns error? {
+    setNextJsonResponse({"jsonrpc": "2.0", "id": "1", "error": {"code": -32002, "message": "cannot cancel"}});
+    Client jsonRpcClient = check new (getServerBaseUrl());
+    Task|error jsonRpcResult = jsonRpcClient->cancelTask("task-x");
+
+    setNextRestResponse({
+        "error": {"message": "cannot cancel", "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "TASK_NOT_CANCELABLE"}]}
+    }, statusCode = 400);
+    Client restClient = check new (getServerBaseUrl(), binding = "HTTP+JSON");
+    Task|error restResult = restClient->cancelTask("task-x");
+
+    test:assertTrue(jsonRpcResult is TaskNotCancelableError);
+    test:assertTrue(restResult is TaskNotCancelableError);
+    TaskNotCancelableError jsonRpcErr = <TaskNotCancelableError>jsonRpcResult;
+    TaskNotCancelableError restErr = <TaskNotCancelableError>restResult;
+    test:assertEquals(jsonRpcErr.detail().code, restErr.detail().code,
+            "detail.code must be identical across bindings so a caller switching Client from JSON-RPC to REST sees no difference");
 }

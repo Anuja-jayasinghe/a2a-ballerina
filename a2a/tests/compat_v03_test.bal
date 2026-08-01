@@ -797,3 +797,51 @@ function testRenameV03SecurityFieldIsNoOpWhenNeitherKeyPresent() returns error? 
     test:assertFalse(renamedMap.hasKey("security"));
     test:assertFalse(renamedMap.hasKey("securityRequirements"));
 }
+
+@test:Config {}
+function testDetectProtocolModeForBindingReadsSelectedInterfaceNotIndexZero() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"},
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+    // Index 0 is v0.3, but the HTTP+JSON entry (index 1) is v1.0 — a
+    // caller resolving the REST binding must get V1_0, not the V0_3 an
+    // index-0 read would incorrectly produce.
+    ProtocolMode mode = detectProtocolModeForBinding(card, "HTTP+JSON");
+    test:assertEquals(mode, "V1_0");
+}
+
+@test:Config {}
+function testDetectProtocolModeStillDelegatesToJsonRpcByDefault() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    // Existing one-arg detectProtocolMode must keep behaving exactly as
+    // it does today for a single-binding card.
+    test:assertEquals(detectProtocolMode(card), "V0_3");
+    test:assertEquals(detectProtocolModeForBinding(card), "V0_3");
+}
+
+@test:Config {}
+function testDetectProtocolModeForBindingFallsBackWhenNoMatchingInterface() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    // No HTTP+JSON interface at all — falls back to the existing
+    // index-0/legacy behavior rather than erroring, since this function
+    // has no error return type to report "not found" through.
+    ProtocolMode mode = detectProtocolModeForBinding(card, "HTTP+JSON");
+    test:assertEquals(mode, "V0_3");
+}

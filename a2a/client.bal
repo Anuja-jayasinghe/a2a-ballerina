@@ -2,6 +2,7 @@
 
 import ballerina/a2a.transport;
 import ballerina/http;
+import ballerina/url;
 import ballerina/uuid;
 
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
@@ -173,30 +174,170 @@ public isolated function resolveAgentCardCached(
     return {card: <AgentCard>result.card, etag: result.etag};
 }
 
+# The A2A transport bindings this library can speak.
+public type TransportBinding "JSONRPC"|"HTTP+JSON";
+
+# Resolves the whole matched AgentInterface for a preferred binding, not
+# just its url — callers need the interface's own tenant and
+# protocolVersion, which must come from the same entry the url did, not
+# be independently re-derived (a card can list several interfaces with
+# different tenant/version values).
+#
+# + card - the agent card to read the endpoint from
+# + preferredBinding - which transport binding to look for; defaults to
+#                      "JSONRPC", preserving every existing single-binding
+#                      caller's behavior unchanged
+# + return - the first supportedInterfaces entry declaring the matching
+#            protocolBinding, or an error if none exists. The legacy
+#            top-level url field is never treated as a match for
+#            "HTTP+JSON" — it predates that binding entirely — so only
+#            "JSONRPC" callers fall back to it (see primaryUrl)
+public isolated function selectInterface(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
+    foreach AgentInterface iface in card.supportedInterfaces {
+        if iface.protocolBinding == preferredBinding {
+            return iface;
+        }
+    }
+    return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces`);
+}
+
 # Resolves the URL to construct a Client against, per v1.0's removal of
 # AgentCard.url as a required field.
 #
-# This Client only ever speaks the JSON-RPC binding on the wire, so among
-# supportedInterfaces it looks specifically for a "JSONRPC" entry rather
-# than blindly taking index 0 — a card listing e.g. a GRPC interface first
-# would otherwise resolve to an endpoint this Client can't actually talk
-# to, then fail non-obviously on the first request instead of here.
-#
 # + card - the agent card to read the endpoint from
-# + return - the first supportedInterfaces entry declaring the "JSONRPC"
-#            protocolBinding, the legacy url field if no such entry
+# + preferredBinding - which transport binding to resolve a URL for;
+#                      defaults to "JSONRPC", preserving every existing
+#                      caller's behavior unchanged
+# + return - the matching supportedInterfaces entry's url, the legacy url
+#            field if preferredBinding is "JSONRPC" and no such entry
 #            exists, or an error if neither is present
-public isolated function primaryUrl(AgentCard card) returns string|error {
-    foreach AgentInterface iface in card.supportedInterfaces {
-        if iface.protocolBinding == "JSONRPC" {
-            return iface.url;
+public isolated function primaryUrl(
+        AgentCard card,
+        TransportBinding preferredBinding = "JSONRPC") returns string|error {
+    AgentInterface|error iface = selectInterface(card, preferredBinding);
+    if iface is AgentInterface {
+        return iface.url;
+    }
+    if preferredBinding == "JSONRPC" {
+        string? legacyUrl = card?.url;
+        if legacyUrl is string {
+            return legacyUrl;
         }
     }
-    string? legacyUrl = card?.url;
-    if legacyUrl is string {
-        return legacyUrl;
+    return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
+}
+
+# How one operation maps onto the REST binding.
+type RestOperation record {|
+    string httpMethod;
+    string pathTemplate;
+    string[] pathParams;
+    boolean hasBody;
+    boolean streaming;
+|};
+
+final readonly & map<RestOperation> REST_OPERATIONS = {
+    "SendMessage": {httpMethod: "POST", pathTemplate: "/message:send", pathParams: [], hasBody: true, streaming: false},
+    "SendStreamingMessage": {httpMethod: "POST", pathTemplate: "/message:stream", pathParams: [], hasBody: true, streaming: true},
+    "GetTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}", pathParams: ["id"], hasBody: false, streaming: false},
+    "ListTasks": {httpMethod: "GET", pathTemplate: "/tasks", pathParams: [], hasBody: false, streaming: false},
+    "CancelTask": {httpMethod: "POST", pathTemplate: "/tasks/{id}:cancel", pathParams: ["id"], hasBody: true, streaming: false},
+    "SubscribeToTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}:subscribe", pathParams: ["id"], hasBody: false, streaming: true},
+    "CreateTaskPushNotificationConfig": {httpMethod: "POST", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: true, streaming: false},
+    "GetTaskPushNotificationConfig": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false},
+    "ListTaskPushNotificationConfigs": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: false, streaming: false},
+    "GetExtendedAgentCard": {httpMethod: "GET", pathTemplate: "/extendedAgentCard", pathParams: [], hasBody: false, streaming: false},
+    "DeleteTaskPushNotificationConfig": {httpMethod: "DELETE", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false}
+};
+
+# Builds the path (with tenant prefix and path-param substitution) and
+# body for one REST request, per the descriptor table above.
+#
+# Path params and tenant are substituted from `params`. Per the design
+# spec's M3/M4 findings (matching the reference a2a-python SDK exactly,
+# not "cleaning up" the duplication): for hasBody operations, tenant and
+# path params stay in the body as well as the path; for bodiless
+# operations, they are removed from the working param set so they don't
+# leak into the query string. Bodiless operations serialize every
+# remaining param as a URL-encoded query parameter; TaskState enum values
+# serialize as their symbolic name (already what a bare enum value is in
+# Ballerina — no conversion needed), and any value containing characters
+# needing escaping (e.g. an RFC 3339 timestamp's `:`/`+`) goes through
+# url:encode.
+#
+# + method - the JSON-RPC-style method name already used to key
+#            REST_OPERATIONS (e.g. "GetTask") — the same string every
+#            remote function already passes to rpcCall/openSseStream
+# + params - the same params map the JSON-RPC binding would have sent
+# + return - the full request path (including query string for bodiless
+#            operations) and the JSON body to send (nil for bodiless
+#            operations), or an error if method has no REST mapping
+isolated function buildRestRequest(string method, map<json> params) returns [string, json?]|error {
+    RestOperation? maybeOp = REST_OPERATIONS[method];
+    if maybeOp is () {
+        return error A2AInternalError(string `REST binding has no operation mapping for "${method}"`);
     }
-    return error("AgentCard has no JSONRPC entry in supportedInterfaces and no legacy url field");
+    RestOperation op = maybeOp;
+    map<json> workingParams = params.clone();
+
+    string? tenant = ();
+    json? tenantJson = workingParams["tenant"];
+    if tenantJson is string {
+        tenant = tenantJson;
+        if !op.hasBody {
+            _ = workingParams.remove("tenant");
+        }
+    }
+
+    string path = op.pathTemplate;
+    foreach string pName in op.pathParams {
+        json? pValue = workingParams[pName];
+        if pValue !is string {
+            return error A2AInternalError(string `REST binding for "${method}" requires path parameter "${pName}", but it was missing or not a string`);
+        }
+        // Plain string substitution, not regex: pathTemplate never
+        // contains a literal "{"/"}" outside of exactly these
+        // placeholder markers, so there's no need for regex escaping
+        // here. lang.string has no plain literal-replace function
+        // (only regex-based replaceAll/replaceFirst), so the
+        // placeholder is substituted manually via indexOf/substring.
+        // The substituted value itself is percent-encoded so a value
+        // containing "/", "?", "#", or "%" can't restructure the path
+        // (e.g. break out into the query string, or shape a
+        // path-traversal-looking segment) — only the literal template
+        // text (e.g. ":cancel"/":subscribe") is left unencoded.
+        string encodedValue = check url:encode(pValue, "UTF-8");
+        string placeholder = string `{${pName}}`;
+        int? idx = path.indexOf(placeholder);
+        if idx is int {
+            path = path.substring(0, idx) + encodedValue + path.substring(idx + placeholder.length());
+        }
+        if !op.hasBody {
+            _ = workingParams.remove(pName);
+        }
+    }
+
+    if tenant is string {
+        string encodedTenant = check url:encode(tenant, "UTF-8");
+        path = string `/${encodedTenant}${path}`;
+    }
+
+    if op.hasBody {
+        return [path, workingParams];
+    }
+
+    string[] queryParts = [];
+    foreach [string, json] [k, v] in workingParams.entries() {
+        string stringValue = v is string ? v : v.toString();
+        string encoded = check url:encode(stringValue, "UTF-8");
+        queryParts.push(string `${k}=${encoded}`);
+    }
+    if queryParts.length() > 0 {
+        path = path + "?" + string:'join("&", ...queryParts);
+    }
+    return [path, ()];
 }
 
 # An A2A protocol client for calling remote agents.
@@ -208,6 +349,7 @@ public isolated client class Client {
     private final string[] & readonly requestedExtensions;
     private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
+    private final TransportBinding binding;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -252,9 +394,16 @@ public isolated client class Client {
     #                          times if the underlying stream ends with an
     #                          error (not a clean terminal-state close)
     #                          before giving up and surfacing the error.
+    # + binding - Which transport binding this Client speaks. Defaults to
+    #             "JSONRPC", preserving today's behavior exactly. When
+    #             agentCard is given, the matching supportedInterfaces
+    #             entry for this binding determines self.mode; v0.3 has no
+    #             REST/HTTP+JSON binding equivalent, so "HTTP+JSON"
+    #             combined with a card that resolves to v0.3 is rejected.
     # + return - error if the underlying http:Client cannot be created, or
     #            if credentials is non-empty but does not satisfy any of
-    #            agentCard's declared SecurityRequirements
+    #            agentCard's declared SecurityRequirements, or if binding
+    #            is "HTTP+JSON" and agentCard resolves to A2A v0.3
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
@@ -263,7 +412,8 @@ public isolated client class Client {
             AgentCard? agentCard = (),
             string[] requestedExtensions = [],
             map<string> credentials = {},
-            int maxReconnectAttempts = 0) returns error? {
+            int maxReconnectAttempts = 0,
+            TransportBinding binding = "JSONRPC") returns error? {
         // http:ClientConfiguration isn't Cloneable (some of its fields
         // aren't pure data), so a mapping-constructor spread is used
         // instead of .clone() to shallow-copy it before mutating .auth —
@@ -286,7 +436,16 @@ public isolated client class Client {
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = effectiveHeaders.cloneReadOnly();
         self.tenant = tenant;
-        self.mode = agentCard is AgentCard ? detectProtocolMode(agentCard) : "V1_0";
+        self.binding = binding;
+        self.mode = agentCard is AgentCard
+            ? detectProtocolModeForBinding(agentCard, binding)
+            : "V1_0";
+        if self.mode == "V0_3" && binding == "HTTP+JSON" {
+            return error VersionNotSupportedError(
+                "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent",
+                message = "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent"
+            );
+        }
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
     }
@@ -363,6 +522,9 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - the unwrapped result, or an error
     private isolated function rpcCall(string method, map<json> params) returns json|error {
+        if self.binding == "HTTP+JSON" {
+            return self.restCall(method, params);
+        }
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
@@ -389,6 +551,47 @@ public isolated client class Client {
         return result;
     }
 
+    # Performs one REST binding call and returns the unwrapped result, or
+    # (), matching rpcCall's contract for callers that only need the
+    # unwrapped result on the JSON-RPC side. DeleteTaskPushNotificationConfig
+    # returns google.protobuf.Empty over the wire — an absent or empty
+    # body must be tolerated here rather than treated as
+    # InvalidAgentResponseError, unlike a genuinely malformed response.
+    #
+    # + method - the JSON-RPC-style method name (see buildRestRequest)
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - the unwrapped result json (or an empty map for a bodiless
+    #            success response), or a typed A2AError
+    private isolated function restCall(string method, map<json> params) returns json|error {
+        [string, json?] [path, body] = check buildRestRequest(method, params);
+        RestOperation op = REST_OPERATIONS.get(method);
+        map<string> headers = self.buildHeaders();
+        http:Response resp;
+        if op.httpMethod == "GET" {
+            resp = check self.httpClient->get(path, headers);
+        } else if op.httpMethod == "DELETE" {
+            resp = check self.httpClient->delete(path, headers = headers);
+        } else {
+            resp = check self.httpClient->post(path, body ?: {}, headers);
+        }
+        self.captureGrantedExtensions(resp);
+        if resp.statusCode >= 200 && resp.statusCode < 300 {
+            json|error payload = resp.getJsonPayload();
+            if payload is json {
+                return payload;
+            }
+            // No parseable body (e.g. 204 No Content) — treat as an
+            // empty successful result. Callers of a void operation like
+            // deleteTaskPushNotificationConfig discard this; callers of
+            // an operation expecting real content will fail their own
+            // cloneWithType, which is the correct place for that failure
+            // to surface, not here.
+            return {};
+        }
+        json? errorBody = resp.getJsonPayload() is json ? check resp.getJsonPayload() : ();
+        return toA2AErrorFromRest(resp.statusCode, errorBody);
+    }
+
     # Sends a message to the remote agent.
     #
     # Blocking by default: the call does not return until the task reaches
@@ -413,7 +616,7 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
@@ -438,7 +641,7 @@ public isolated client class Client {
 
         // The wire response wraps the payload — {"task": {...}} or
         // {"message": {...}} — rather than returning either one flat.
-        SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);
+        SendMessageResult wrapped = check (check decodeRawBytesFromWire(result)).cloneWithType(SendMessageResult);
         Task? maybeTask = wrapped?.task;
         Message? maybeMessage = wrapped?.message;
 
@@ -471,6 +674,9 @@ public isolated client class Client {
     # + params - the JSON-RPC method parameters
     # + return - a stream of StreamResponse values, or an error
     private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        if self.binding == "HTTP+JSON" {
+            return self.openRestSseStream(method, params);
+        }
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
@@ -509,7 +715,41 @@ public isolated client class Client {
             );
         }
 
-        return readSseStream(resp, self.mode);
+        return readSseStream(resp, self.mode, self.binding);
+    }
+
+    # Opens a REST binding SSE stream for a streaming operation
+    # (SendStreamingMessage or SubscribeToTask).
+    #
+    # + method - the JSON-RPC-style method name (see buildRestRequest)
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - a stream of StreamResponse values, or a typed A2AError
+    private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        [string, json?] [path, body] = check buildRestRequest(method, params);
+        RestOperation op = REST_OPERATIONS.get(method);
+        map<string> headers = self.buildHeaders();
+        headers["Accept"] = "text/event-stream";
+        http:Response resp;
+        if op.httpMethod == "GET" {
+            resp = check self.httpClient->get(path, headers);
+            // SubscribeToTask's proto annotation says GET, but a
+            // non-reference server that hand-rolled its REST routes
+            // following the reference *client* (which sends POST) might
+            // only have registered POST. Scoped to exactly this one
+            // operation — retrying broadly for every operation would
+            // mask genuine method-not-allowed errors elsewhere.
+            if method == "SubscribeToTask" && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
+                resp = check self.httpClient->post(path, body ?: {}, headers);
+            }
+        } else {
+            resp = check self.httpClient->post(path, body ?: {}, headers);
+        }
+        self.captureGrantedExtensions(resp);
+        if !resp.getContentType().startsWith("text/event-stream") {
+            json|error errBody = resp.getJsonPayload();
+            return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());
+        }
+        return readSseStream(resp, self.mode, self.binding);
     }
 
     # Sends a message and receives updates in real time over SSE.
@@ -534,7 +774,7 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : message.toJson();
+        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
         map<json> params = {"message": messageJson};
         if config is SendMessageConfiguration {
             params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
@@ -619,7 +859,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("GetTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
     }
 
     # Requests cancellation of an in-progress task.
@@ -648,7 +888,7 @@ public isolated client class Client {
             params["tenant"] = effectiveTenant;
         }
         json result = check self.rpcCall("CancelTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check result.cloneWithType(Task);
+        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
     }
 
     # Opens a stream on an existing task.
@@ -770,7 +1010,7 @@ public isolated client class Client {
         }
 
         json result = check self.rpcCall("ListTasks", params);
-        return check result.cloneWithType(ListTasksResult);
+        return check (check decodeRawBytesFromWire(result)).cloneWithType(ListTasksResult);
     }
 
     # Registers a webhook to receive updates for a task.
