@@ -21,19 +21,9 @@ jobs:
         working-directory: a2a
         run: bal build
 
-      # NOTE: the `grpc` test group is excluded here because Task 3 of
-      # a2a/docs/superpowers/plans/2026-08-01-grpc-transport-binding.md
-      # (a2a/tests/grpc_wire_test.bal, tagged `groups: ["grpc"]`) found a
-      # real Part.data marshalling defect in the gRPC binding that's
-      # intentionally parked pending a design fix in a later phase. Those
-      # 6 tests are a deliberate, tracked hard-gate failure, not a
-      # regression — running them here would make CI red for a reason
-      # unrelated to ordinary changes. Remove this exclusion once that
-      # defect is fixed and the full `grpc` group passes again. To check
-      # whether it's fixed, run (from a2a/): bal test --groups grpc
       - name: Test
         working-directory: a2a
-        run: bal test --disable-groups grpc
+        run: bal test
 
   grpc-stub-freshness:
     runs-on: ubuntu-latest
