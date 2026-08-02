@@ -303,6 +303,26 @@ function testClientGrpcSendsMandatoryA2AVersionHeader() returns error? {
     test:assertTrue(metadata.hasKey("a2a-version"), "A2A-Version metadata must be present per spec section 3.6.1");
 }
 
+@test:Config {groups: ["grpc"]}
+function testClientGrpcCapturesGrantedExtensionsFromLowercaseMetadata() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    // A real, spec-conformant gRPC server sends this metadata key lowercased
+    // -- HTTP/2 mandates lowercase header/metadata field names at the
+    // protocol level (RFC 7540 §8.1.2), the same reason
+    // testClientGrpcSendsMandatoryA2AVersionHeader asserts against
+    // "a2a-version" rather than "A2A-Version". Scripting it lowercase here
+    // pins that captureGrantedExtensionsFromGrpc's lookup actually matches
+    // real wire casing, not just a same-cased echo of what a naive
+    // exact-match lookup would already handle.
+    setNextGrpcResponseMetadata({"a2a-extensions": "https://example.com/ext1,https://example.com/ext2"});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    string[] granted = grpcClient.lastGrantedExtensions();
+    test:assertEquals(granted, ["https://example.com/ext1", "https://example.com/ext2"],
+            "granted extensions must be captured from lowercase gRPC response metadata, matching real server wire casing");
+}
+
 @test:Config {}
 function testSendMessageHappyPath() returns error? {
     setNextJsonResponse({

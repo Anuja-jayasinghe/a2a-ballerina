@@ -760,9 +760,26 @@ public isolated client class Client {
     # spec Design decision 4 (only the *Context method variants surface
     # response metadata at all).
     #
+    # Unlike http:Response.getHeader (case-insensitive), a map<string|
+    # string[]> key lookup in Ballerina is exact-match. HTTP/2 mandates
+    # lowercase header/metadata field names at the protocol level (RFC
+    # 7540 §8.1.2), so a real, spec-conformant gRPC server sends this
+    # metadata key as "a2a-extensions", not "A2A-Extensions" — the same
+    # casing issue already fixed for outbound headers (see
+    # testClientGrpcSendsMandatoryA2AVersionHeader, which asserts against
+    # "a2a-version"). This scans entries for a case-insensitive match
+    # instead of doing an exact-match lookup, so it actually finds the
+    # header a real server sends.
+    #
     # + headers - the response metadata from a *Context call
     private isolated function captureGrantedExtensionsFromGrpc(map<string|string[]> headers) {
-        string|string[]? extHeader = headers["A2A-Extensions"];
+        string|string[]? extHeader = ();
+        foreach [string, string|string[]] [k, v] in headers.entries() {
+            if k.toLowerAscii() == "a2a-extensions" {
+                extHeader = v;
+                break;
+            }
+        }
         string[] granted = [];
         if extHeader is string && extHeader.length() > 0 {
             foreach string entry in re `,`.split(extHeader) {

@@ -28,10 +28,17 @@ listener grpc:Listener grpcMockListener = new (GRPC_MOCK_PORT);
 service "A2AService" on grpcMockListener {
 
     remote function SendMessage(grpcstub:ContextSendMessageRequest req)
-            returns grpcstub:SendMessageResponse|error {
+            returns grpcstub:ContextSendMessageResponse|error {
         recordGrpcMetadata(req.headers);
         anydata resp = check takeNextGrpcResponse();
-        return check resp.ensureType(grpcstub:SendMessageResponse);
+        grpcstub:SendMessageResponse content = check resp.ensureType(grpcstub:SendMessageResponse);
+        // Returning the Context-wrapped response (rather than the plain
+        // SendMessageResponse the other mock methods return) lets tests
+        // script response metadata via setNextGrpcResponseMetadata, per
+        // ballerina/grpc's "use headers at the server side" pattern --
+        // exercises the same result.headers path
+        // captureGrantedExtensionsFromGrpc reads on a real gRPC server.
+        return {content, headers: takeNextGrpcResponseMetadata()};
     }
 
     remote function SendStreamingMessage(grpcstub:ContextSendMessageRequest req)
