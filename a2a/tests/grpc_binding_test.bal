@@ -127,6 +127,63 @@ function testEncodeDecodePartMetadataRoundTrips() returns error? {
 }
 
 @test:Config {groups: ["grpc"]}
+function testEncodeDecodeMessageRoundTrips() returns error? {
+    Message original = {
+        messageId: "m1", role: ROLE_USER,
+        parts: [{text: "hi"}, {url: "https://example.com/x"}],
+        contextId: "ctx1", taskId: "task1",
+        referenceTaskIds: ["task0"], extensions: ["urn:ext:one"],
+        metadata: {"k": "v"}
+    };
+    grpcstub:Message encoded = check encodeGrpcMessage(original);
+    Message decoded = check decodeGrpcMessage(encoded);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodeMessageMinimalRoundTrips() returns error? {
+    Message original = {messageId: "m2", role: ROLE_AGENT, parts: [{text: "hi"}]};
+    grpcstub:Message encoded = check encodeGrpcMessage(original);
+    Message decoded = check decodeGrpcMessage(encoded);
+    test:assertEquals(decoded.messageId, original.messageId);
+    test:assertEquals(decoded.role, original.role);
+    test:assertEquals(decoded.parts, original.parts);
+    test:assertEquals(decoded?.contextId, ());
+    test:assertEquals(decoded?.taskId, ());
+    test:assertEquals(decoded.referenceTaskIds, []);
+    test:assertEquals(decoded.extensions, []);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeGrpcSendConfiguration() returns error? {
+    SendMessageConfiguration config = {
+        acceptedOutputModes: ["text", "image/png"],
+        historyLength: 5,
+        returnImmediately: true,
+        taskPushNotificationConfig: {url: "https://cb.example.com", taskId: "t1"}
+    };
+    grpcstub:SendMessageConfiguration encoded = check encodeGrpcSendConfiguration(config);
+    test:assertEquals(encoded.accepted_output_modes, ["text", "image/png"]);
+    test:assertEquals(encoded.history_length, 5);
+    test:assertEquals(encoded.return_immediately, true);
+    grpcstub:TaskPushNotificationConfig? cb = encoded?.task_push_notification_config;
+    test:assertTrue(cb is grpcstub:TaskPushNotificationConfig);
+    test:assertEquals((<grpcstub:TaskPushNotificationConfig>cb).url, "https://cb.example.com");
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePushConfigRoundTrips() returns error? {
+    TaskPushNotificationConfig original = {
+        url: "https://cb.example.com", id: "cfg1", taskId: "task1",
+        token: "tok", authentication: {scheme: "Bearer", credentials: "abc"},
+        tenant: "tenant1"
+    };
+    grpcstub:TaskPushNotificationConfig encoded = check encodeGrpcPushConfig(original);
+    TaskPushNotificationConfig decoded = check decodeGrpcPushConfig(encoded);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
 function testDecodeGrpcPartDataNarrowingFailureReturnsTypedError() {
     // A value outside json's value space: a table, which anydata admits
     // but json does not.

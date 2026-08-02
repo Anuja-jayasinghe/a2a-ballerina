@@ -218,3 +218,169 @@ isolated function decodeGrpcPart(grpcstub:Part p, int partIndex) returns Part|er
     }
     return result;
 }
+
+# Converts a typed Message into the generated grpcstub:Message shape.
+#
+# + m - the Message to encode
+# + return - the equivalent grpcstub:Message
+isolated function encodeGrpcMessage(Message m) returns grpcstub:Message|error {
+    grpcstub:Part[] parts = [];
+    foreach Part p in m.parts {
+        parts.push(check encodeGrpcPart(p));
+    }
+    grpcstub:Message result = {
+        message_id: m.messageId,
+        role: <grpcstub:Role>m.role,
+        parts: parts,
+        reference_task_ids: m.referenceTaskIds,
+        extensions: m.extensions,
+        metadata: jsonToGrpcStruct(m?.metadata)
+    };
+    string? contextId = m?.contextId;
+    if contextId is string {
+        result.context_id = contextId;
+    }
+    string? taskId = m?.taskId;
+    if taskId is string {
+        result.task_id = taskId;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:Message into a typed Message.
+#
+# + m - the generated grpcstub:Message to decode
+# + return - the equivalent typed Message
+isolated function decodeGrpcMessage(grpcstub:Message m) returns Message|error {
+    Part[] parts = [];
+    foreach grpcstub:Part p in m.parts {
+        parts.push(check decodeGrpcPart(p, parts.length()));
+    }
+    Message result = {
+        messageId: m.message_id,
+        role: <Role>m.role,
+        parts: parts,
+        referenceTaskIds: m.reference_task_ids,
+        extensions: m.extensions
+    };
+    string? contextId = emptyGrpcStringToNil(m.context_id);
+    if contextId is string {
+        result.contextId = contextId;
+    }
+    string? taskId = emptyGrpcStringToNil(m.task_id);
+    if taskId is string {
+        result.taskId = taskId;
+    }
+    map<json>? metadata = check grpcStructToJson(m.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
+}
+
+# Converts a typed SendMessageConfiguration into the generated
+# grpcstub:SendMessageConfiguration shape.
+#
+# + c - the SendMessageConfiguration to encode
+# + return - the equivalent grpcstub:SendMessageConfiguration
+isolated function encodeGrpcSendConfiguration(SendMessageConfiguration c) returns grpcstub:SendMessageConfiguration|error {
+    grpcstub:SendMessageConfiguration result = {
+        accepted_output_modes: c.acceptedOutputModes,
+        return_immediately: c.returnImmediately
+    };
+    int? historyLength = c?.historyLength;
+    if historyLength is int {
+        result.history_length = historyLength;
+    }
+    TaskPushNotificationConfig? cb = c?.taskPushNotificationConfig;
+    if cb is TaskPushNotificationConfig {
+        result.task_push_notification_config = check encodeGrpcPushConfig(cb);
+    }
+    return result;
+}
+
+# Converts a typed TaskPushNotificationConfig into the generated
+# grpcstub:TaskPushNotificationConfig shape.
+#
+# + c - the TaskPushNotificationConfig to encode
+# + return - the equivalent grpcstub:TaskPushNotificationConfig
+isolated function encodeGrpcPushConfig(TaskPushNotificationConfig c) returns grpcstub:TaskPushNotificationConfig|error {
+    grpcstub:TaskPushNotificationConfig result = {url: c.url};
+    string? id = c?.id;
+    if id is string {
+        result.id = id;
+    }
+    string? taskId = c?.taskId;
+    if taskId is string {
+        result.task_id = taskId;
+    }
+    string? token = c?.token;
+    if token is string {
+        result.token = token;
+    }
+    AuthenticationInfo? auth = c?.authentication;
+    if auth is AuthenticationInfo {
+        grpcstub:AuthenticationInfo grpcAuth = {scheme: auth.scheme};
+        string? credentials = auth?.credentials;
+        if credentials is string {
+            grpcAuth.credentials = credentials;
+        }
+        result.authentication = grpcAuth;
+    }
+    string? tenant = c?.tenant;
+    if tenant is string {
+        result.tenant = tenant;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:TaskPushNotificationConfig into a typed
+# TaskPushNotificationConfig.
+#
+# grpcstub:TaskPushNotificationConfig.authentication is a non-optional
+# AuthenticationInfo field defaulting to {scheme: "", credentials: ""} when
+# unset (proto3 nested-message zero value), not an optional field -- so
+# `c?.authentication` alone never yields (), it always yields that
+# zero-value record. Per design spec Design decision 5 rule 2, an
+# all-defaults nested message means "not set", and the only field of
+# AuthenticationInfo that's required in the typed domain type is `scheme`,
+# so an empty scheme is what "not set" looks like here. Guarding on
+# emptyGrpcStringToNil(grpcAuth.scheme) is what actually distinguishes
+# "caller set authentication" from "caller left it unset" -- checking
+# `is grpcstub:AuthenticationInfo` alone (as opposed to a plain type check)
+# would always be true and wrongly decode every unset config into
+# {scheme: ""}, which also isn't a legal AuthenticationInfo (scheme is
+# required and non-empty by convention).
+#
+# + c - the generated grpcstub:TaskPushNotificationConfig to decode
+# + return - the equivalent typed TaskPushNotificationConfig
+isolated function decodeGrpcPushConfig(grpcstub:TaskPushNotificationConfig c) returns TaskPushNotificationConfig|error {
+    TaskPushNotificationConfig result = {url: c.url};
+    string? id = emptyGrpcStringToNil(c.id);
+    if id is string {
+        result.id = id;
+    }
+    string? taskId = emptyGrpcStringToNil(c.task_id);
+    if taskId is string {
+        result.taskId = taskId;
+    }
+    string? token = emptyGrpcStringToNil(c.token);
+    if token is string {
+        result.token = token;
+    }
+    grpcstub:AuthenticationInfo grpcAuth = c.authentication;
+    string? scheme = emptyGrpcStringToNil(grpcAuth.scheme);
+    if scheme is string {
+        AuthenticationInfo auth = {scheme: scheme};
+        string? credentials = emptyGrpcStringToNil(grpcAuth.credentials);
+        if credentials is string {
+            auth.credentials = credentials;
+        }
+        result.authentication = auth;
+    }
+    string? tenant = emptyGrpcStringToNil(c.tenant);
+    if tenant is string {
+        result.tenant = tenant;
+    }
+    return result;
+}
