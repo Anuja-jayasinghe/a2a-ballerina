@@ -26,13 +26,34 @@ function testGrpcTimestampToStringDefaultIsAbsent() {
 @test:Config {groups: ["grpc"]}
 function testGrpcTimestampToStringRealValue() returns error? {
     time:Utc ts = check time:utcFromString("2023-10-27T10:00:00Z");
-    test:assertEquals(grpcTimestampToString(ts), "2023-10-27T10:00:00.000Z");
+    test:assertEquals(grpcTimestampToString(ts), "2023-10-27T10:00:00Z");
 }
 
 @test:Config {groups: ["grpc"]}
 function testStringToGrpcTimestampRoundTrips() returns error? {
     time:Utc ts = check stringToGrpcTimestamp("2023-10-27T10:00:00Z");
-    test:assertEquals(grpcTimestampToString(ts), "2023-10-27T10:00:00.000Z");
+    test:assertEquals(grpcTimestampToString(ts), "2023-10-27T10:00:00Z");
+}
+
+@test:Config {groups: ["grpc"]}
+function testGrpcTimestampToStringSubSecondPrecision() returns error? {
+    // Regression test: the millisecond-suffix logic previously treated
+    // ts[1] (the fractional-second component, range [0, 1)) as if it were
+    // nanoseconds, and then appended a manual ".000Z" suffix on top of
+    // time:utcToString's own correct fractional rendering -- producing a
+    // doubly-fractioned string like "...10:00:00.500.000Z" that failed to
+    // parse back via stringToGrpcTimestamp.
+    time:Utc ts500 = check stringToGrpcTimestamp("2023-10-27T10:00:00.500Z");
+    string? str500 = grpcTimestampToString(ts500);
+    test:assertEquals(str500, "2023-10-27T10:00:00.500Z");
+    time:Utc roundTripped500 = check stringToGrpcTimestamp(str500);
+    test:assertEquals(roundTripped500, ts500);
+
+    time:Utc ts123 = check stringToGrpcTimestamp("2023-10-27T10:00:00.123Z");
+    string? str123 = grpcTimestampToString(ts123);
+    test:assertEquals(str123, "2023-10-27T10:00:00.123Z");
+    time:Utc roundTripped123 = check stringToGrpcTimestamp(str123);
+    test:assertEquals(roundTripped123, ts123);
 }
 
 @test:Config {groups: ["grpc"]}

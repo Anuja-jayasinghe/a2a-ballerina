@@ -49,17 +49,12 @@ isolated function grpcTimestampToString(time:Utc ts) returns string? {
     if ts[0] == 0 && ts[1] == 0.0d {
         return ();
     }
-    string baseStr = time:utcToString(ts);
-    // Insert milliseconds before the Z. The nanoseconds are in ts[1] as a decimal.
-    // Extract milliseconds from nanoseconds (convert to milliseconds: nanoseconds / 1_000_000)
-    decimal nanos = ts[1];
-    int millis = <int>(nanos / 1000000d);
-    string millisStr = millis.toString();
-    // Pad with leading zeros to make it 3 digits
-    while millisStr.length() < 3 {
-        millisStr = "0" + millisStr;
-    }
-    return baseStr.substring(0, baseStr.length() - 1) + "." + millisStr + "Z";
+    // time:utcToString already renders the fractional-second component
+    // (ts[1], a decimal in [0, 1)) correctly when non-zero, e.g.
+    // "2023-10-27T10:00:00.500Z". No manual millisecond suffix is needed
+    // -- appending one here would double up the fractional part and
+    // produce a string that stringToGrpcTimestamp can't parse back.
+    return time:utcToString(ts);
 }
 
 # The reverse of grpcTimestampToString: () encodes to the proto3
@@ -109,7 +104,13 @@ isolated function grpcStructToJson(map<anydata> struct) returns map<json>?|error
             message = string `struct field could not be narrowed to json: ${asJson.message()}`
         );
     }
-    map<json> result = check asJson.ensureType();
+    map<json>|error result = asJson.ensureType();
+    if result is error {
+        return error InvalidAgentResponseError(
+            string `struct field could not be narrowed to json: ${result.message()}`,
+            message = string `struct field could not be narrowed to json: ${result.message()}`
+        );
+    }
     return result;
 }
 
