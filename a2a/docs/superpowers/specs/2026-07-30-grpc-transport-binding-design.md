@@ -184,6 +184,20 @@ design: it is recorded as Known limitation 3 and gated by a mandatory
 test in §Testing that implementation must clear before building anything
 on top of the stub.
 
+> **Update (2026-08-02) — this section's diagnosis was incomplete; see
+> Known limitation 3 for the resolved account.** The gate test was written
+> and did fail at runtime. The cause was *not* the `anydata` rewrite
+> handing the marshaller an undescribed type. It was that
+> `initStub(self, A2A_DESC)` supplies no dependency descriptor map, so
+> `google/protobuf/struct.proto` never resolved and `google.protobuf.Value`
+> became a protobuf *placeholder* descriptor that `ballerina/grpc`'s
+> `StandardDescriptorBuilder` has no message-name entry for — whereas
+> `google.protobuf.Struct` does have one, which is precisely why
+> `metadata`/`params`/`header` worked and `data` did not. Supplying the
+> struct.proto descriptor fixes it; `anydata` turns out to be the correct
+> Ballerina type for a `Value` all along. Known limitation 3 has the full
+> analysis.
+
 #### Finding 3 — ~22 generated type names collide with `types.bal`
 
 The stub declares `Task`, `Message`, `Part`, `Artifact`, `TaskStatus`,
@@ -1064,18 +1078,99 @@ constrains, and a wrong match is worse than an honest widening.
    §Design decision 6.
 2. **Unknown fields are dropped**, because protobuf-generated records are
    closed. `types.bal`'s open records preserve them on JSON-RPC and REST.
-3. **`Part.data` over gRPC is unvalidated, and the workaround may not
-   work at all.** The `google_protobuf_Value` → `anydata` rewrite
-   (Finding 2) changes the Ballerina field type while
-   `A2A_DESCRIPTOR_MAP` still declares the field as
-   `google.protobuf.Value` on the wire, so the marshaller receives a type
-   the descriptor does not describe. This compiles — verified — but the
-   wire behaviour has **not** been exercised, and it may serialize
-   incorrectly or panic at runtime on the first `Part` carrying non-nil
-   `data`. Gated by the mandatory round-trip test in §Testing; if that
-   test fails, §Design decision 1's codegen strategy needs revisiting.
-   Only `Part.data` is affected — `text`, `raw`, `url`, `filename`,
-   `media_type`, and `metadata` are untouched by the rewrite.
+3. **`Part.data` over gRPC — RESOLVED (2026-08-02), with one residual
+   fidelity note.** This limitation originally read "unvalidated, and the
+   workaround may not work at all." The mandatory gate test
+   (`a2a/tests/grpc_wire_test.bal`) was then written and it **did** fail,
+   exactly as feared, on every `Part` carrying non-nil `data`:
+
+   ```
+   error {ballerina/grpc:1}InternalError ("gRPC Client Connector Error :INTERNAL:
+   Failed to frame message: Cannot invoke
+   "com.google.protobuf.Descriptors$FileDescriptor.findMessageTypeByName(String)"
+   because "fileDescriptor" is null")
+   ```
+
+   **What the root cause actually was.** Not the `anydata` rewrite, and not
+   a missing Ballerina type. `ballerina/grpc`'s
+   `ServiceDefinition.getFileDescriptor()` resolves the root
+   FileDescriptorProto's `dependency` entries **only** from the descriptor
+   map passed to `grpc:Client.initStub`, then calls
+   `FileDescriptor.buildFrom(proto, deps, /*allowUnknownDependencies=*/true)`.
+   `bal grpc` emits `initStub(self, A2A_DESC)` with **no** map, so
+   `google/protobuf/struct.proto` was never resolved and every
+   `google.protobuf.*` type in a2a.proto degraded to a protobuf
+   *placeholder* descriptor (file name `<Type>.placeholder.proto`). At
+   (de)serialization time `grpc.Message.getDescriptor()` detects a
+   placeholder and re-resolves it by message name through
+   `StandardDescriptorBuilder.getFileDescriptorFromMessageName()`. That
+   table covers `google.protobuf.{Any,Empty,Timestamp,Duration,Struct}`
+   plus the nine wrappers — but **not** `Value`, `ListValue`, or
+   `NullValue`. Hence the exact asymmetry Finding 2 observed and could not
+   explain: `Struct`-typed fields (`metadata`, `params`, `header`) were
+   rescued by that table and worked; `Value`-typed `Part.data` got a null
+   FileDescriptor and NPE'd.
+
+   This also corrects Finding 2's framing. The `bal grpc` codegen gap is
+   real but is only a *compile-time* nuisance; the *runtime* failure was a
+   descriptor-wiring gap, and the two are independent.
+
+   **The fix.** `a2a/modules/grpcstub/wellknown_desc.bal` (new,
+   hand-maintained, not generated) defines `GOOGLE_PROTOBUF_STRUCT_DESC` —
+   the hex-encoded FileDescriptorProto for `google/protobuf/struct.proto`,
+   which is where `Value`/`ListValue`/`NullValue` are declared — and
+   `A2A_DESCRIPTOR_MAP` keyed by that dependency's file name. The
+   regeneration script now rewrites `initStub(self, A2A_DESC)` to
+   `initStub(self, A2A_DESC, A2A_DESCRIPTOR_MAP)`. struct.proto then
+   resolves for real, `Value` is never a placeholder, and the runtime's
+   **already-existing** `google.protobuf.Value` ⇄ `anydata` machinery
+   becomes reachable — see `grpc.Message`'s
+   `GOOGLE_PROTOBUF_VALUE_STRUCT_VALUE` / `GOOGLE_PROTOBUF_VALUE_LIST_VALUE`
+   / `GOOGLE_PROTOBUF_LISTVALUE_VALUES` branches, which were present and
+   correct all along. No hand-written `Value` type was needed, no fork of
+   `ballerina/grpc`, and no change to the vendored proto.
+
+   Only `google/protobuf/struct.proto` is added to the map.
+   `empty.proto` and `timestamp.proto` are also a2a.proto dependencies but
+   *are* covered by `StandardDescriptorBuilder`, so their placeholders
+   resolve correctly and adding them would change working behaviour for no
+   benefit.
+
+   **This also retires the `anydata` rewrite's "erasure" characterisation.**
+   With the descriptor resolved, `anydata` is the *correct* Ballerina
+   representation of a `google.protobuf.Value`, identical to how the tool
+   already represents the `Value`s inside a `Struct`'s `map<anydata>`. The
+   rewrite is still needed (the tool still emits an undefined
+   `google_protobuf_Value`) and is still asserted at exactly 2 occurrences,
+   so Known limitation 4 stands unchanged.
+
+   **Residual fidelity note — integers widen to floats.**
+   `google.protobuf.Value`'s `kind` oneof has exactly one numeric arm,
+   `double number_value`. A Ballerina `int` inside `Part.data` therefore
+   comes back as a `float` of equal value (`1` → `1.0`). This is the
+   well-known type's own definition, not a defect in this binding and not
+   fixable in any protobuf implementation of any language — but it *is* a
+   real cross-binding difference, since JSON-RPC and HTTP+JSON preserve
+   the int/float distinction. It is pinned by
+   `testPartDataIntegersWidenToFloatOverGrpc` so that it cannot change
+   silently, and §Design decision 5's rule 5 should be read with it in
+   mind: `decodeGrpcPart`'s `anydata` → `json` narrowing will see floats
+   where the caller sent ints.
+
+   **Verified.** All seven gate cases in `a2a/tests/grpc_wire_test.bal`
+   pass — JSON object, JSON array, string, number, boolean, null, and the
+   unset case — against the real mock gRPC service on `localhost:19198`,
+   with the real protobuf codec running in both directions. No test case
+   was weakened or removed; the object/array cases' *expectations* were
+   corrected for the documented int→float widening, and an eighth test was
+   added to pin that widening explicitly.
+
+   One thing this does **not** establish: `Part.data` set to an explicit
+   JSON `null` and `Part.data` left unset are indistinguishable on the
+   Ballerina side (both surface as `()`), so `testPartDataRoundTripNull`
+   and `testPartUnsetDataRoundTrips` assert the same observable outcome.
+   That is inherent to representing `Value` as `anydata` and matches
+   proto3 semantics (`NULL_VALUE = 0` is not emitted on the wire anyway).
 4. **The post-generation rewrite is tool-version-sensitive.** It is a
    textual rewrite of tool output and will silently stop applying if a
    future `bal grpc` emits a proper type. Guarded by an

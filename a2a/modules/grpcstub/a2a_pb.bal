@@ -12,7 +12,7 @@ public isolated client class A2AServiceClient {
 
     public isolated function init(string url, *grpc:ClientConfiguration config) returns grpc:Error? {
         self.grpcClient = check new (url, config);
-        check self.grpcClient.initStub(self, A2A_DESC);
+        check self.grpcClient.initStub(self, A2A_DESC, A2A_DESCRIPTOR_MAP);
     }
 
     isolated remote function SendMessage(SendMessageRequest|ContextSendMessageRequest req) returns SendMessageResponse|grpc:Error {
