@@ -309,3 +309,27 @@ function testDecodeGrpcStreamResponseEachVariant() returns error? {
     StreamResponse r4 = check decodeGrpcStreamResponse({artifact_update: {task_id: "t1", context_id: "c1", artifact: {artifact_id: "a1", parts: [{text: "x"}]}}});
     test:assertTrue(r4?.artifactUpdate is TaskArtifactUpdateEvent);
 }
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcListTasksResult() returns error? {
+    grpcstub:ListTasksResponse resp = {
+        tasks: [{id: "t1", status: {state: grpcstub:TASK_STATE_WORKING}}],
+        next_page_token: "cursor1", page_size: 10, total_size: 1
+    };
+    ListTasksResult result = check decodeGrpcListTasksResult(resp);
+    test:assertEquals(result.tasks.length(), 1);
+    test:assertEquals(result.nextPageToken, "cursor1");
+    test:assertEquals(result.pageSize, 10);
+    test:assertEquals(result.totalSize, 1);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcListPushConfigsResult() returns error? {
+    grpcstub:ListTaskPushNotificationConfigsResponse resp = {
+        configs: [{url: "https://cb.example.com", task_id: "t1"}],
+        next_page_token: "cursor2"
+    };
+    ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(resp);
+    test:assertEquals(result.configs.length(), 1);
+    test:assertEquals(result.nextPageToken, "cursor2");
+}

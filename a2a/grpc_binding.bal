@@ -567,3 +567,28 @@ isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns
         message = "gRPC StreamResponse contained none of task/message/status_update/artifact_update"
     );
 }
+
+# + resp - the generated grpcstub:ListTasksResponse to decode
+# + return - the equivalent typed ListTasksResult
+isolated function decodeGrpcListTasksResult(grpcstub:ListTasksResponse resp) returns ListTasksResult|error {
+    Task[] tasks = [];
+    foreach grpcstub:Task t in resp.tasks {
+        tasks.push(check decodeGrpcTask(t));
+    }
+    return {
+        tasks,
+        nextPageToken: resp.next_page_token,
+        pageSize: resp.page_size,
+        totalSize: resp.total_size
+    };
+}
+
+# + resp - the generated grpcstub:ListTaskPushNotificationConfigsResponse to decode
+# + return - the equivalent typed ListTaskPushNotificationConfigsResult
+isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificationConfigsResponse resp) returns ListTaskPushNotificationConfigsResult|error {
+    TaskPushNotificationConfig[] configs = [];
+    foreach grpcstub:TaskPushNotificationConfig c in resp.configs {
+        configs.push(check decodeGrpcPushConfig(c));
+    }
+    return {configs, nextPageToken: resp.next_page_token};
+}
