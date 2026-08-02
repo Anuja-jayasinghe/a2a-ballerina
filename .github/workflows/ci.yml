@@ -21,30 +21,16 @@ jobs:
         working-directory: a2a
         run: bal build
 
-      # NOTE: the `grpc` test group is excluded here because Task 3 of
-      # a2a/docs/superpowers/plans/2026-08-01-grpc-transport-binding.md
-      # (a2a/tests/grpc_wire_test.bal, tagged `groups: ["grpc"]`) found a
-      # real Part.data marshalling defect in the gRPC binding that's
-      # intentionally parked pending a design fix in a later phase. Those
-      # 6 tests are a deliberate, tracked hard-gate failure, not a
-      # regression — running them here would make CI red for a reason
-      # unrelated to ordinary changes. Remove this exclusion once that
-      # defect is fixed and the full `grpc` group passes again. To check
-      # whether it's fixed, run (from a2a/): bal test --groups grpc
       - name: Test
         working-directory: a2a
-        run: bal test --disable-groups grpc
+        run: bal test
 
-  grpc-stub-freshness:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Ballerina
-        uses: ballerina-platform/setup-ballerina@v1
-        with:
-          version: 2201.13.4
-
-      - name: Check gRPC stub is up to date with vendored proto
-        working-directory: a2a
-        run: bash scripts/regen-grpc-stub.sh
+# NOTE: a separate `grpc-stub-freshness` job (re-running
+# scripts/regen-grpc-stub.sh) and a `--disable-groups grpc` exclusion on the
+# Test step above were part of the original design for this workflow
+# (see a2a/docs/superpowers/plans/2026-08-01-grpc-transport-binding.md,
+# Task 17), but that job's script and the excluded test group don't exist
+# on `main` yet — the gRPC transport binding work (Tasks 1-16 of that plan)
+# is still in progress on a separate branch and found a real Part.data
+# marshalling defect that's parked pending a design fix. Re-add both the
+# freshness job and the group exclusion when that branch merges.
