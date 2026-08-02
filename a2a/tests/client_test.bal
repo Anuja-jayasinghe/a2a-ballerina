@@ -215,6 +215,49 @@ function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
     test:assertEquals(jsonRpcUrl, "http://legacy.example");
 }
 
+@test:Config {groups: ["grpc"]}
+function testSelectInterfaceGrpcOnlyCard() returns error? {
+    AgentCard card = {
+        name: "grpc-agent", description: "d", version: "1.0",
+        capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:9090", protocolBinding: "GRPC", protocolVersion: "1.0"}],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card, "GRPC");
+    test:assertEquals(iface.url, "http://localhost:9090");
+}
+
+@test:Config {groups: ["grpc"]}
+function testSelectInterfaceMixedCardOrdering() returns error? {
+    AgentCard card = {
+        name: "mixed-agent", description: "d", version: "1.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:9090", protocolBinding: "GRPC", protocolVersion: "1.0"},
+            {url: "http://localhost:8080", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://localhost:8081", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+    test:assertEquals(check primaryUrl(card, "GRPC"), "http://localhost:9090");
+    test:assertEquals(check primaryUrl(card, "JSONRPC"), "http://localhost:8080");
+    test:assertEquals(check primaryUrl(card, "HTTP+JSON"), "http://localhost:8081");
+}
+
+@test:Config {groups: ["grpc"]}
+function testGrpcSchemeNormalization() {
+    test:assertEquals(normalizeGrpcSchemeUrl("grpc://localhost:9090"), "http://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("grpcs://localhost:9090"), "https://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("http://localhost:9090"), "http://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("https://localhost:9090"), "https://localhost:9090");
+}
+
+// testClientInitRejectsV03PlusGrpc is deferred to Task 13: it needs
+// Client.init to actually check `binding == "GRPC"` for v0.3 rejection
+// (mirroring the existing `binding == "HTTP+JSON"` check), which is wired
+// up there alongside the REST binding's equivalent check. Adding it now
+// would just be a permanently-failing test in an otherwise green build.
+
 @test:Config {}
 function testSendMessageHappyPath() returns error? {
     setNextJsonResponse({

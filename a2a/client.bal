@@ -175,7 +175,7 @@ public isolated function resolveAgentCardCached(
 }
 
 # The A2A transport bindings this library can speak.
-public type TransportBinding "JSONRPC"|"HTTP+JSON";
+public type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
@@ -227,6 +227,23 @@ public isolated function primaryUrl(
         }
     }
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
+}
+
+# Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
+# on some AgentCards) to the http://\https:// form grpc:Client actually
+# accepts. A conformant card's GRPC interface url is already http(s), in
+# which case this is a no-op.
+#
+# + url - the GRPC interface's url, as published on the AgentCard
+# + return - the url with any grpc/grpcs scheme rewritten to http/https
+isolated function normalizeGrpcSchemeUrl(string url) returns string {
+    if url.startsWith("grpcs://") {
+        return "https://" + url.substring(8);
+    }
+    if url.startsWith("grpc://") {
+        return "http://" + url.substring(7);
+    }
+    return url;
 }
 
 # How one operation maps onto the REST binding.
