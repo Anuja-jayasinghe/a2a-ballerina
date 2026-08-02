@@ -599,7 +599,14 @@ isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificat
 isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns SecurityScheme|error {
     grpcstub:APIKeySecurityScheme? apiKey = s?.api_key_security_scheme;
     if apiKey is grpcstub:APIKeySecurityScheme {
-        ApiKeySecurityScheme result = {'in: <"query"|"header"|"cookie">apiKey.location, name: apiKey.name};
+        string location = apiKey.location;
+        if location != "query" && location != "header" && location != "cookie" {
+            return error InvalidAgentResponseError(
+                string `SecurityScheme's api_key_security_scheme.location has an invalid value: "${location}"`,
+                message = string `SecurityScheme's api_key_security_scheme.location has an invalid value: "${location}"`
+            );
+        }
+        ApiKeySecurityScheme result = {'in: <"query"|"header"|"cookie">location, name: apiKey.name};
         string? description = emptyGrpcStringToNil(apiKey.description);
         if description is string {
             result.description = description;
@@ -759,7 +766,9 @@ isolated function decodeGrpcAgentInterface(grpcstub:AgentInterface i) returns Ag
 #       proto3 optional (design spec §"Supporting message fields" note),
 #       so an absent field decodes to types.bal's false default rather
 #       than being (mis-)read as an explicit "declared false."
-# + return - the equivalent typed AgentCapabilities
+# + return - the equivalent typed AgentCapabilities, or an error if an
+#            extension's params (a google.protobuf.Struct) cannot be
+#            narrowed to json
 isolated function decodeGrpcAgentCapabilities(grpcstub:AgentCapabilities c) returns AgentCapabilities|error {
     AgentExtension[] extensions = [];
     foreach grpcstub:AgentExtension e in c.extensions {

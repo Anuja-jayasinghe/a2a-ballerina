@@ -364,6 +364,18 @@ function testDecodeGrpcAgentCardApiKeyScheme() returns error? {
 }
 
 @test:Config {groups: ["grpc"]}
+function testDecodeGrpcSecuritySchemeInvalidApiKeyLocationIsInvalidAgentResponse() {
+    grpcstub:SecurityScheme s = {api_key_security_scheme: {location: "invalid-location", name: "X-API-Key"}};
+    SecurityScheme|error decoded = decodeGrpcSecurityScheme(s);
+    test:assertTrue(decoded is InvalidAgentResponseError,
+            "expected InvalidAgentResponseError for an invalid api_key_security_scheme.location value");
+    if decoded is InvalidAgentResponseError {
+        string msg = decoded.message();
+        test:assertTrue(msg.includes("invalid-location"), "error message should name the offending location value");
+    }
+}
+
+@test:Config {groups: ["grpc"]}
 function testDecodeGrpcAgentCardOAuth2AuthorizationCodeFlow() returns error? {
     grpcstub:AgentCard grpcCard = {
         name: "agent", description: "d", version: "1.0", capabilities: {},
