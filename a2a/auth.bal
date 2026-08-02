@@ -8,6 +8,7 @@
 // deliberately left for the caller to wire through clientConfig directly,
 // same as today.
 
+import ballerina/grpc;
 import ballerina/http;
 
 # HTTP client configuration resolved from an AgentCard's security
@@ -106,4 +107,42 @@ public isolated function buildAuthFromCard(AgentCard card, map<string> credentia
         return {clientConfig, headers};
     }
     return error AuthResolutionError("no SecurityRequirement in the AgentCard could be satisfied by the given credentials");
+}
+
+# Projects an http:ClientConfiguration.auth value (already resolved by
+# buildAuthFromCard for the HTTP-basic and HTTP-bearer cases this library
+# automates) onto the structurally equivalent grpc:ClientAuthConfig union.
+# Per design spec Design decision 3, grpc:ClientConfiguration.auth is
+# structurally the same union http:ClientConfiguration.auth offers for
+# both scheme types buildAuthFromCard automates, so this is a projection,
+# not a second resolution path — ResolvedAuth itself is unchanged.
+#
+# Confirmed against the real `ballerina/grpc:1.14.6` and `ballerina/http`
+# distributions: grpc:CredentialsConfig has `username`/`password` fields
+# (via `*auth:CredentialsConfig`) and grpc:BearerTokenConfig has a
+# `token` field, both matching http:CredentialsConfig/http:BearerTokenConfig
+# exactly.
+#
+# + clientConfig - the effective http:ClientConfiguration built by
+#                  Client.init (from clientConfig param + any
+#                  buildAuthFromCard resolution)
+# + return - the equivalent grpc:ClientConfiguration, or an error if
+#            clientConfig.auth is set to a shape this adapter doesn't
+#            recognize (OAuth2/JWT auth configs, which buildAuthFromCard
+#            never produces, so this can only happen if a caller sets
+#            clientConfig.auth to something unsupported directly)
+isolated function projectToGrpcClientConfig(http:ClientConfiguration clientConfig) returns grpc:ClientConfiguration|error {
+    grpc:ClientConfiguration result = {};
+    http:ClientAuthConfig? auth = clientConfig?.auth;
+    if auth is http:CredentialsConfig {
+        result.auth = {username: auth.username, password: auth.password};
+    } else if auth is http:BearerTokenConfig {
+        result.auth = {token: auth.token};
+    } else if auth is () {
+        // no auth configured — nothing to project
+    } else {
+        return error AuthResolutionError(
+            "grpc binding only supports HTTP Basic/Bearer auth projected from http:ClientConfiguration.auth; the configured auth type is not automated for gRPC");
+    }
+    return result;
 }

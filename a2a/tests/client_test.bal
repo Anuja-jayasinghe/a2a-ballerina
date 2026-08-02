@@ -1,3 +1,5 @@
+import ballerina/a2a.grpcstub;
+import ballerina/grpc;
 import ballerina/http;
 import ballerina/test;
 import ballerina/time;
@@ -252,11 +254,54 @@ function testGrpcSchemeNormalization() {
     test:assertEquals(normalizeGrpcSchemeUrl("https://localhost:9090"), "https://localhost:9090");
 }
 
-// testClientInitRejectsV03PlusGrpc is deferred to Task 13: it needs
-// Client.init to actually check `binding == "GRPC"` for v0.3 rejection
-// (mirroring the existing `binding == "HTTP+JSON"` check), which is wired
-// up there alongside the REST binding's equivalent check. Adding it now
-// would just be a permanently-failing test in an otherwise green build.
+@test:Config {groups: ["grpc"]}
+function testClientInitRejectsV03PlusGrpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client|error result = new (getGrpcMockUrl(), agentCard = card, binding = "GRPC");
+    test:assertTrue(result is VersionNotSupportedError,
+            "constructing a GRPC client against a card that resolves to V0_3 must fail fast with a typed error, since A2A v0.3 has no gRPC binding equivalent");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendMessageUnary() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_COMPLETED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message result = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    test:assertTrue(result is Task);
+    if result is Task {
+        test:assertEquals(result.id, "t1");
+    }
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskMapsNotFoundError() returns error? {
+    setNextGrpcError(error grpc:NotFoundError("no such task"));
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|error result = grpcClient->getTask("missing");
+    test:assertTrue(result is TaskNotFoundError);
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendsMandatoryA2AVersionHeader() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    map<string|string[]> metadata = getLastGrpcMetadata();
+    // gRPC/HTTP2 metadata keys are lowercased on the wire regardless of the
+    // case the client sends them in (confirmed against the real
+    // ballerina/grpc runtime -- see the captured metadata in this test's
+    // history), so the outbound "A2A-Version" header arrives here as
+    // "a2a-version".
+    test:assertTrue(metadata.hasKey("a2a-version"), "A2A-Version metadata must be present per spec section 3.6.1");
+}
 
 @test:Config {}
 function testSendMessageHappyPath() returns error? {
