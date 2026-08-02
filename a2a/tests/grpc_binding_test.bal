@@ -196,3 +196,116 @@ function testDecodeGrpcPartDataNarrowingFailureReturnsTypedError() {
         test:assertTrue(msg.includes("3"), "error message should name the offending part index");
     }
 }
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcTaskStatusAllDefaultsIsNoMessage() returns error? {
+    grpcstub:TaskStatus grpcStatus = {state: grpcstub:TASK_STATE_WORKING};
+    TaskStatus status = check decodeGrpcTaskStatus(grpcStatus);
+    test:assertEquals(status.state, TASK_STATE_WORKING);
+    test:assertEquals(status?.message, (), "an all-defaults nested Message must decode to () per rule 2");
+    test:assertEquals(status?.timestamp, ());
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcTaskStatusWithMessageAndTimestamp() returns error? {
+    grpcstub:TaskStatus grpcStatus = {
+        state: grpcstub:TASK_STATE_INPUT_REQUIRED,
+        message: {message_id: "m1", role: grpcstub:ROLE_AGENT, parts: [{text: "need more info"}]},
+        timestamp: check stringToGrpcTimestamp("2023-10-27T10:00:00Z")
+    };
+    TaskStatus status = check decodeGrpcTaskStatus(grpcStatus);
+    test:assertEquals(status.state, TASK_STATE_INPUT_REQUIRED);
+    test:assertTrue(status?.message is Message);
+    // grpcTimestampToString (Task 6) delegates to time:utcToString, which
+    // omits the fractional-second suffix entirely when it's zero -- see
+    // that function's doc comment. ".000Z" is not what it produces.
+    test:assertEquals(status?.timestamp, "2023-10-27T10:00:00Z");
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcArtifact() returns error? {
+    grpcstub:Artifact grpcArtifact = {
+        artifact_id: "a1", name: "result.txt", description: "the output",
+        parts: [{text: "content"}], extensions: ["urn:ext:one"]
+    };
+    Artifact artifact = check decodeGrpcArtifact(grpcArtifact);
+    test:assertEquals(artifact.artifactId, "a1");
+    test:assertEquals(artifact?.name, "result.txt");
+    test:assertEquals(artifact?.description, "the output");
+    test:assertEquals(artifact.parts.length(), 1);
+    test:assertEquals(artifact.extensions, ["urn:ext:one"]);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcTask() returns error? {
+    grpcstub:Task grpcTask = {
+        id: "t1", context_id: "ctx1",
+        status: {state: grpcstub:TASK_STATE_WORKING},
+        history: [{message_id: "m1", role: grpcstub:ROLE_USER, parts: [{text: "hi"}]}],
+        artifacts: [{artifact_id: "a1", parts: [{text: "out"}]}]
+    };
+    Task task = check decodeGrpcTask(grpcTask);
+    test:assertEquals(task.id, "t1");
+    test:assertEquals(task?.contextId, "ctx1");
+    test:assertEquals(task.status.state, TASK_STATE_WORKING);
+    test:assertEquals(task.history.length(), 1);
+    test:assertEquals(task.artifacts.length(), 1);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcStatusUpdate() returns error? {
+    grpcstub:TaskStatusUpdateEvent grpcEvent = {
+        task_id: "t1", context_id: "ctx1", status: {state: grpcstub:TASK_STATE_COMPLETED}
+    };
+    TaskStatusUpdateEvent event = check decodeGrpcStatusUpdate(grpcEvent);
+    test:assertEquals(event.taskId, "t1");
+    test:assertEquals(event.contextId, "ctx1");
+    test:assertEquals(event.status.state, TASK_STATE_COMPLETED);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcArtifactUpdate() returns error? {
+    grpcstub:TaskArtifactUpdateEvent grpcEvent = {
+        task_id: "t1", context_id: "ctx1",
+        artifact: {artifact_id: "a1", parts: [{text: "chunk"}]},
+        append: true, last_chunk: false
+    };
+    TaskArtifactUpdateEvent event = check decodeGrpcArtifactUpdate(grpcEvent);
+    test:assertEquals(event.taskId, "t1");
+    test:assertEquals(event.artifact.artifactId, "a1");
+    test:assertEquals(event.append, true);
+    test:assertEquals(event.lastChunk, false);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcSendResultTask() returns error? {
+    grpcstub:SendMessageResponse resp = {task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}};
+    Task|Message result = check decodeGrpcSendResult(resp);
+    test:assertTrue(result is Task);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcSendResultMessage() returns error? {
+    grpcstub:SendMessageResponse resp = {message: {message_id: "m1", role: grpcstub:ROLE_AGENT, parts: [{text: "hi"}]}};
+    Task|Message result = check decodeGrpcSendResult(resp);
+    test:assertTrue(result is Message);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcSendResultNeitherIsInvalidAgentResponse() {
+    grpcstub:SendMessageResponse resp = {};
+    Task|Message|error result = decodeGrpcSendResult(resp);
+    test:assertTrue(result is InvalidAgentResponseError);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcStreamResponseEachVariant() returns error? {
+    StreamResponse r1 = check decodeGrpcStreamResponse({task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}});
+    test:assertTrue(r1?.task is Task);
+    StreamResponse r2 = check decodeGrpcStreamResponse({message: {message_id: "m1", role: grpcstub:ROLE_AGENT, parts: [{text: "hi"}]}});
+    test:assertTrue(r2?.message is Message);
+    StreamResponse r3 = check decodeGrpcStreamResponse({status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_WORKING}}});
+    test:assertTrue(r3?.statusUpdate is TaskStatusUpdateEvent);
+    StreamResponse r4 = check decodeGrpcStreamResponse({artifact_update: {task_id: "t1", context_id: "c1", artifact: {artifact_id: "a1", parts: [{text: "x"}]}}});
+    test:assertTrue(r4?.artifactUpdate is TaskArtifactUpdateEvent);
+}

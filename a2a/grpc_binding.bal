@@ -384,3 +384,186 @@ isolated function decodeGrpcPushConfig(grpcstub:TaskPushNotificationConfig c) re
     }
     return result;
 }
+
+# Converts a generated grpcstub:TaskStatus into a typed TaskStatus.
+#
+# grpcstub:TaskStatus.message and .timestamp are both non-optional fields
+# with proto3 zero-value defaults ({message_id: "", role: ROLE_UNSPECIFIED,
+# parts: []} and [0, 0.0d] respectively), not real Ballerina optional
+# fields -- so `s?.message`/`s?.timestamp` never yield (), they always
+# yield the zero-value record/tuple when unset. Per design spec Design
+# decision 5 rule 2, an all-defaults nested Message means "not set": since
+# Message has no single required field the way AuthenticationInfo has
+# `scheme`, message_id and parts together are what "someone actually built
+# this Message" looks like (role alone, e.g. ROLE_USER with no id/parts,
+# is not a case the wire produces on decode of a genuinely-set message).
+# timestamp reuses grpcTimestampToString, which already implements rule 3
+# for the exact same [0, 0.0d] sentinel.
+#
+# + s - the generated grpcstub:TaskStatus to decode
+# + return - the equivalent typed TaskStatus
+isolated function decodeGrpcTaskStatus(grpcstub:TaskStatus s) returns TaskStatus|error {
+    TaskStatus result = {state: <TaskState>s.state};
+    grpcstub:Message msg = s.message;
+    if msg.message_id.length() > 0 || msg.parts.length() > 0 {
+        result.message = check decodeGrpcMessage(msg);
+    }
+    string? tsString = grpcTimestampToString(s.timestamp);
+    if tsString is string {
+        result.timestamp = tsString;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:Artifact into a typed Artifact.
+#
+# + a - the generated grpcstub:Artifact to decode
+# + return - the equivalent typed Artifact
+isolated function decodeGrpcArtifact(grpcstub:Artifact a) returns Artifact|error {
+    Part[] parts = [];
+    foreach grpcstub:Part p in a.parts {
+        parts.push(check decodeGrpcPart(p, parts.length()));
+    }
+    Artifact result = {artifactId: a.artifact_id, parts, extensions: a.extensions};
+    string? name = emptyGrpcStringToNil(a.name);
+    if name is string {
+        result.name = name;
+    }
+    string? description = emptyGrpcStringToNil(a.description);
+    if description is string {
+        result.description = description;
+    }
+    map<json>? metadata = check grpcStructToJson(a.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:Task into a typed Task.
+#
+# + t - the generated grpcstub:Task to decode
+# + return - the equivalent typed Task
+isolated function decodeGrpcTask(grpcstub:Task t) returns Task|error {
+    Message[] history = [];
+    foreach grpcstub:Message m in t.history {
+        history.push(check decodeGrpcMessage(m));
+    }
+    Artifact[] artifacts = [];
+    foreach grpcstub:Artifact a in t.artifacts {
+        artifacts.push(check decodeGrpcArtifact(a));
+    }
+    Task result = {
+        id: t.id,
+        status: check decodeGrpcTaskStatus(t.status),
+        history,
+        artifacts
+    };
+    string? contextId = emptyGrpcStringToNil(t.context_id);
+    if contextId is string {
+        result.contextId = contextId;
+    }
+    map<json>? metadata = check grpcStructToJson(t.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:TaskStatusUpdateEvent into a typed
+# TaskStatusUpdateEvent.
+#
+# + e - the generated grpcstub:TaskStatusUpdateEvent to decode
+# + return - the equivalent typed TaskStatusUpdateEvent
+isolated function decodeGrpcStatusUpdate(grpcstub:TaskStatusUpdateEvent e) returns TaskStatusUpdateEvent|error {
+    TaskStatusUpdateEvent result = {
+        taskId: e.task_id,
+        contextId: e.context_id,
+        status: check decodeGrpcTaskStatus(e.status)
+    };
+    map<json>? metadata = check grpcStructToJson(e.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:TaskArtifactUpdateEvent into a typed
+# TaskArtifactUpdateEvent.
+#
+# + e - the generated grpcstub:TaskArtifactUpdateEvent to decode
+# + return - the equivalent typed TaskArtifactUpdateEvent
+isolated function decodeGrpcArtifactUpdate(grpcstub:TaskArtifactUpdateEvent e) returns TaskArtifactUpdateEvent|error {
+    TaskArtifactUpdateEvent result = {
+        taskId: e.task_id,
+        contextId: e.context_id,
+        artifact: check decodeGrpcArtifact(e.artifact),
+        append: e.append,
+        lastChunk: e.last_chunk
+    };
+    map<json>? metadata = check grpcStructToJson(e.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:SendMessageResponse into the Task or
+# Message it wraps.
+#
+# grpcstub:SendMessageResponse.task and .message are both genuinely
+# proto3-optional (a real oneof), unlike the mandatory-with-zero-value
+# fields elsewhere in this file -- so `resp?.task`/`resp?.message` do
+# correctly yield () when unset, and a plain `is` check is the right tool
+# here, not emptyGrpcStringToNil or the all-defaults pattern.
+#
+# + resp - the generated grpcstub:SendMessageResponse to decode
+# + return - the Task or Message it wraps, or InvalidAgentResponseError if
+#            neither is set — mirroring rpcCall's own JSON-RPC-side check
+#            for the identical malformed-response shape
+isolated function decodeGrpcSendResult(grpcstub:SendMessageResponse resp) returns Task|Message|error {
+    grpcstub:Task? t = resp?.task;
+    grpcstub:Message? m = resp?.message;
+    if t is grpcstub:Task {
+        return decodeGrpcTask(t);
+    }
+    if m is grpcstub:Message {
+        return decodeGrpcMessage(m);
+    }
+    return error InvalidAgentResponseError(
+        "gRPC SendMessageResponse contained neither a task nor a message",
+        message = "gRPC SendMessageResponse contained neither a task nor a message"
+    );
+}
+
+# Converts a generated grpcstub:StreamResponse into a typed StreamResponse.
+#
+# grpcstub:StreamResponse's four fields are all genuinely proto3-optional
+# (a real oneof, same as SendMessageResponse above), so a plain `is` check
+# per field is correct here too.
+#
+# + resp - the generated grpcstub:StreamResponse to decode
+# + return - the equivalent typed StreamResponse, with exactly the one
+#            field set that the oneof carried
+isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns StreamResponse|error {
+    grpcstub:Task? t = resp?.task;
+    if t is grpcstub:Task {
+        return {task: check decodeGrpcTask(t)};
+    }
+    grpcstub:Message? m = resp?.message;
+    if m is grpcstub:Message {
+        return {message: check decodeGrpcMessage(m)};
+    }
+    grpcstub:TaskStatusUpdateEvent? su = resp?.status_update;
+    if su is grpcstub:TaskStatusUpdateEvent {
+        return {statusUpdate: check decodeGrpcStatusUpdate(su)};
+    }
+    grpcstub:TaskArtifactUpdateEvent? au = resp?.artifact_update;
+    if au is grpcstub:TaskArtifactUpdateEvent {
+        return {artifactUpdate: check decodeGrpcArtifactUpdate(au)};
+    }
+    return error InvalidAgentResponseError(
+        "gRPC StreamResponse contained none of task/message/status_update/artifact_update",
+        message = "gRPC StreamResponse contained none of task/message/status_update/artifact_update"
+    );
+}
