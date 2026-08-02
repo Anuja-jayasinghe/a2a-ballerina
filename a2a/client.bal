@@ -288,7 +288,7 @@ final readonly & map<RestOperation> REST_OPERATIONS = {
 #
 # + method - the JSON-RPC-style method name already used to key
 #            REST_OPERATIONS (e.g. "GetTask") — the same string every
-#            remote function already passes to rpcCall/openSseStream
+#            remote function already passes to rpcCall/openEventStream
 # + params - the same params map the JSON-RPC binding would have sent
 # + return - the full request path (including query string for bodiless
 #            operations) and the JSON body to send (nil for bodiless
@@ -521,7 +521,7 @@ public isolated client class Client {
     }
 
     # Captures the response's A2A-Extensions header, if present, into
-    # self.grantedExtensions. Shared by rpcCall and openSseStream, since
+    # self.grantedExtensions. Shared by rpcCall and openEventStream, since
     # both read a granted-extensions header off their respective
     # http:Response before doing anything else with it.
     #
@@ -874,7 +874,10 @@ public isolated client class Client {
     # + method - the JSON-RPC method name
     # + params - the JSON-RPC method parameters
     # + return - a stream of StreamResponse values, or an error
-    private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+    private isolated function openEventStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        if self.binding == "GRPC" {
+            return self.openGrpcStream(method, params);
+        }
         if self.binding == "HTTP+JSON" {
             return self.openRestSseStream(method, params);
         }
@@ -917,6 +920,45 @@ public isolated client class Client {
         }
 
         return readSseStream(resp, self.mode, self.binding);
+    }
+
+    # Opens a gRPC streaming call and wraps it in a GrpcStreamAdapter.
+    #
+    # Uses the generated *Context method variants exclusively (never the
+    # plain ones), matching grpcCall's rationale, so response metadata —
+    # specifically A2A-Extensions — is reachable; see design spec Design
+    # decision 4. Every generated *Context streaming remote function takes
+    # a single parameter — a union of the plain request type or the
+    # corresponding `grpcstub:Context{Operation}Request` wrapper record
+    # (`{content, headers}`) — not a separate trailing headers parameter,
+    # confirmed against the real generated `a2a/modules/grpcstub/a2a_pb.bal`
+    # (same finding as dispatchGrpcContextCall for the unary methods).
+    #
+    # + method - "SendStreamingMessage" or "SubscribeToTask"
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - a stream of StreamResponse values, or a typed A2AError
+    private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        grpcstub:A2AServiceClient stub = <grpcstub:A2AServiceClient>self.grpcStub;
+        anydata req = check encodeGrpcRequest(method, params);
+        map<string|string[]> headers = self.buildHeaders();
+        if method == "SendStreamingMessage" {
+            grpcstub:ContextStreamResponseStream|grpc:Error result =
+                stub->SendStreamingMessageContext({content: <grpcstub:SendMessageRequest>req, headers});
+            if result is grpc:Error {
+                return toA2AErrorFromGrpc(result);
+            }
+            self.captureGrantedExtensionsFromGrpc(result.headers);
+            stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
+            return wrapped;
+        }
+        grpcstub:ContextStreamResponseStream|grpc:Error result =
+            stub->SubscribeToTaskContext({content: <grpcstub:SubscribeToTaskRequest>req, headers});
+        if result is grpc:Error {
+            return toA2AErrorFromGrpc(result);
+        }
+        self.captureGrantedExtensionsFromGrpc(result.headers);
+        stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
+        return wrapped;
     }
 
     # Opens a REST binding SSE stream for a streaming operation
@@ -991,7 +1033,7 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        stream<StreamResponse, error?> rawStream = check self.openSseStream("SendStreamingMessage", params);
+        stream<StreamResponse, error?> rawStream = check self.openEventStream("SendStreamingMessage", params);
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
         }
@@ -1147,7 +1189,7 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("SubscribeToTask", params);
+        return self.openEventStream("SubscribeToTask", params);
     }
 
     # Lists tasks matching an optional filter, with cursor-based pagination.

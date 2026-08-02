@@ -2258,3 +2258,18 @@ function testJsonRpcAndRestProduceIdenticalErrorTypeAndCode() returns error? {
     test:assertEquals(jsonRpcErr.detail().code, restErr.detail().code,
             "detail.code must be identical across bindings so a caller switching Client from JSON-RPC to REST sees no difference");
 }
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendMessageStreamEndToEnd() returns error? {
+    grpcstub:StreamResponse[] scripted = [
+        {task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}},
+        {status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_COMPLETED}}}
+    ];
+    setNextGrpcResponse(scripted);
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    stream<StreamResponse, error?> s = check grpcClient->sendMessageStream({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
