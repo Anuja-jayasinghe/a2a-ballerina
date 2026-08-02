@@ -592,3 +592,279 @@ isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificat
     }
     return {configs, nextPageToken: resp.next_page_token};
 }
+
+# + s - the generated grpcstub:SecurityScheme oneof to decode
+# + return - the equivalent typed SecurityScheme, or an error if none of
+#            the five oneof arms is set
+isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns SecurityScheme|error {
+    grpcstub:APIKeySecurityScheme? apiKey = s?.api_key_security_scheme;
+    if apiKey is grpcstub:APIKeySecurityScheme {
+        ApiKeySecurityScheme result = {'in: <"query"|"header"|"cookie">apiKey.location, name: apiKey.name};
+        string? description = emptyGrpcStringToNil(apiKey.description);
+        if description is string {
+            result.description = description;
+        }
+        return result;
+    }
+    grpcstub:HTTPAuthSecurityScheme? httpAuth = s?.http_auth_security_scheme;
+    if httpAuth is grpcstub:HTTPAuthSecurityScheme {
+        HttpAuthSecurityScheme result = {scheme: httpAuth.scheme};
+        string? description = emptyGrpcStringToNil(httpAuth.description);
+        if description is string {
+            result.description = description;
+        }
+        string? bearerFormat = emptyGrpcStringToNil(httpAuth.bearer_format);
+        if bearerFormat is string {
+            result.bearerFormat = bearerFormat;
+        }
+        return result;
+    }
+    grpcstub:OAuth2SecurityScheme? oauth2 = s?.oauth2_security_scheme;
+    if oauth2 is grpcstub:OAuth2SecurityScheme {
+        OAuth2SecurityScheme result = {flows: check decodeGrpcOAuthFlows(oauth2.flows)};
+        string? description = emptyGrpcStringToNil(oauth2.description);
+        if description is string {
+            result.description = description;
+        }
+        string? metadataUrl = emptyGrpcStringToNil(oauth2.oauth2_metadata_url);
+        if metadataUrl is string {
+            result.oauth2MetadataUrl = metadataUrl;
+        }
+        return result;
+    }
+    grpcstub:OpenIdConnectSecurityScheme? oidc = s?.open_id_connect_security_scheme;
+    if oidc is grpcstub:OpenIdConnectSecurityScheme {
+        OpenIdConnectSecurityScheme result = {openIdConnectUrl: oidc.open_id_connect_url};
+        string? description = emptyGrpcStringToNil(oidc.description);
+        if description is string {
+            result.description = description;
+        }
+        return result;
+    }
+    grpcstub:MutualTlsSecurityScheme? mtls = s?.mtls_security_scheme;
+    if mtls is grpcstub:MutualTlsSecurityScheme {
+        MutualTlsSecurityScheme result = {};
+        string? description = emptyGrpcStringToNil(mtls.description);
+        if description is string {
+            result.description = description;
+        }
+        return result;
+    }
+    return error InvalidAgentResponseError(
+        "gRPC SecurityScheme had none of its five oneof arms set",
+        message = "gRPC SecurityScheme had none of its five oneof arms set"
+    );
+}
+
+# + f - the generated grpcstub:OAuthFlows oneof to decode. Per design spec
+#       Known limitation 5, a device_code arm is dropped: types.bal's
+#       OAuthFlows has no DeviceCodeOAuthFlow member, and (unlike the JSON
+#       bindings' open records) the generated OAuthFlows record is closed,
+#       so there is no escape-hatch field to preserve it in. Also, per the
+#       proto's own [deprecated = true] annotations, `implicit` and
+#       `password` are decoded for completeness even though upstream flags
+#       them deprecated.
+# + return - the equivalent typed OAuthFlows
+isolated function decodeGrpcOAuthFlows(grpcstub:OAuthFlows f) returns OAuthFlows|error {
+    OAuthFlows result = {};
+    grpcstub:AuthorizationCodeOAuthFlow? authCode = f?.authorization_code;
+    if authCode is grpcstub:AuthorizationCodeOAuthFlow {
+        AuthorizationCodeOAuthFlow flow = {
+            authorizationUrl: authCode.authorization_url,
+            tokenUrl: authCode.token_url,
+            scopes: grpcKvToMap(authCode.scopes)
+        };
+        string? refreshUrl = emptyGrpcStringToNil(authCode.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.authorizationCode = flow;
+    }
+    grpcstub:ClientCredentialsOAuthFlow? clientCreds = f?.client_credentials;
+    if clientCreds is grpcstub:ClientCredentialsOAuthFlow {
+        ClientCredentialsOAuthFlow flow = {tokenUrl: clientCreds.token_url, scopes: grpcKvToMap(clientCreds.scopes)};
+        string? refreshUrl = emptyGrpcStringToNil(clientCreds.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.clientCredentials = flow;
+    }
+    grpcstub:ImplicitOAuthFlow? implicitFlow = f?.'implicit;
+    if implicitFlow is grpcstub:ImplicitOAuthFlow {
+        ImplicitOAuthFlow flow = {authorizationUrl: implicitFlow.authorization_url, scopes: grpcKvToMap(implicitFlow.scopes)};
+        string? refreshUrl = emptyGrpcStringToNil(implicitFlow.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.'implicit = flow;
+    }
+    grpcstub:PasswordOAuthFlow? passwordFlow = f?.password;
+    if passwordFlow is grpcstub:PasswordOAuthFlow {
+        PasswordOAuthFlow flow = {tokenUrl: passwordFlow.token_url, scopes: grpcKvToMap(passwordFlow.scopes)};
+        string? refreshUrl = emptyGrpcStringToNil(passwordFlow.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.password = flow;
+    }
+    // device_code (f?.device_code) is intentionally not read into result:
+    // types.bal's OAuthFlows has no field to put it in. See doc comment.
+    return result;
+}
+
+# + r - the generated grpcstub:SecurityRequirement to decode (a key/value
+#       array of StringList, itself a single-field wrapper — two
+#       unwrapping steps, not one, per design spec's note under the
+#       SecurityScheme oneof section)
+# + return - the equivalent typed SecurityRequirement (map<string[]>)
+isolated function decodeGrpcSecurityRequirement(grpcstub:SecurityRequirement r) returns SecurityRequirement {
+    map<string[]> result = {};
+    foreach var entry in r.schemes {
+        result[entry.key] = entry.value.list;
+    }
+    return result;
+}
+
+# + s - the generated grpcstub:AgentSkill to decode
+# + return - the equivalent typed AgentSkill
+isolated function decodeGrpcAgentSkill(grpcstub:AgentSkill s) returns AgentSkill {
+    SecurityRequirement[] requirements = [];
+    foreach grpcstub:SecurityRequirement r in s.security_requirements {
+        requirements.push(decodeGrpcSecurityRequirement(r));
+    }
+    return {
+        id: s.id, name: s.name, description: s.description,
+        tags: s.tags, examples: s.examples,
+        inputModes: s.input_modes, outputModes: s.output_modes,
+        securityRequirements: requirements
+    };
+}
+
+# + i - the generated grpcstub:AgentInterface to decode
+# + return - the equivalent typed AgentInterface
+isolated function decodeGrpcAgentInterface(grpcstub:AgentInterface i) returns AgentInterface {
+    AgentInterface result = {url: i.url, protocolBinding: i.protocol_binding};
+    string? tenant = emptyGrpcStringToNil(i.tenant);
+    if tenant is string {
+        result.tenant = tenant;
+    }
+    string? protocolVersion = emptyGrpcStringToNil(i.protocol_version);
+    if protocolVersion is string {
+        result.protocolVersion = protocolVersion;
+    }
+    return result;
+}
+
+# + c - the generated grpcstub:AgentCapabilities to decode. Every field is
+#       proto3 optional (design spec §"Supporting message fields" note),
+#       so an absent field decodes to types.bal's false default rather
+#       than being (mis-)read as an explicit "declared false."
+# + return - the equivalent typed AgentCapabilities
+isolated function decodeGrpcAgentCapabilities(grpcstub:AgentCapabilities c) returns AgentCapabilities|error {
+    AgentExtension[] extensions = [];
+    foreach grpcstub:AgentExtension e in c.extensions {
+        extensions.push(check decodeGrpcAgentExtension(e));
+    }
+    return {
+        streaming: c?.streaming ?: false,
+        pushNotifications: c?.push_notifications ?: false,
+        extendedAgentCard: c?.extended_agent_card ?: false,
+        extensions
+    };
+}
+
+# + p - the generated grpcstub:AgentProvider to decode
+# + return - the equivalent typed AgentProvider
+isolated function decodeGrpcAgentProvider(grpcstub:AgentProvider p) returns AgentProvider {
+    return {organization: p.organization, url: p.url};
+}
+
+# + e - the generated grpcstub:AgentExtension to decode
+# + return - the equivalent typed AgentExtension, or an error if e.params
+#            (a google.protobuf.Struct) cannot be narrowed to json
+isolated function decodeGrpcAgentExtension(grpcstub:AgentExtension e) returns AgentExtension|error {
+    AgentExtension result = {uri: e.uri, required: e.required, params: check grpcStructToJson(e.params)};
+    string? description = emptyGrpcStringToNil(e.description);
+    if description is string {
+        result.description = description;
+    }
+    return result;
+}
+
+# + s - the generated grpcstub:AgentCardSignature to decode
+# + return - the equivalent typed AgentCardSignature
+isolated function decodeGrpcAgentCardSignature(grpcstub:AgentCardSignature s) returns AgentCardSignature|error {
+    AgentCardSignature result = {protected: s.protected, signature: s.signature};
+    map<json>? header = check grpcStructToJson(s.header);
+    if header is map<json> {
+        result.header = header;
+    }
+    return result;
+}
+
+# The largest single conversion function in this file — AgentCard.security_schemes
+# is a key/value array of a five-member oneof, each arm of which has its
+# own field renaming, and security_requirements nests a second key/value
+# array of StringList. Matters least in practice: GetExtendedAgentCard is
+# the only rpc returning an AgentCard, and the primary card is still
+# fetched as JSON from /.well-known/ regardless of binding.
+#
+# + c - the generated grpcstub:AgentCard to decode
+# + return - the equivalent typed AgentCard
+isolated function decodeGrpcAgentCard(grpcstub:AgentCard c) returns AgentCard|error {
+    map<SecurityScheme> securitySchemes = {};
+    foreach var entry in c.security_schemes {
+        securitySchemes[entry.key] = check decodeGrpcSecurityScheme(entry.value);
+    }
+    SecurityRequirement[] securityRequirements = [];
+    foreach grpcstub:SecurityRequirement r in c.security_requirements {
+        securityRequirements.push(decodeGrpcSecurityRequirement(r));
+    }
+    AgentSkill[] skills = [];
+    foreach grpcstub:AgentSkill s in c.skills {
+        skills.push(decodeGrpcAgentSkill(s));
+    }
+    AgentInterface[] supportedInterfaces = [];
+    foreach grpcstub:AgentInterface i in c.supported_interfaces {
+        supportedInterfaces.push(decodeGrpcAgentInterface(i));
+    }
+    AgentCardSignature[] signatures = [];
+    foreach grpcstub:AgentCardSignature s in c.signatures {
+        signatures.push(check decodeGrpcAgentCardSignature(s));
+    }
+    AgentCard result = {
+        name: c.name, description: c.description, version: c.version,
+        capabilities: check decodeGrpcAgentCapabilities(c.capabilities),
+        securitySchemes, securityRequirements, skills, supportedInterfaces, signatures,
+        defaultInputModes: c.default_input_modes,
+        defaultOutputModes: c.default_output_modes
+    };
+    // c.provider is a non-optional grpcstub:AgentProvider field defaulting
+    // to {organization: "", url: ""} when unset (proto3 nested-message
+    // zero value), not a real oneof -- so `c?.provider` alone never yields
+    // (), it always yields that zero-value record. Per design spec Design
+    // decision 5 rule 2, an all-defaults nested message means "not set";
+    // both organization and url are required in the typed AgentProvider,
+    // so both being empty is what "not set" looks like here.
+    grpcstub:AgentProvider provider = c.provider;
+    if provider.organization.length() > 0 || provider.url.length() > 0 {
+        result.provider = decodeGrpcAgentProvider(provider);
+    }
+    // Unlike most string fields elsewhere in this file, documentation_url
+    // and icon_url are genuinely proto3-optional on the generated
+    // AgentCard (`string documentation_url?;` / `string icon_url?;`), not
+    // non-optional fields with an "" sentinel default -- so a plain `is
+    // string` check (not emptyGrpcStringToNil, which would also collapse
+    // an explicitly-set "" into "unset", a distinction the wire can
+    // actually represent for a real optional field) is the correct tool
+    // here.
+    string? documentationUrl = c?.documentation_url;
+    if documentationUrl is string {
+        result.documentationUrl = documentationUrl;
+    }
+    string? iconUrl = c?.icon_url;
+    if iconUrl is string {
+        result.iconUrl = iconUrl;
+    }
+    return result;
+}

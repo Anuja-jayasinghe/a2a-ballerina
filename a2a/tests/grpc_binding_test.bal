@@ -333,3 +333,84 @@ function testDecodeGrpcListPushConfigsResult() returns error? {
     test:assertEquals(result.configs.length(), 1);
     test:assertEquals(result.nextPageToken, "cursor2");
 }
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcAgentCardMinimal() returns error? {
+    grpcstub:AgentCard grpcCard = {
+        name: "agent", description: "d", version: "1.0",
+        capabilities: {},
+        default_input_modes: ["text"], default_output_modes: ["text"],
+        skills: []
+    };
+    AgentCard card = check decodeGrpcAgentCard(grpcCard);
+    test:assertEquals(card.name, "agent");
+    test:assertEquals(card.capabilities.streaming, false);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcAgentCardApiKeyScheme() returns error? {
+    grpcstub:AgentCard grpcCard = {
+        name: "agent", description: "d", version: "1.0", capabilities: {},
+        default_input_modes: ["text"], default_output_modes: ["text"], skills: [],
+        security_schemes: [{key: "apiKeyAuth", value: {api_key_security_scheme: {location: "header", name: "X-API-Key"}}}]
+    };
+    AgentCard card = check decodeGrpcAgentCard(grpcCard);
+    SecurityScheme scheme = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(scheme is ApiKeySecurityScheme);
+    if scheme is ApiKeySecurityScheme {
+        test:assertEquals(scheme.'in, "header");
+        test:assertEquals(scheme.name, "X-API-Key");
+    }
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcAgentCardOAuth2AuthorizationCodeFlow() returns error? {
+    grpcstub:AgentCard grpcCard = {
+        name: "agent", description: "d", version: "1.0", capabilities: {},
+        default_input_modes: ["text"], default_output_modes: ["text"], skills: [],
+        security_schemes: [{key: "oauth2", value: {oauth2_security_scheme: {
+            flows: {authorization_code: {
+                authorization_url: "https://auth.example.com/authorize",
+                token_url: "https://auth.example.com/token",
+                scopes: [{key: "read", value: "Read access"}, {key: "write", value: "Write access"}]
+            }}
+        }}}]
+    };
+    AgentCard card = check decodeGrpcAgentCard(grpcCard);
+    SecurityScheme scheme = card.securitySchemes.get("oauth2");
+    test:assertTrue(scheme is OAuth2SecurityScheme);
+    if scheme is OAuth2SecurityScheme {
+        AuthorizationCodeOAuthFlow? flow = scheme.flows?.authorizationCode;
+        test:assertTrue(flow is AuthorizationCodeOAuthFlow);
+        if flow is AuthorizationCodeOAuthFlow {
+            test:assertEquals(flow.scopes, {"read": "Read access", "write": "Write access"});
+        }
+    }
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcAgentCardSecurityRequirements() returns error? {
+    grpcstub:AgentCard grpcCard = {
+        name: "agent", description: "d", version: "1.0", capabilities: {},
+        default_input_modes: ["text"], default_output_modes: ["text"], skills: [],
+        security_requirements: [{schemes: [{key: "apiKeyAuth", value: {list: []}}]}]
+    };
+    AgentCard card = check decodeGrpcAgentCard(grpcCard);
+    test:assertEquals(card.securityRequirements.length(), 1);
+    test:assertEquals(card.securityRequirements[0], {"apiKeyAuth": []});
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcAgentCardSkillsAndInterfaces() returns error? {
+    grpcstub:AgentCard grpcCard = {
+        name: "agent", description: "d", version: "1.0", capabilities: {},
+        default_input_modes: ["text"], default_output_modes: ["text"],
+        skills: [{id: "s1", name: "Skill One", description: "does one thing", tags: ["tag1"]}],
+        supported_interfaces: [{url: "http://localhost:9090", protocol_binding: "GRPC", protocol_version: "1.0"}]
+    };
+    AgentCard card = check decodeGrpcAgentCard(grpcCard);
+    test:assertEquals(card.skills.length(), 1);
+    test:assertEquals(card.skills[0].id, "s1");
+    test:assertEquals(card.supportedInterfaces.length(), 1);
+    test:assertEquals(card.supportedInterfaces[0].protocolBinding, "GRPC");
+}
