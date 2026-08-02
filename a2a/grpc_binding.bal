@@ -1,0 +1,126 @@
+// Conversion layer between the generated grpcstub:* protobuf types and
+// this library's own types.bal domain types. Mirrors compat_v03.bal's
+// encodeV03*/parseV03* pattern for the same reason: the generated records
+// are structurally incompatible with types.bal (snake_case fields, closed
+// records, sentinel-default presence, map fields as key/value arrays,
+// google.protobuf.Timestamp as a time:Utc tuple) — see the design spec's
+// Finding 4 for the full enumeration. No amount of cloneWithType bridges
+// that.
+import ballerina/time;
+
+# Converts a generated proto map field (a key/value record array, since
+# protobuf maps generate that shape rather than a real Ballerina map — see
+# design spec Finding 4d) into a real map<string>.
+#
+# + kv - the generated key/value array
+# + return - an equivalent map<string>
+isolated function grpcKvToMap(record {|string key; string value;|}[] kv) returns map<string> {
+    map<string> result = {};
+    foreach var entry in kv {
+        result[entry.key] = entry.value;
+    }
+    return result;
+}
+
+# The reverse of grpcKvToMap: builds the key/value array shape a generated
+# proto map field expects from a real map<string>.
+#
+# + m - the map to convert
+# + return - the equivalent key/value array
+isolated function mapToGrpcKv(map<string> m) returns record {|string key; string value;|}[] {
+    record {|string key; string value;|}[] result = [];
+    foreach [string, string] [k, v] in m.entries() {
+        result.push({key: k, value: v});
+    }
+    return result;
+}
+
+# Converts a generated google.protobuf.Timestamp (time:Utc tuple) into an
+# RFC 3339 string, per types.bal's string? timestamp field convention.
+# The proto3 sentinel default [0, 0.0d] (Unix epoch) decodes to () rather
+# than to "1970-01-01T00:00:00Z" — per design spec Design decision 5, rule
+# 3, this is the highest-risk silent-corruption case in the whole layer: a
+# TaskStatus.timestamp of [0, 0.0d] means "field not set", not "set to the
+# epoch."
+#
+# + ts - the generated timestamp value
+# + return - the RFC 3339 string, or () if ts is the proto3 zero-default
+isolated function grpcTimestampToString(time:Utc ts) returns string? {
+    if ts[0] == 0 && ts[1] == 0.0d {
+        return ();
+    }
+    string baseStr = time:utcToString(ts);
+    // Insert milliseconds before the Z. The nanoseconds are in ts[1] as a decimal.
+    // Extract milliseconds from nanoseconds (convert to milliseconds: nanoseconds / 1_000_000)
+    decimal nanos = ts[1];
+    int millis = <int>(nanos / 1000000d);
+    string millisStr = millis.toString();
+    // Pad with leading zeros to make it 3 digits
+    while millisStr.length() < 3 {
+        millisStr = "0" + millisStr;
+    }
+    return baseStr.substring(0, baseStr.length() - 1) + "." + millisStr + "Z";
+}
+
+# The reverse of grpcTimestampToString: () encodes to the proto3
+# zero-default [0, 0.0d], matching what an unset non-optional Timestamp
+# field looks like on the wire.
+#
+# + s - the RFC 3339 string, or ()
+# + return - the equivalent time:Utc tuple, or an error if s is a non-()
+#            value that isn't valid RFC 3339
+isolated function stringToGrpcTimestamp(string? s) returns time:Utc|error {
+    if s is () {
+        return [0, 0.0d];
+    }
+    return check time:utcFromString(s);
+}
+
+# Non-optional proto3 string fields default to "" when unset; types.bal
+# models the same fields as string?. Per design spec Design decision 5,
+# rule 1, "" always decodes to () for these fields — there is no way on
+# the wire to distinguish "explicitly set to empty string" from "unset",
+# so () is the only correct decoding.
+#
+# + s - the generated string field's value
+# + return - s unchanged, or () if s is empty
+isolated function emptyGrpcStringToNil(string s) returns string? {
+    return s.length() == 0 ? () : s;
+}
+
+# Converts a generated google.protobuf.Struct field (map<anydata>, per
+# design spec Finding 4d) into map<json>?, matching types.bal's metadata/
+# params/header field convention. An empty struct decodes to () rather
+# than {} — per Design decision 5 rule 2, an all-defaults nested message
+# means "not set," and an empty Struct is exactly that case for this
+# field type.
+#
+# + struct - the generated Struct field's value
+# + return - the equivalent map<json>, or () if struct is empty, or an
+#            error if a value inside it falls outside json's value space
+isolated function grpcStructToJson(map<anydata> struct) returns map<json>?|error {
+    if struct.length() == 0 {
+        return ();
+    }
+    json|error asJson = struct.cloneWithType(json);
+    if asJson is error {
+        return error InvalidAgentResponseError(
+            string `struct field could not be narrowed to json: ${asJson.message()}`,
+            message = string `struct field could not be narrowed to json: ${asJson.message()}`
+        );
+    }
+    map<json> result = check asJson.ensureType();
+    return result;
+}
+
+# The reverse of grpcStructToJson: () or an empty map both encode to an
+# empty map<anydata> (the proto3 wire representation of "no Struct set").
+#
+# + j - the map<json>? field's value
+# + return - the equivalent map<anydata>
+isolated function jsonToGrpcStruct(map<json>? j) returns map<anydata> {
+    if j is () {
+        return {};
+    }
+    return j;
+}
