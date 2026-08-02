@@ -102,14 +102,16 @@ isolated function grpcStructToJson(map<anydata> struct) returns map<json>?|error
     if asJson is error {
         return error InvalidAgentResponseError(
             string `struct field could not be narrowed to json: ${asJson.message()}`,
-            message = string `struct field could not be narrowed to json: ${asJson.message()}`
+            message = string `struct field could not be narrowed to json: ${asJson.message()}`,
+            code = -32006
         );
     }
     map<json>|error result = asJson.ensureType();
     if result is error {
         return error InvalidAgentResponseError(
             string `struct field could not be narrowed to json: ${result.message()}`,
-            message = string `struct field could not be narrowed to json: ${result.message()}`
+            message = string `struct field could not be narrowed to json: ${result.message()}`,
+            code = -32006
         );
     }
     return result;
@@ -532,7 +534,8 @@ isolated function decodeGrpcSendResult(grpcstub:SendMessageResponse resp) return
     }
     return error InvalidAgentResponseError(
         "gRPC SendMessageResponse contained neither a task nor a message",
-        message = "gRPC SendMessageResponse contained neither a task nor a message"
+        message = "gRPC SendMessageResponse contained neither a task nor a message",
+        code = -32006
     );
 }
 
@@ -564,7 +567,8 @@ isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns
     }
     return error InvalidAgentResponseError(
         "gRPC StreamResponse contained none of task/message/status_update/artifact_update",
-        message = "gRPC StreamResponse contained none of task/message/status_update/artifact_update"
+        message = "gRPC StreamResponse contained none of task/message/status_update/artifact_update",
+        code = -32006
     );
 }
 
@@ -603,7 +607,8 @@ isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns Se
         if location != "query" && location != "header" && location != "cookie" {
             return error InvalidAgentResponseError(
                 string `SecurityScheme's api_key_security_scheme.location has an invalid value: "${location}"`,
-                message = string `SecurityScheme's api_key_security_scheme.location has an invalid value: "${location}"`
+                message = string `SecurityScheme's api_key_security_scheme.location has an invalid value: "${location}"`,
+                code = -32006
             );
         }
         ApiKeySecurityScheme result = {'in: <"query"|"header"|"cookie">location, name: apiKey.name};
@@ -659,7 +664,8 @@ isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns Se
     }
     return error InvalidAgentResponseError(
         "gRPC SecurityScheme had none of its five oneof arms set",
-        message = "gRPC SecurityScheme had none of its five oneof arms set"
+        message = "gRPC SecurityScheme had none of its five oneof arms set",
+        code = -32006
     );
 }
 
@@ -910,7 +916,7 @@ isolated function encodeGrpcRequest(string operation, map<json> params) returns 
             if metadataJson is map<json> {
                 req.metadata = jsonToGrpcStruct(metadataJson);
             }
-            string? tenant = undone["tenant"] is string ? <string>undone["tenant"] : ();
+            json? tenant = undone["tenant"];
             if tenant is string {
                 req.tenant = tenant;
             }
@@ -989,11 +995,15 @@ isolated function encodeGrpcRequest(string operation, map<json> params) returns 
             return check encodeGrpcPushConfig(config);
         }
         "GetTaskPushNotificationConfig" => {
-            return {
+            grpcstub:GetTaskPushNotificationConfigRequest req = {
                 task_id: check undone.get("taskId").ensureType(string),
-                id: check undone.get("id").ensureType(string),
-                tenant: undone["tenant"] is string ? <string>undone["tenant"] : ""
+                id: check undone.get("id").ensureType(string)
             };
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
         }
         "ListTaskPushNotificationConfigs" => {
             grpcstub:ListTaskPushNotificationConfigsRequest req = {task_id: check undone.get("taskId").ensureType(string)};
@@ -1012,11 +1022,15 @@ isolated function encodeGrpcRequest(string operation, map<json> params) returns 
             return req;
         }
         "DeleteTaskPushNotificationConfig" => {
-            return {
+            grpcstub:DeleteTaskPushNotificationConfigRequest req = {
                 task_id: check undone.get("taskId").ensureType(string),
-                id: check undone.get("id").ensureType(string),
-                tenant: undone["tenant"] is string ? <string>undone["tenant"] : ""
+                id: check undone.get("id").ensureType(string)
             };
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
         }
         "GetExtendedAgentCard" => {
             grpcstub:GetExtendedAgentCardRequest req = {};

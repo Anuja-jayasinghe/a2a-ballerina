@@ -1186,3 +1186,21 @@ constrains, and a wrong match is worse than an honest widening.
    stripped), so drift detection is by recorded SHA rather than by
    direct diff.
 7. **v0.3 over gRPC is unsupported**, by construction.
+8. **Adding the gRPC binding downgrades this package's resolved `http`
+   version**, and that downgrade can propagate to consumers. `a2a`'s
+   `Ballerina.toml` pins `http` to `2.14.13` (down from the `2.16.6` it
+   resolved to before this branch) because `ballerina/grpc:1.14.7` bundles
+   its own `http-native-2.14.12.jar` for shared native logging
+   infrastructure, and a separately-resolved `http` whose native ABI has
+   drifted too far from that bundled jar crashes `grpc:Listener`
+   construction with `java.lang.IllegalAccessError` on
+   `HttpLogManager.<init>` (confirmed with `http:2.16.6`; see
+   ballerina-platform/ballerina-library#2496). The full rationale and the
+   exact pin are recorded as a comment directly above the `[[dependency]]`
+   entry in `a2a/Ballerina.toml`, which is the source of truth. This repo
+   has no CHANGELOG/release-notes file to duplicate the notice into (none
+   exists on `main` as of this writing), so this Known limitations entry is
+   the second, more discoverable place this fact lives: a consuming
+   project that also pins `http` above `2.14.13` and separately depends on
+   `ballerina/grpc` may see the same crash, or may see its own `http`
+   silently resolved down to this floor with no warning from `bal build`.

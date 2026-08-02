@@ -304,6 +304,61 @@ function testClientGrpcSendsMandatoryA2AVersionHeader() returns error? {
 }
 
 @test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskPushNotificationConfigEndToEnd() returns error? {
+    // Real Client against the real grpc mock service/listener, not just
+    // encodeGrpcRequest/decodeGrpcResponse in isolation -- this exercises
+    // actual protobuf wire marshalling of the request, which is what
+    // caught encodeGrpcRequest previously returning an untyped mapping
+    // literal for GetTaskPushNotificationConfig/DeleteTaskPushNotificationConfig
+    // instead of the properly-typed grpcstub:*Request record (the two
+    // request types need their real runtime type identity for the grpc
+    // library to marshal them onto the wire correctly, the same class of
+    // bug the Part.data descriptor fix addressed).
+    setNextGrpcResponse(<grpcstub:TaskPushNotificationConfig>{
+        task_id: "t1",
+        id: "webhook-1",
+        url: "https://cb.example.com"
+    });
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1");
+    test:assertEquals(result?.taskId, "t1");
+    test:assertEquals(result?.id, "webhook-1");
+    test:assertEquals(result.url, "https://cb.example.com");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskPushNotificationConfigWithTenantEndToEnd() returns error? {
+    setNextGrpcResponse(<grpcstub:TaskPushNotificationConfig>{
+        task_id: "t1",
+        id: "webhook-1",
+        url: "https://cb.example.com",
+        tenant: "tenant1"
+    });
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
+    test:assertEquals(result?.tenant, "tenant1");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcDeleteTaskPushNotificationConfigEndToEnd() returns error? {
+    // google.protobuf.Empty carries no fields -- {} is enough to signal
+    // "scripted a success", see grpcmock_service.bal's
+    // DeleteTaskPushNotificationConfig comment.
+    setNextGrpcResponse({});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1");
+    test:assertTrue(result is (), "deleteTaskPushNotificationConfig must return nil on a scripted success over the real grpc wire");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcDeleteTaskPushNotificationConfigWithTenantEndToEnd() returns error? {
+    setNextGrpcResponse({});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
+    test:assertTrue(result is (), "deleteTaskPushNotificationConfig with a tenant must also round-trip over the real grpc wire");
+}
+
+@test:Config {groups: ["grpc"]}
 function testClientGrpcCapturesGrantedExtensionsFromLowercaseMetadata() returns error? {
     grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
     setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
