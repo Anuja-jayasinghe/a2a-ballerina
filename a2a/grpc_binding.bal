@@ -877,3 +877,210 @@ isolated function decodeGrpcAgentCard(grpcstub:AgentCard c) returns AgentCard|er
     }
     return result;
 }
+
+# Converts this library's v1.0 params map (the same shape rpcCall's
+# JSON-RPC/REST branches already speak) into the typed grpcstub request
+# message for one operation.
+#
+# params arrives with any Part.raw already base64-encoded by
+# encodeRawBytesForWire, applied upstream by the calling remote function
+# before rpcCall is ever reached (see sendMessage/sendMessageStream in
+# client.bal). gRPC wants genuine bytes, not base64 — decodeRawBytesFromWire
+# is called here to undo that encoding before any Part-bearing sub-object
+# is cloned into a typed value, so encodeGrpcPart/encodeGrpcMessage always
+# receive a real byte[]?, never a base64 string masquerading as one.
+#
+# + operation - the JSON-RPC-style operation name (e.g. "GetTask", the
+#               same string rpcCall's other branches already key off)
+# + params - the v1.0 params map, pre-base64-undone
+# + return - the typed grpcstub request value for this operation, or
+#            A2AInternalError if operation has no gRPC mapping
+isolated function encodeGrpcRequest(string operation, map<json> params) returns anydata|error {
+    map<json> undone = check (check decodeRawBytesFromWire(params)).ensureType();
+    match operation {
+        "SendMessage"|"SendStreamingMessage" => {
+            Message message = check undone.get("message").cloneWithType(Message);
+            grpcstub:SendMessageRequest req = {message: check encodeGrpcMessage(message)};
+            json? configJson = undone["configuration"];
+            if configJson is map<json> {
+                SendMessageConfiguration config = check configJson.cloneWithType(SendMessageConfiguration);
+                req.configuration = check encodeGrpcSendConfiguration(config);
+            }
+            json? metadataJson = undone["metadata"];
+            if metadataJson is map<json> {
+                req.metadata = jsonToGrpcStruct(metadataJson);
+            }
+            string? tenant = undone["tenant"] is string ? <string>undone["tenant"] : ();
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "GetTask" => {
+            grpcstub:GetTaskRequest req = {id: check undone.get("id").ensureType(string)};
+            json? historyLength = undone["historyLength"];
+            if historyLength is int {
+                req.history_length = historyLength;
+            }
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "CancelTask" => {
+            grpcstub:CancelTaskRequest req = {id: check undone.get("id").ensureType(string)};
+            json? metadata = undone["metadata"];
+            if metadata is map<json> {
+                req.metadata = jsonToGrpcStruct(metadata);
+            }
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "SubscribeToTask" => {
+            grpcstub:SubscribeToTaskRequest req = {id: check undone.get("id").ensureType(string)};
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "ListTasks" => {
+            grpcstub:ListTasksRequest req = {};
+            json? contextId = undone["contextId"];
+            if contextId is string {
+                req.context_id = contextId;
+            }
+            json? status = undone["status"];
+            if status is string {
+                req.status = <grpcstub:TaskState>status;
+            }
+            json? pageSize = undone["pageSize"];
+            if pageSize is int {
+                req.page_size = pageSize;
+            }
+            json? pageToken = undone["pageToken"];
+            if pageToken is string {
+                req.page_token = pageToken;
+            }
+            json? historyLength = undone["historyLength"];
+            if historyLength is int {
+                req.history_length = historyLength;
+            }
+            json? statusTimestampAfter = undone["statusTimestampAfter"];
+            if statusTimestampAfter is string {
+                req.status_timestamp_after = check stringToGrpcTimestamp(statusTimestampAfter);
+            }
+            json? includeArtifacts = undone["includeArtifacts"];
+            if includeArtifacts is boolean {
+                req.include_artifacts = includeArtifacts;
+            }
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "CreateTaskPushNotificationConfig" => {
+            TaskPushNotificationConfig config = check undone.cloneWithType(TaskPushNotificationConfig);
+            return check encodeGrpcPushConfig(config);
+        }
+        "GetTaskPushNotificationConfig" => {
+            return {
+                task_id: check undone.get("taskId").ensureType(string),
+                id: check undone.get("id").ensureType(string),
+                tenant: undone["tenant"] is string ? <string>undone["tenant"] : ""
+            };
+        }
+        "ListTaskPushNotificationConfigs" => {
+            grpcstub:ListTaskPushNotificationConfigsRequest req = {task_id: check undone.get("taskId").ensureType(string)};
+            json? pageSize = undone["pageSize"];
+            if pageSize is int {
+                req.page_size = pageSize;
+            }
+            json? pageToken = undone["pageToken"];
+            if pageToken is string {
+                req.page_token = pageToken;
+            }
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        "DeleteTaskPushNotificationConfig" => {
+            return {
+                task_id: check undone.get("taskId").ensureType(string),
+                id: check undone.get("id").ensureType(string),
+                tenant: undone["tenant"] is string ? <string>undone["tenant"] : ""
+            };
+        }
+        "GetExtendedAgentCard" => {
+            grpcstub:GetExtendedAgentCardRequest req = {};
+            json? tenant = undone["tenant"];
+            if tenant is string {
+                req.tenant = tenant;
+            }
+            return req;
+        }
+        _ => {
+            return error A2AInternalError(
+                string `gRPC binding has no operation mapping for "${operation}"`,
+                message = string `gRPC binding has no operation mapping for "${operation}"`
+            );
+        }
+    }
+}
+
+# Converts a typed grpcstub response value for one operation back into the
+# v1.0 json shape rpcCall's callers already expect (the same shape a
+# JSON-RPC "result" field would have carried). Callers then apply
+# decodeRawBytesFromWire (already a no-op on gRPC's byte[]-shaped raw
+# fields, see design spec's closing bytes note) and cloneWithType exactly
+# as they do for the other two bindings — no per-binding branching needed
+# in the 11 remote function bodies.
+#
+# + operation - the JSON-RPC-style operation name
+# + response - the typed grpcstub response value returned by the rpc call
+# + return - the equivalent v1.0 json, or A2AInternalError if operation has
+#            no gRPC mapping
+isolated function decodeGrpcResponse(string operation, anydata response) returns json|error {
+    match operation {
+        "SendMessage" => {
+            Task|Message result = check decodeGrpcSendResult(check response.ensureType(grpcstub:SendMessageResponse));
+            return {task: result is Task ? result : (), message: result is Message ? result : ()}.toJson();
+        }
+        "GetTask"|"CancelTask" => {
+            Task task = check decodeGrpcTask(check response.ensureType(grpcstub:Task));
+            return task.toJson();
+        }
+        "ListTasks" => {
+            ListTasksResult result = check decodeGrpcListTasksResult(check response.ensureType(grpcstub:ListTasksResponse));
+            return result.toJson();
+        }
+        "CreateTaskPushNotificationConfig"|"GetTaskPushNotificationConfig" => {
+            TaskPushNotificationConfig config = check decodeGrpcPushConfig(check response.ensureType(grpcstub:TaskPushNotificationConfig));
+            return config.toJson();
+        }
+        "ListTaskPushNotificationConfigs" => {
+            ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(check response.ensureType(grpcstub:ListTaskPushNotificationConfigsResponse));
+            return result.toJson();
+        }
+        "DeleteTaskPushNotificationConfig" => {
+            return {};
+        }
+        "GetExtendedAgentCard" => {
+            AgentCard card = check decodeGrpcAgentCard(check response.ensureType(grpcstub:AgentCard));
+            return card.toJson();
+        }
+        _ => {
+            return error A2AInternalError(
+                string `gRPC binding has no response mapping for "${operation}"`,
+                message = string `gRPC binding has no response mapping for "${operation}"`
+            );
+        }
+    }
+}

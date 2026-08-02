@@ -1,3 +1,4 @@
+import ballerina/grpc;
 import ballerina/test;
 
 @test:Config {}
@@ -164,4 +165,53 @@ function testToA2AErrorFromRestAttachesMetadataAsData() returns error? {
     };
     A2AError err = toA2AErrorFromRest(404, body);
     test:assertEquals(err.detail()?.data, {"taskId": "abc-123"});
+}
+
+@test:Config {groups: ["grpc"]}
+function testToA2AErrorFromGrpcNotFound() {
+    grpc:Error err = error grpc:NotFoundError("task not found");
+    A2AError mapped = toA2AErrorFromGrpc(err);
+    test:assertTrue(mapped is TaskNotFoundError);
+    test:assertEquals(mapped.detail()?.code, -32001);
+}
+
+@test:Config {groups: ["grpc"]}
+function testToA2AErrorFromGrpcInvalidArgument() {
+    grpc:Error err = error grpc:InvalidArgumentError("bad params");
+    A2AError mapped = toA2AErrorFromGrpc(err);
+    test:assertTrue(mapped is A2AInternalError);
+    test:assertEquals(mapped.detail()?.code, -32602);
+}
+
+@test:Config {groups: ["grpc"]}
+function testToA2AErrorFromGrpcFailedPreconditionIsLossyByDesign() {
+    // Documents the known loss from design spec Design decision 6: five
+    // distinct A2A errors collapse into UnsupportedOperationError because
+    // ballerina/grpc exposes no status details to disambiguate them. Do
+    // not "fix" this without also fixing the upstream ballerina/grpc gap
+    // that makes it necessary — see the design doc.
+    grpc:Error err = error grpc:FailedPreconditionError("task is not cancelable");
+    A2AError mapped = toA2AErrorFromGrpc(err);
+    test:assertTrue(mapped is UnsupportedOperationError);
+    test:assertEquals(mapped.detail()?.code, -32004);
+    test:assertEquals(mapped.message(), "task is not cancelable");
+}
+
+@test:Config {groups: ["grpc"]}
+function testToA2AErrorFromGrpcInternalErrorFamily() {
+    A2AError mapped1 = toA2AErrorFromGrpc(error grpc:InternalError("x"));
+    test:assertTrue(mapped1 is A2AInternalError);
+    A2AError mapped2 = toA2AErrorFromGrpc(error grpc:DataLossError("x"));
+    test:assertTrue(mapped2 is A2AInternalError);
+    A2AError mapped3 = toA2AErrorFromGrpc(error grpc:UnKnownError("x"));
+    test:assertTrue(mapped3 is A2AInternalError);
+    A2AError mapped4 = toA2AErrorFromGrpc(error grpc:AbortedError("x"));
+    test:assertTrue(mapped4 is A2AInternalError);
+}
+
+@test:Config {groups: ["grpc"]}
+function testToA2AErrorFromGrpcTransportOnlyStatusesFallThrough() {
+    A2AError mapped = toA2AErrorFromGrpc(error grpc:UnavailableError("connection refused"));
+    test:assertTrue(mapped is A2AInternalError);
+    test:assertEquals(mapped.message(), "connection refused");
 }

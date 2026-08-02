@@ -426,3 +426,43 @@ function testDecodeGrpcAgentCardSkillsAndInterfaces() returns error? {
     test:assertEquals(card.supportedInterfaces.length(), 1);
     test:assertEquals(card.supportedInterfaces[0].protocolBinding, "GRPC");
 }
+
+@test:Config {groups: ["grpc"]}
+function testEncodeGrpcRequestGetTask() returns error? {
+    map<json> params = {"id": "t1", "historyLength": 5, "tenant": "tenant1"};
+    anydata req = check encodeGrpcRequest("GetTask", params);
+    grpcstub:GetTaskRequest typed = check req.ensureType(grpcstub:GetTaskRequest);
+    test:assertEquals(typed.id, "t1");
+    test:assertEquals(typed?.history_length, 5);
+    test:assertEquals(typed.tenant, "tenant1");
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeGrpcRequestSendMessageUndoesBase64() returns error? {
+    byte[] rawBytes = "hello bytes".toBytes();
+    json messageJson = encodeRawBytesForWire({
+        messageId: "m1", role: "ROLE_USER",
+        parts: [{raw: rawBytes.toJson()}]
+    }.toJson());
+    // messageJson now has parts[0].raw as a base64 string, matching what
+    // sendMessage actually builds before calling rpcCall.
+    map<json> params = {"message": messageJson};
+    anydata req = check encodeGrpcRequest("SendMessage", params);
+    grpcstub:SendMessageRequest typed = check req.ensureType(grpcstub:SendMessageRequest);
+    grpcstub:Part firstPart = typed.message.parts[0];
+    test:assertEquals(firstPart.raw, rawBytes, "encodeGrpcRequest must undo the base64 encoding applied upstream");
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcResponseGetTask() returns error? {
+    grpcstub:Task grpcTask = {id: "t1", status: {state: grpcstub:TASK_STATE_WORKING}};
+    json result = check decodeGrpcResponse("GetTask", grpcTask);
+    Task decoded = check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
+    test:assertEquals(decoded.id, "t1");
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeGrpcRequestUnknownOperationErrors() {
+    anydata|error result = encodeGrpcRequest("NotARealOperation", {});
+    test:assertTrue(result is A2AInternalError);
+}
