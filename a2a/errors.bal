@@ -1,6 +1,7 @@
 // A2A error types.
 
 import ballerina/a2a.transport;
+import ballerina/grpc;
 
 # Detail attached to every A2AError.
 public type A2AErrorDetail record {|
@@ -250,4 +251,35 @@ isolated function extractRestErrorMessage(json? body) returns string? {
 isolated function extractRestErrorMetadata(json? body) returns json? {
     map<json>? detailMap = extractRestErrorDetail(body);
     return detailMap is () ? () : detailMap["metadata"];
+}
+
+# Maps a gRPC transport error onto the same A2AError hierarchy the
+# JSON-RPC and REST bindings map onto. Status-code granularity only —
+# ballerina/grpc:1.14.7 exposes no status details or trailing metadata
+# (grpc:Error is a bare `distinct error` with no detail record), so five
+# A2A errors that all share FAILED_PRECONDITION cannot be disambiguated
+# here the way toA2AErrorFromRest disambiguates via
+# google.rpc.ErrorInfo.reason. See design spec Design decision 6 for the
+# full resolution-order rationale and the two out-of-scope ways to close
+# this gap later (ballerina/grpc exposing status details; matching on
+# status-message text, rejected as unreliable).
+#
+# + err - the gRPC transport error received from a grpcstub client call
+# + return - the corresponding typed A2AError
+isolated function toA2AErrorFromGrpc(grpc:Error err) returns A2AError {
+    string message = err.message();
+    if err is grpc:NotFoundError {
+        return error TaskNotFoundError(message, message = message, code = -32001);
+    }
+    if err is grpc:InvalidArgumentError {
+        return error A2AInternalError(message, message = message, code = -32602);
+    }
+    if err is grpc:FailedPreconditionError {
+        return error UnsupportedOperationError(message, message = message, code = -32004);
+    }
+    if err is grpc:InternalError || err is grpc:DataLossError
+            || err is grpc:UnKnownError || err is grpc:AbortedError {
+        return error A2AInternalError(message, message = message, code = -32603);
+    }
+    return error A2AInternalError(message, message = message);
 }

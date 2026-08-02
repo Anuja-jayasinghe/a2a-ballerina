@@ -1,3 +1,5 @@
+import ballerina/a2a.grpcstub;
+import ballerina/grpc;
 import ballerina/http;
 import ballerina/test;
 import ballerina/time;
@@ -213,6 +215,167 @@ function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
     test:assertTrue(restResult is error, "a pre-v1.0 card's legacy url field predates HTTP+JSON entirely and must not be treated as a REST endpoint");
     string jsonRpcUrl = check primaryUrl(card);
     test:assertEquals(jsonRpcUrl, "http://legacy.example");
+}
+
+@test:Config {groups: ["grpc"]}
+function testSelectInterfaceGrpcOnlyCard() returns error? {
+    AgentCard card = {
+        name: "grpc-agent", description: "d", version: "1.0",
+        capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:9090", protocolBinding: "GRPC", protocolVersion: "1.0"}],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card, "GRPC");
+    test:assertEquals(iface.url, "http://localhost:9090");
+}
+
+@test:Config {groups: ["grpc"]}
+function testSelectInterfaceMixedCardOrdering() returns error? {
+    AgentCard card = {
+        name: "mixed-agent", description: "d", version: "1.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:9090", protocolBinding: "GRPC", protocolVersion: "1.0"},
+            {url: "http://localhost:8080", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://localhost:8081", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+    test:assertEquals(check primaryUrl(card, "GRPC"), "http://localhost:9090");
+    test:assertEquals(check primaryUrl(card, "JSONRPC"), "http://localhost:8080");
+    test:assertEquals(check primaryUrl(card, "HTTP+JSON"), "http://localhost:8081");
+}
+
+@test:Config {groups: ["grpc"]}
+function testGrpcSchemeNormalization() {
+    test:assertEquals(normalizeGrpcSchemeUrl("grpc://localhost:9090"), "http://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("grpcs://localhost:9090"), "https://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("http://localhost:9090"), "http://localhost:9090");
+    test:assertEquals(normalizeGrpcSchemeUrl("https://localhost:9090"), "https://localhost:9090");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientInitRejectsV03PlusGrpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client|error result = new (getGrpcMockUrl(), agentCard = card, binding = "GRPC");
+    test:assertTrue(result is VersionNotSupportedError,
+            "constructing a GRPC client against a card that resolves to V0_3 must fail fast with a typed error, since A2A v0.3 has no gRPC binding equivalent");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendMessageUnary() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_COMPLETED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message result = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    test:assertTrue(result is Task);
+    if result is Task {
+        test:assertEquals(result.id, "t1");
+    }
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskMapsNotFoundError() returns error? {
+    setNextGrpcError(error grpc:NotFoundError("no such task"));
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|error result = grpcClient->getTask("missing");
+    test:assertTrue(result is TaskNotFoundError);
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendsMandatoryA2AVersionHeader() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    map<string|string[]> metadata = getLastGrpcMetadata();
+    // gRPC/HTTP2 metadata keys are lowercased on the wire regardless of the
+    // case the client sends them in (confirmed against the real
+    // ballerina/grpc runtime -- see the captured metadata in this test's
+    // history), so the outbound "A2A-Version" header arrives here as
+    // "a2a-version".
+    test:assertTrue(metadata.hasKey("a2a-version"), "A2A-Version metadata must be present per spec section 3.6.1");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskPushNotificationConfigEndToEnd() returns error? {
+    // Real Client against the real grpc mock service/listener, not just
+    // encodeGrpcRequest/decodeGrpcResponse in isolation -- this exercises
+    // actual protobuf wire marshalling of the request, which is what
+    // caught encodeGrpcRequest previously returning an untyped mapping
+    // literal for GetTaskPushNotificationConfig/DeleteTaskPushNotificationConfig
+    // instead of the properly-typed grpcstub:*Request record (the two
+    // request types need their real runtime type identity for the grpc
+    // library to marshal them onto the wire correctly, the same class of
+    // bug the Part.data descriptor fix addressed).
+    setNextGrpcResponse(<grpcstub:TaskPushNotificationConfig>{
+        task_id: "t1",
+        id: "webhook-1",
+        url: "https://cb.example.com"
+    });
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1");
+    test:assertEquals(result?.taskId, "t1");
+    test:assertEquals(result?.id, "webhook-1");
+    test:assertEquals(result.url, "https://cb.example.com");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcGetTaskPushNotificationConfigWithTenantEndToEnd() returns error? {
+    setNextGrpcResponse(<grpcstub:TaskPushNotificationConfig>{
+        task_id: "t1",
+        id: "webhook-1",
+        url: "https://cb.example.com",
+        tenant: "tenant1"
+    });
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
+    test:assertEquals(result?.tenant, "tenant1");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcDeleteTaskPushNotificationConfigEndToEnd() returns error? {
+    // google.protobuf.Empty carries no fields -- {} is enough to signal
+    // "scripted a success", see grpcmock_service.bal's
+    // DeleteTaskPushNotificationConfig comment.
+    setNextGrpcResponse({});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1");
+    test:assertTrue(result is (), "deleteTaskPushNotificationConfig must return nil on a scripted success over the real grpc wire");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcDeleteTaskPushNotificationConfigWithTenantEndToEnd() returns error? {
+    setNextGrpcResponse({});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
+    test:assertTrue(result is (), "deleteTaskPushNotificationConfig with a tenant must also round-trip over the real grpc wire");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcCapturesGrantedExtensionsFromLowercaseMetadata() returns error? {
+    grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
+    setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
+    // A real, spec-conformant gRPC server sends this metadata key lowercased
+    // -- HTTP/2 mandates lowercase header/metadata field names at the
+    // protocol level (RFC 7540 §8.1.2), the same reason
+    // testClientGrpcSendsMandatoryA2AVersionHeader asserts against
+    // "a2a-version" rather than "A2A-Version". Scripting it lowercase here
+    // pins that captureGrantedExtensionsFromGrpc's lookup actually matches
+    // real wire casing, not just a same-cased echo of what a naive
+    // exact-match lookup would already handle.
+    setNextGrpcResponseMetadata({"a2a-extensions": "https://example.com/ext1,https://example.com/ext2"});
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    string[] granted = grpcClient.lastGrantedExtensions();
+    test:assertEquals(granted, ["https://example.com/ext1", "https://example.com/ext2"],
+            "granted extensions must be captured from lowercase gRPC response metadata, matching real server wire casing");
 }
 
 @test:Config {}
@@ -2149,4 +2312,19 @@ function testJsonRpcAndRestProduceIdenticalErrorTypeAndCode() returns error? {
     TaskNotCancelableError restErr = <TaskNotCancelableError>restResult;
     test:assertEquals(jsonRpcErr.detail().code, restErr.detail().code,
             "detail.code must be identical across bindings so a caller switching Client from JSON-RPC to REST sees no difference");
+}
+
+@test:Config {groups: ["grpc"]}
+function testClientGrpcSendMessageStreamEndToEnd() returns error? {
+    grpcstub:StreamResponse[] scripted = [
+        {task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}},
+        {status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_COMPLETED}}}
+    ];
+    setNextGrpcResponse(scripted);
+    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    stream<StreamResponse, error?> s = check grpcClient->sendMessageStream({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    StreamResponse first = check expectValue(s.next());
+    test:assertTrue(first?.task is Task);
+    StreamResponse second = check expectValue(s.next());
+    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
 }

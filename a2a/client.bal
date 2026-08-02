@@ -1,6 +1,8 @@
 // A2A client implementation.
 
+import ballerina/a2a.grpcstub;
 import ballerina/a2a.transport;
+import ballerina/grpc;
 import ballerina/http;
 import ballerina/url;
 import ballerina/uuid;
@@ -175,7 +177,7 @@ public isolated function resolveAgentCardCached(
 }
 
 # The A2A transport bindings this library can speak.
-public type TransportBinding "JSONRPC"|"HTTP+JSON";
+public type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
@@ -229,6 +231,23 @@ public isolated function primaryUrl(
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
 }
 
+# Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
+# on some AgentCards) to the http://\https:// form grpc:Client actually
+# accepts. A conformant card's GRPC interface url is already http(s), in
+# which case this is a no-op.
+#
+# + url - the GRPC interface's url, as published on the AgentCard
+# + return - the url with any grpc/grpcs scheme rewritten to http/https
+isolated function normalizeGrpcSchemeUrl(string url) returns string {
+    if url.startsWith("grpcs://") {
+        return "https://" + url.substring(8);
+    }
+    if url.startsWith("grpc://") {
+        return "http://" + url.substring(7);
+    }
+    return url;
+}
+
 # How one operation maps onto the REST binding.
 type RestOperation record {|
     string httpMethod;
@@ -269,7 +288,7 @@ final readonly & map<RestOperation> REST_OPERATIONS = {
 #
 # + method - the JSON-RPC-style method name already used to key
 #            REST_OPERATIONS (e.g. "GetTask") — the same string every
-#            remote function already passes to rpcCall/openSseStream
+#            remote function already passes to rpcCall/openEventStream
 # + params - the same params map the JSON-RPC binding would have sent
 # + return - the full request path (including query string for bodiless
 #            operations) and the JSON body to send (nil for bodiless
@@ -350,6 +369,7 @@ public isolated client class Client {
     private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
     private final TransportBinding binding;
+    private final grpcstub:A2AServiceClient? grpcStub;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -446,6 +466,18 @@ public isolated client class Client {
                 message = "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent"
             );
         }
+        if self.mode == "V0_3" && binding == "GRPC" {
+            return error VersionNotSupportedError(
+                "A2A protocol v0.3 has no gRPC binding equivalent",
+                message = "A2A protocol v0.3 has no gRPC binding equivalent"
+            );
+        }
+        if binding == "GRPC" {
+            grpc:ClientConfiguration grpcConfig = check projectToGrpcClientConfig(effectiveClientConfig);
+            self.grpcStub = check new (normalizeGrpcSchemeUrl(serviceUrl), grpcConfig);
+        } else {
+            self.grpcStub = ();
+        }
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
     }
@@ -460,9 +492,11 @@ public isolated client class Client {
     # + return - the headers to send with the request
     private isolated function buildHeaders() returns map<string> {
         map<string> headers = {
-            "Content-Type": "application/json",
             "A2A-Version": self.mode == "V0_3" ? "0.3" : "1.0"
         };
+        if self.binding != "GRPC" {
+            headers["Content-Type"] = "application/json";
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
@@ -487,7 +521,7 @@ public isolated client class Client {
     }
 
     # Captures the response's A2A-Extensions header, if present, into
-    # self.grantedExtensions. Shared by rpcCall and openSseStream, since
+    # self.grantedExtensions. Shared by rpcCall and openEventStream, since
     # both read a granted-extensions header off their respective
     # http:Response before doing anything else with it.
     #
@@ -524,6 +558,9 @@ public isolated client class Client {
     private isolated function rpcCall(string method, map<json> params) returns json|error {
         if self.binding == "HTTP+JSON" {
             return self.restCall(method, params);
+        }
+        if self.binding == "GRPC" {
+            return self.grpcCall(method, params);
         }
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
@@ -590,6 +627,170 @@ public isolated client class Client {
         }
         json? errorBody = resp.getJsonPayload() is json ? check resp.getJsonPayload() : ();
         return toA2AErrorFromRest(resp.statusCode, errorBody);
+    }
+
+    # Performs one gRPC binding call and returns the unwrapped result,
+    # matching rpcCall's contract. Uses the generated *Context method
+    # variants exclusively (never the plain ones) so response metadata —
+    # specifically A2A-Extensions — is reachable; see design spec Design
+    # decision 4.
+    #
+    # + method - the JSON-RPC-style method name (see encodeGrpcRequest)
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - the unwrapped result json, or a typed A2AError
+    private isolated function grpcCall(string method, map<json> params) returns json|error {
+        grpcstub:A2AServiceClient stub = <grpcstub:A2AServiceClient>self.grpcStub;
+        anydata req = check encodeGrpcRequest(method, params);
+        map<string|string[]> headers = self.buildHeaders();
+        anydata|grpc:Error response = self.dispatchGrpcContextCall(stub, method, req, headers);
+        if response is grpc:Error {
+            return toA2AErrorFromGrpc(response);
+        }
+        return decodeGrpcResponse(method, response);
+    }
+
+    # Dispatches to the correct generated *Context method for one unary
+    # operation. A single match here (rather than a match inline in
+    # grpcCall) keeps grpcCall's own control flow readable and gives the
+    # streaming adapter (Task 14) an obvious place alongside this to add
+    # its own two streaming-operation cases without touching this one.
+    #
+    # Every generated *Context remote function takes a single parameter —
+    # a union of the plain request type or the corresponding
+    # `grpcstub:Context{Operation}Request` wrapper record (`{content,
+    # headers}`) — not a separate trailing headers parameter as originally
+    # predicted. Outbound metadata is therefore sent by constructing that
+    # wrapper record here, not by passing headers positionally. Confirmed
+    # against the real generated `a2a/modules/grpcstub/a2a_pb.bal`.
+    #
+    # + stub - the generated gRPC client stub
+    # + method - the JSON-RPC-style method name
+    # + req - the typed grpcstub request value from encodeGrpcRequest
+    # + headers - outbound metadata (A2A-Version, A2A-Extensions, auth headers)
+    # + return - the typed grpcstub response value, or a grpc:Error
+    private isolated function dispatchGrpcContextCall(
+            grpcstub:A2AServiceClient stub, string method, anydata req,
+            map<string|string[]> headers) returns anydata|grpc:Error {
+        match method {
+            "SendMessage" => {
+                var result = stub->SendMessageContext({content: <grpcstub:SendMessageRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "GetTask" => {
+                var result = stub->GetTaskContext({content: <grpcstub:GetTaskRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "CancelTask" => {
+                var result = stub->CancelTaskContext({content: <grpcstub:CancelTaskRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "ListTasks" => {
+                var result = stub->ListTasksContext({content: <grpcstub:ListTasksRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "CreateTaskPushNotificationConfig" => {
+                var result = stub->CreateTaskPushNotificationConfigContext({content: <grpcstub:TaskPushNotificationConfig>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "GetTaskPushNotificationConfig" => {
+                var result = stub->GetTaskPushNotificationConfigContext({content: <grpcstub:GetTaskPushNotificationConfigRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "ListTaskPushNotificationConfigs" => {
+                var result = stub->ListTaskPushNotificationConfigsContext({content: <grpcstub:ListTaskPushNotificationConfigsRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            "DeleteTaskPushNotificationConfig" => {
+                var result = stub->DeleteTaskPushNotificationConfigContext({content: <grpcstub:DeleteTaskPushNotificationConfigRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                // google.protobuf.Empty (empty:ContextNil) carries no
+                // `content` field at all -- decodeGrpcResponse's
+                // "DeleteTaskPushNotificationConfig" branch ignores its
+                // response argument entirely and always returns {}, so ()
+                // here is discarded downstream, not silently wrong.
+                return ();
+            }
+            "GetExtendedAgentCard" => {
+                var result = stub->GetExtendedAgentCardContext({content: <grpcstub:GetExtendedAgentCardRequest>req, headers});
+                if result is grpc:Error {
+                    return result;
+                }
+                self.captureGrantedExtensionsFromGrpc(result.headers);
+                return result.content;
+            }
+            _ => {
+                return error grpc:InternalError(string `no gRPC dispatch for unary method "${method}"`);
+            }
+        }
+    }
+
+    # gRPC analogue of captureGrantedExtensions — reads A2A-Extensions off
+    # response metadata instead of an http:Response header, per design
+    # spec Design decision 4 (only the *Context method variants surface
+    # response metadata at all).
+    #
+    # Unlike http:Response.getHeader (case-insensitive), a map<string|
+    # string[]> key lookup in Ballerina is exact-match. HTTP/2 mandates
+    # lowercase header/metadata field names at the protocol level (RFC
+    # 7540 §8.1.2), so a real, spec-conformant gRPC server sends this
+    # metadata key as "a2a-extensions", not "A2A-Extensions" — the same
+    # casing issue already fixed for outbound headers (see
+    # testClientGrpcSendsMandatoryA2AVersionHeader, which asserts against
+    # "a2a-version"). This scans entries for a case-insensitive match
+    # instead of doing an exact-match lookup, so it actually finds the
+    # header a real server sends.
+    #
+    # + headers - the response metadata from a *Context call
+    private isolated function captureGrantedExtensionsFromGrpc(map<string|string[]> headers) {
+        string|string[]? extHeader = ();
+        foreach [string, string|string[]] [k, v] in headers.entries() {
+            if k.toLowerAscii() == "a2a-extensions" {
+                extHeader = v;
+                break;
+            }
+        }
+        string[] granted = [];
+        if extHeader is string && extHeader.length() > 0 {
+            foreach string entry in re `,`.split(extHeader) {
+                granted.push(entry.trim());
+            }
+        } else if extHeader is string[] {
+            granted = extHeader;
+        }
+        lock {
+            self.grantedExtensions = granted.clone();
+        }
     }
 
     # Sends a message to the remote agent.
@@ -673,7 +874,10 @@ public isolated client class Client {
     # + method - the JSON-RPC method name
     # + params - the JSON-RPC method parameters
     # + return - a stream of StreamResponse values, or an error
-    private isolated function openSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+    private isolated function openEventStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        if self.binding == "GRPC" {
+            return self.openGrpcStream(method, params);
+        }
         if self.binding == "HTTP+JSON" {
             return self.openRestSseStream(method, params);
         }
@@ -716,6 +920,45 @@ public isolated client class Client {
         }
 
         return readSseStream(resp, self.mode, self.binding);
+    }
+
+    # Opens a gRPC streaming call and wraps it in a GrpcStreamAdapter.
+    #
+    # Uses the generated *Context method variants exclusively (never the
+    # plain ones), matching grpcCall's rationale, so response metadata —
+    # specifically A2A-Extensions — is reachable; see design spec Design
+    # decision 4. Every generated *Context streaming remote function takes
+    # a single parameter — a union of the plain request type or the
+    # corresponding `grpcstub:Context{Operation}Request` wrapper record
+    # (`{content, headers}`) — not a separate trailing headers parameter,
+    # confirmed against the real generated `a2a/modules/grpcstub/a2a_pb.bal`
+    # (same finding as dispatchGrpcContextCall for the unary methods).
+    #
+    # + method - "SendStreamingMessage" or "SubscribeToTask"
+    # + params - the same params map the JSON-RPC binding would build
+    # + return - a stream of StreamResponse values, or a typed A2AError
+    private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+        grpcstub:A2AServiceClient stub = <grpcstub:A2AServiceClient>self.grpcStub;
+        anydata req = check encodeGrpcRequest(method, params);
+        map<string|string[]> headers = self.buildHeaders();
+        if method == "SendStreamingMessage" {
+            grpcstub:ContextStreamResponseStream|grpc:Error result =
+                stub->SendStreamingMessageContext({content: <grpcstub:SendMessageRequest>req, headers});
+            if result is grpc:Error {
+                return toA2AErrorFromGrpc(result);
+            }
+            self.captureGrantedExtensionsFromGrpc(result.headers);
+            stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
+            return wrapped;
+        }
+        grpcstub:ContextStreamResponseStream|grpc:Error result =
+            stub->SubscribeToTaskContext({content: <grpcstub:SubscribeToTaskRequest>req, headers});
+        if result is grpc:Error {
+            return toA2AErrorFromGrpc(result);
+        }
+        self.captureGrantedExtensionsFromGrpc(result.headers);
+        stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
+        return wrapped;
     }
 
     # Opens a REST binding SSE stream for a streaming operation
@@ -790,7 +1033,7 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        stream<StreamResponse, error?> rawStream = check self.openSseStream("SendStreamingMessage", params);
+        stream<StreamResponse, error?> rawStream = check self.openEventStream("SendStreamingMessage", params);
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
         }
@@ -946,7 +1189,7 @@ public isolated client class Client {
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
-        return self.openSseStream("SubscribeToTask", params);
+        return self.openEventStream("SubscribeToTask", params);
     }
 
     # Lists tasks matching an optional filter, with cursor-based pagination.

@@ -6,3 +6,29 @@ distribution = "2201.13.4"
 
 [build-options]
 observabilityIncluded = true
+
+# `http` is pinned to 2.14.13 (down from 2.16.6, which this package had
+# resolved to previously) because this package uses `ballerina/grpc`
+# (1.14.7) and `ballerina/http` together in the same package. `grpc:1.14.7`
+# bundles its own `http-native-2.14.12.jar` for shared native logging
+# infrastructure (grpc's `log_manager.bal` reflectively constructs
+# `io.ballerina.stdlib.http.api.logging.HttpLogManager`). When the project's
+# separately-resolved `http` version's native ABI drifts too far from that
+# bundled jar -- confirmed with `http:2.16.6` -- instantiating a
+# `grpc:Listener` crashes at module-init with `java.lang.IllegalAccessError`
+# on `HttpLogManager.<init>`. `http:2.14.13` (one patch above the exact
+# version grpc 1.14.7 bundles) was verified clean against the full `a2a`
+# suite, including the gRPC mock listener in `a2a/tests/grpcmock_service.bal`
+# actually starting up; see ballerina-platform/ballerina-library#2496 for the
+# upstream grpc/http-native ABI-coupling issue this pin works around. The
+# `[[dependency]]` entry below only sets a floor (Ballerina's minimum-version
+# resolution can still pick a newer compatible `http` on a from-scratch
+# resolve, e.g. after deleting `target/`) -- `a2a/Dependencies.toml` is the
+# real source of truth for the exact resolved version; `bal build --sticky`/
+# `bal test --sticky` honors it as committed. Re-verify gRPC listener startup
+# (`bal test a2a`, anything exercising `a2a/tests/grpcmock_service.bal`)
+# before bumping `http` past this pin.
+[[dependency]]
+org = "ballerina"
+name = "http"
+version = "2.14.13"
