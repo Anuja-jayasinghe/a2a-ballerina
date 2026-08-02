@@ -6,6 +6,7 @@
 // google.protobuf.Timestamp as a time:Utc tuple) — see the design spec's
 // Finding 4 for the full enumeration. No amount of cloneWithType bridges
 // that.
+import ballerina/a2a.grpcstub;
 import ballerina/time;
 
 # Converts a generated proto map field (a key/value record array, since
@@ -124,4 +125,96 @@ isolated function jsonToGrpcStruct(map<json>? j) returns map<anydata> {
         return {};
     }
     return j;
+}
+
+# Converts a typed Part into the generated grpcstub:Part shape.
+#
+# Callers must pass an already-typed Part (raw as byte[]?, not a base64
+# string) — this function does not undo base64 encoding. That undoing, if
+# needed, happens one layer up in encodeGrpcRequest (see its doc comment),
+# not here, because this function's contract is "typed Part in, typed
+# grpcstub:Part out," and base64 is a JSON-RPC/REST wire concern that
+# never should have reached a typed Part value in the first place.
+#
+# + p - the Part to encode
+# + return - the equivalent grpcstub:Part, or an error if p.data cannot be
+#            widened (it always can: json is a strict subtype of anydata)
+isolated function encodeGrpcPart(Part p) returns grpcstub:Part|error {
+    grpcstub:Part result = {
+        metadata: jsonToGrpcStruct(p?.metadata)
+    };
+    string? text = p?.text;
+    byte[]? raw = p?.raw;
+    string? url = p?.url;
+    json? data = p?.data;
+    if text is string {
+        result.text = text;
+    } else if raw is byte[] {
+        result.raw = raw;
+    } else if url is string {
+        result.url = url;
+    } else if data !is () {
+        // json is a strict subtype of anydata, so this widening is total
+        // and lossless (design spec Design decision 5, rule 5).
+        result.data = data;
+    }
+    string? filename = p?.filename;
+    if filename is string {
+        result.filename = filename;
+    }
+    string? mediaType = p?.mediaType;
+    if mediaType is string {
+        result.media_type = mediaType;
+    }
+    return result;
+}
+
+# Converts a generated grpcstub:Part into a typed Part.
+#
+# + p - the generated Part to decode
+# + partIndex - this part's index within its containing parts array, used
+#               only to name the offending part in a narrowing-failure
+#               error message
+# + return - the equivalent typed Part, or InvalidAgentResponseError if
+#            p.data (typed anydata on the wire, per the
+#            google_protobuf_Value -> anydata workaround) holds a runtime
+#            value json cannot represent — see design spec Design decision
+#            5, rule 5, for why this is a real possible failure and not a
+#            defensive check against something that can't happen
+isolated function decodeGrpcPart(grpcstub:Part p, int partIndex) returns Part|error {
+    Part result = {};
+    string? text = p?.text;
+    byte[]? raw = p?.raw;
+    string? url = p?.url;
+    anydata? data = p?.data;
+    if text is string {
+        result.text = text;
+    } else if raw is byte[] {
+        result.raw = raw;
+    } else if url is string {
+        result.url = url;
+    } else if data !is () {
+        json|error narrowed = trap data.cloneWithType(json);
+        if narrowed is error {
+            return error InvalidAgentResponseError(
+                string `Part[${partIndex}].data holds a value that cannot be represented as json: ${narrowed.message()}`,
+                message = string `Part[${partIndex}].data holds a value that cannot be represented as json: ${narrowed.message()}`,
+                code = -32006
+            );
+        }
+        result.data = narrowed;
+    }
+    string? filename = emptyGrpcStringToNil(p.filename);
+    if filename is string {
+        result.filename = filename;
+    }
+    string? mediaType = emptyGrpcStringToNil(p.media_type);
+    if mediaType is string {
+        result.mediaType = mediaType;
+    }
+    map<json>? metadata = check grpcStructToJson(p.metadata);
+    if metadata is map<json> {
+        result.metadata = metadata;
+    }
+    return result;
 }

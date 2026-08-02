@@ -1,3 +1,4 @@
+import ballerina/a2a.grpcstub;
 import ballerina/test;
 import ballerina/time;
 
@@ -81,4 +82,60 @@ function testGrpcStructEmptyMapIsAbsent() returns error? {
     map<anydata> struct = {};
     map<json>? back = check grpcStructToJson(struct);
     test:assertEquals(back, ());
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePartTextRoundTrips() returns error? {
+    Part original = {text: "hello", mediaType: "text/plain"};
+    grpcstub:Part encoded = check encodeGrpcPart(original);
+    Part decoded = check decodeGrpcPart(encoded, 0);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePartRawBytesRoundTrips() returns error? {
+    byte[] bytes = "raw bytes here".toBytes();
+    Part original = {raw: bytes, filename: "f.bin", mediaType: "application/octet-stream"};
+    grpcstub:Part encoded = check encodeGrpcPart(original);
+    test:assertEquals(encoded.raw, bytes, "encodeGrpcPart must assign raw bytes directly, no base64");
+    Part decoded = check decodeGrpcPart(encoded, 0);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePartUrlRoundTrips() returns error? {
+    Part original = {url: "https://example.com/f.png", mediaType: "image/png"};
+    grpcstub:Part encoded = check encodeGrpcPart(original);
+    Part decoded = check decodeGrpcPart(encoded, 0);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePartDataRoundTrips() returns error? {
+    Part original = {data: {"k": "v", "n": 1}};
+    grpcstub:Part encoded = check encodeGrpcPart(original);
+    Part decoded = check decodeGrpcPart(encoded, 0);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeDecodePartMetadataRoundTrips() returns error? {
+    Part original = {text: "with metadata", metadata: {"trace": "abc"}};
+    grpcstub:Part encoded = check encodeGrpcPart(original);
+    Part decoded = check decodeGrpcPart(encoded, 0);
+    test:assertEquals(decoded, original);
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcPartDataNarrowingFailureReturnsTypedError() {
+    // A value outside json's value space: a table, which anydata admits
+    // but json does not.
+    table<map<anydata>> notJson = table [{"x": 1}];
+    grpcstub:Part malformed = {data: notJson};
+    Part|error decoded = decodeGrpcPart(malformed, 3);
+    test:assertTrue(decoded is InvalidAgentResponseError, "expected InvalidAgentResponseError for a data value outside json's value space");
+    if decoded is InvalidAgentResponseError {
+        string msg = decoded.message();
+        test:assertTrue(msg.includes("3"), "error message should name the offending part index");
+    }
 }
