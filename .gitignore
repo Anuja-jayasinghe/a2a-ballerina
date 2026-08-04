@@ -1,2 +1,5 @@
 # Local git worktrees used for isolated subagent-driven development.
 .worktrees/
+
+# Local guidance for Claude Code, not part of tracked content.
+CLAUDE.md

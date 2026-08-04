@@ -57,7 +57,7 @@ transparently — the calling code above is identical either way.
 
 ## What's implemented
 
-**All 11 spec operations** (§9.4): `sendMessage`, `sendMessageStream`,
+**All 11 spec operations** (§9.4): `sendMessage`, `sendStreamingMessage`,
 `getTask`, `cancelTask`, `subscribeToTask`, `listTasks`,
 `createTaskPushNotificationConfig`, `getTaskPushNotificationConfig`,
 `listTaskPushNotificationConfigs`, `deleteTaskPushNotificationConfig`,
@@ -85,7 +85,7 @@ callers:
   the function's doc comment in `signature.bal` for the full reasoning.
 - **AgentCard caching** — `resolveAgentCardCached`, ETag/`304`-aware.
 - **Automatic SSE reconnection** — `maxReconnectAttempts` on
-  `sendMessageStream`/`subscribeToTask`; opt-in, default `0` preserves the
+  `sendStreamingMessage`/`subscribeToTask`; opt-in, default `0` preserves the
   original manual-reconnect behavior.
 - **Automatic client-auth wiring** — `buildAuthFromCard` (`auth.bal`) turns a
   parsed `AgentCard`'s API-key/HTTP-auth security scheme into a working

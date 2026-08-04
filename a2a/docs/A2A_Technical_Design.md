@@ -18,7 +18,7 @@ Phase 1 is deliberately client-only. The library is built and validated against 
 
 > * Complete core data model — AgentCard, Message, Part, Task, TaskStatus, TaskState, Artifact, TaskStatusUpdateEvent, TaskArtifactUpdateEvent, StreamResponse, SendMessageConfiguration, push notification config types, and all error types  
 > * **resolveAgentCard** — discovers and parses a remote agent's Agent Card from its well-known endpoint  
-> * **isolated client class Client** — outbound connector with eleven remote methods: sendMessage, sendMessageStream, getTask, cancelTask, subscribeToTask, listTasks, createTaskPushNotificationConfig, getTaskPushNotificationConfig, listTaskPushNotificationConfigs, deleteTaskPushNotificationConfig, getExtendedAgentCard  
+> * **isolated client class Client** — outbound connector with eleven remote methods: sendMessage, sendStreamingMessage, getTask, cancelTask, subscribeToTask, listTasks, createTaskPushNotificationConfig, getTaskPushNotificationConfig, listTaskPushNotificationConfigs, deleteTaskPushNotificationConfig, getExtendedAgentCard  
 > * JSON-RPC 2.0 request and response serialization (internal submodule)  
 > * **A2A-Version: 1.0** header on every request, per specification section 3.6.1  
 > * **tenant** parameter support on all operations for multi-tenant routing  
@@ -189,10 +189,10 @@ All eleven methods are isolated remote functions. Each accepts an optional tenan
 # Sends a message to the remote agent.## Blocking by default: the call does not return until the task reaches a# terminal or interrupted state. Set config.returnImmediately to true for# non-blocking behaviour, then poll with getTask or subscribe with# subscribeToTask.## The agent may respond with a Task for tracked work, or with a Message for# a simple direct reply that needs no task lifecycle. Both are valid per# specification section 3.1.1, so the return type covers both.## + message - The message to send; messageId must be set by the caller# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A Task or a Message on success, or an A2AError on failureisolated remote function sendMessage(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns Task|Message|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    json result = check self.rpcCall("SendMessage", params);    // The wire response wraps the payload -- {"task": {...}} or    // {"message": {...}} -- rather than returning either one flat.    SendMessageResult wrapped = check result.cloneWithType(SendMessageResult);    Task? maybeTask = wrapped?.task;    if maybeTask is Task {        return maybeTask;    }    Message? maybeMessage = wrapped?.message;    if maybeMessage is Message {        return maybeMessage;    }    return error InvalidAgentResponseError(        "Response contained neither a task nor a message"    );}
 ```
 
-## **6.2 sendMessageStream**
+## **6.2 sendStreamingMessage**
 
 ```
-# Sends a message and receives updates in real time over SSE.## Requires the remote agent to declare capabilities.streaming as true;# otherwise the agent returns UnsupportedOperationError.## The stream opens with a Task or a Message, then delivers zero or more# TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes when# the task reaches a terminal state. Each StreamResponse carries exactly# one non-nil field.## + message - The message to send# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function sendMessageStream(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SendStreamingMessage", params);}
+# Sends a message and receives updates in real time over SSE.## Requires the remote agent to declare capabilities.streaming as true;# otherwise the agent returns UnsupportedOperationError.## The stream opens with a Task or a Message, then delivers zero or more# TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes when# the task reaches a terminal state. Each StreamResponse carries exactly# one non-nil field.## + message - The message to send# + config - Optional send configuration# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function sendStreamingMessage(    Message message,    SendMessageConfiguration? config = (),    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"message": message.toJson()};    if config is SendMessageConfiguration {        params["configuration"] = config.toJson();    }    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SendStreamingMessage", params);}
 ```
 
 ## **6.3 getTask**
@@ -212,7 +212,7 @@ All eleven methods are isolated remote functions. Each accepts an optional tenan
 ## 
 
 ```
-# Opens a stream on an existing task.## The primary use is recovering from a dropped sendMessageStream connection.# Per specification section 3.1.6 the first event delivered is always the# task's current state, which prevents information loss between calling# getTask and re-subscribing.## Requires capabilities.streaming to be true. Returns# UnsupportedOperationError if attempted on a task already in a terminal# state.## + taskId - The task to subscribe to# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function subscribeToTask(    string taskId,    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"id": taskId};    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SubscribeToTask", params);}
+# Opens a stream on an existing task.## The primary use is recovering from a dropped sendStreamingMessage connection.# Per specification section 3.1.6 the first event delivered is always the# task's current state, which prevents information loss between calling# getTask and re-subscribing.## Requires capabilities.streaming to be true. Returns# UnsupportedOperationError if attempted on a task already in a terminal# state.## + taskId - The task to subscribe to# + tenant - Optional per-call tenant override# + return - A stream of StreamResponse values, or an errorisolated remote function subscribeToTask(    string taskId,    string? tenant = ()) returns stream<StreamResponse, error?>|error {    map<json> params = {"id": taskId};    string? effectiveTenant = tenant ?: self.tenant;    if effectiveTenant is string {        params["tenant"] = effectiveTenant;    }    return self.openSseStream("SubscribeToTask", params);}
 ```
 
 ## **6.6 Operation to wire mapping**
@@ -221,7 +221,7 @@ All eleven methods are isolated remote functions. Each accepts an optional tenan
 | :---- | :---- | :---- | :---- |
 | resolveAgentCard | none | GET /.well-known/agent-card.json | application/json |
 | sendMessage | SendMessage | POST | application/json |
-| sendMessageStream | SendStreamingMessage | POST | text/event-stream |
+| sendStreamingMessage | SendStreamingMessage | POST | text/event-stream |
 | getTask | GetTask | POST | application/json |
 | cancelTask | CancelTask | POST | application/json |
 | subscribeToTask | SubscribeToTask | POST | text/event-stream |
@@ -522,7 +522,7 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 > * **Agent Card signature verification.** Implemented via `verifyAgentCardSignature` in `signature.bal` (RS256/ES256, per RFC 7515). Known limitation: it does not perform RFC 8785 JSON Canonicalization (JCS) required by spec §8.4.1, so it only verifies signatures computed over Ballerina's own `toJsonString()` serialization — not signatures produced by a real, spec-conformant external signer (e.g. a Python or Java reference implementation). It is fail-closed: a genuinely valid, spec-conformant signature may verify as `false` (never silently skipped), and a forged/tampered card is never falsely accepted. See `verifyAgentCardSignature`'s doc comment in `signature.bal` for the full explanation and rationale for not implementing JCS yet. This JCS gap, not "verification doesn't exist," is the gap to track going forward.  
 > * **Agent Card caching.** `resolveAgentCardCached` now provides a cache-aware variant that respects HTTP caching headers (ETag/If-None-Match, Cache-Control/max-age) and reuses the cached body on a 304. `resolveAgentCard` itself is unchanged and still fetches fresh on every call — that remains the intentional non-caching option for callers who always want the latest card.  
 > * **Single protocol binding.** Partially resolved: the HTTP+JSON/REST binding is now implemented — `TransportBinding`, `selectInterface`, and the `binding` parameter on `Client.init` let a caller pick which transport to speak, and `REST_OPERATIONS`/`buildRestRequest` in `client.bal` map every one of the eleven remote operations onto its REST method/path/query/body shape (matching the reference a2a-python SDK's mapping table). An agent exposing only HTTP+JSON is now reachable. gRPC remains genuinely unimplemented — an agent exposing only gRPC still cannot be reached. AgentInterface.protocolBinding is captured in the data model so a client can at least detect a gRPC-only agent and fail with a clear message.  
-> * **Reconnection.** `subscribeToTask`/`sendMessageStream` now support opt-in automatic reconnection via `maxReconnectAttempts` — the client detects a dropped stream and resubscribes on the caller's behalf up to the configured attempt count. When not configured, the caller still implements its own retry policy as before.
+> * **Reconnection.** `subscribeToTask`/`sendStreamingMessage` now support opt-in automatic reconnection via `maxReconnectAttempts` — the client detects a dropped stream and resubscribes on the caller's behalf up to the configured attempt count. When not configured, the caller still implements its own retry policy as before.
 
 ## **12.2 Deliberately deferred to Phase 2**
 
@@ -580,7 +580,7 @@ a2a:Client researchClient = check new (
 
 ## Step 3 — Send the task and open the stream
 
-**What happens:** `sendMessageStream` builds a JSON-RPC `SendStreamingMessage` request, sets `Accept: text/event-stream`, and returns a live `stream<StreamResponse, error?>` the moment the connection opens — it does not wait for the task to finish.
+**What happens:** `sendStreamingMessage` builds a JSON-RPC `SendStreamingMessage` request, sets `Accept: text/event-stream`, and returns a live `stream<StreamResponse, error?>` the moment the connection opens — it does not wait for the task to finish.
 
 ```
 a2a:Message msg = {
@@ -589,7 +589,7 @@ a2a:Message msg = {
     parts: [{text: "Advances in surface-code quantum error correction, 2024"}]
 };
 
-stream<a2a:StreamResponse, error?> updates = check researchClient->sendMessageStream(msg);
+stream<a2a:StreamResponse, error?> updates = check researchClient->sendStreamingMessage(msg);
 ```
 
 ---
@@ -658,7 +658,7 @@ else if event.artifactUpdate is a2a:TaskArtifactUpdateEvent {
 
 ## Step 7 — Resume on `INPUT_REQUIRED`
 
-**What happens:** the stream from Step 3 has now ended (server closed the connection). If it ended because of `INPUT_REQUIRED`, this is **not** a new conversation — the same `taskId` and `contextId` from Step 4 are threaded into a fresh `sendMessageStream` call, and the whole loop (Steps 4–6) starts again on the new stream.
+**What happens:** the stream from Step 3 has now ended (server closed the connection). If it ended because of `INPUT_REQUIRED`, this is **not** a new conversation — the same `taskId` and `contextId` from Step 4 are threaded into a fresh `sendStreamingMessage` call, and the whole loop (Steps 4–6) starts again on the new stream.
 
 ```
 if clarificationPrompt is a2a:Message {
@@ -698,7 +698,7 @@ function runResearch(a2a:Client researchClient, string topic,
         parts: [{text: topic}]
     };
 
-    stream<a2a:StreamResponse, error?> updates = check researchClient->sendMessageStream(msg);
+    stream<a2a:StreamResponse, error?> updates = check researchClient->sendStreamingMessage(msg);
 
     map<string> reportChunks = {};
     string? activeTaskId = taskId;

@@ -890,7 +890,7 @@ isolated function decodeGrpcAgentCard(grpcstub:AgentCard c) returns AgentCard|er
 #
 # params arrives with any Part.raw already base64-encoded by
 # encodeRawBytesForWire, applied upstream by the calling remote function
-# before rpcCall is ever reached (see sendMessage/sendMessageStream in
+# before rpcCall is ever reached (see sendMessage/sendStreamingMessage in
 # client.bal). gRPC wants genuine bytes, not base64 — decodeRawBytesFromWire
 # is called here to undo that encoding before any Part-bearing sub-object
 # is cloned into a typed value, so encodeGrpcPart/encodeGrpcMessage always

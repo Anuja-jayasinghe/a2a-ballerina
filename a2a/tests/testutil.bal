@@ -310,7 +310,7 @@ public isolated function taskJsonWithState(string taskId, string state) returns 
 }
 
 # Builds a JSON-RPC-enveloped {"task": {...}} SSE data payload — the shape
-# a real sendMessageStream response opens with per specification section
+# a real sendStreamingMessage response opens with per specification section
 # 3.1.1 (the stream opens with a Task or a Message, then delivers zero or
 # more status/artifact update events).
 #
@@ -322,7 +322,7 @@ public isolated function taskJson(string taskId, string state = "TASK_STATE_SUBM
 }
 
 # Builds a JSON-RPC-enveloped {"message": {...}} SSE data payload — the
-# other valid shape sendMessageStream can open with per specification
+# other valid shape sendStreamingMessage can open with per specification
 # section 3.1.1: a plain conversational reply with no task. Used to
 # exercise the no-op reconnect-wrapping path, since a bare Message carries
 # no taskId to resubscribe with.

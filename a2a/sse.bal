@@ -136,7 +136,7 @@ class ReconnectingStreamGenerator {
     private final Client a2aClient;
     private final string taskId;
     // The per-call tenant override (if any) from the originating
-    // sendMessageStream/subscribeToTask call. Must be threaded through to
+    // sendStreamingMessage/subscribeToTask call. Must be threaded through to
     // the reconnect's openTaskSubscriptionStream call below — otherwise a
     // reconnect silently falls back to the client-level default tenant
     // (or no tenant), resubscribing under the wrong tenant in a
@@ -145,7 +145,7 @@ class ReconnectingStreamGenerator {
     private final int maxAttempts;
     private int attemptsUsed = 0;
     private boolean done = false;
-    // Wiring the taskId to resubscribe to (in sendMessageStream) requires
+    // Wiring the taskId to resubscribe to (in sendStreamingMessage) requires
     // peeking the underlying stream's first event before construction —
     // that peeked value is buffered here and replayed as this generator's
     // own first result, so the caller never observes that a peek happened.

@@ -263,7 +263,7 @@ public type AgentExtension record {|
 
 # Feature flags describing what an agent supports.
 public type AgentCapabilities record {|
-    # Whether sendMessageStream/subscribeToTask are supported
+    # Whether sendStreamingMessage/subscribeToTask are supported
     boolean streaming = false;
     # Whether push-notification webhooks are supported
     boolean pushNotifications = false;

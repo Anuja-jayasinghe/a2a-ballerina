@@ -405,7 +405,7 @@ public isolated client class Client {
     #                 credentials without a card is a silent no-op rather
     #                 than a hard failure.
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
-    #                          (the default), sendMessageStream and
+    #                          (the default), sendStreamingMessage and
     #                          subscribeToTask behave exactly as before —
     #                          a dropped connection surfaces its error
     #                          immediately. When positive, the returned
@@ -869,7 +869,7 @@ public isolated client class Client {
     }
 
     # Opens a JSON-RPC streaming call and hands the response to
-    # readSseStream. Shared by sendMessageStream and subscribeToTask.
+    # readSseStream. Shared by sendStreamingMessage and subscribeToTask.
     #
     # + method - the JSON-RPC method name
     # + params - the JSON-RPC method parameters
@@ -1012,7 +1012,7 @@ public isolated client class Client {
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
     # + return - A stream of StreamResponse values, or an error
-    isolated remote function sendMessageStream(
+    isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
@@ -1026,10 +1026,7 @@ public isolated client class Client {
             params["metadata"] = metadata;
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1094,10 +1091,7 @@ public isolated client class Client {
             params["historyLength"] = historyLength;
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1123,10 +1117,7 @@ public isolated client class Client {
             params["metadata"] = metadata;
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1136,7 +1127,7 @@ public isolated client class Client {
 
     # Opens a stream on an existing task.
     #
-    # The primary use is recovering from a dropped sendMessageStream
+    # The primary use is recovering from a dropped sendStreamingMessage
     # connection. Per specification section 3.1.6 the first event
     # delivered is always the task's current state, which prevents
     # information loss between calling getTask and re-subscribing.
@@ -1182,10 +1173,7 @@ public isolated client class Client {
     isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
         map<json> params = {"id": taskId};
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1244,10 +1232,7 @@ public isolated client class Client {
             }
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1269,10 +1254,7 @@ public isolated client class Client {
             ? encodeV03TaskPushNotificationConfig(config)
             : check config.toJson().ensureType();
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1300,10 +1282,7 @@ public isolated client class Client {
             ? {id: taskId, pushNotificationConfigId: id}
             : {taskId, id};
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1340,10 +1319,7 @@ public isolated client class Client {
             }
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1373,10 +1349,7 @@ public isolated client class Client {
             ? {id: taskId, pushNotificationConfigId: id}
             : {taskId, id};
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }
@@ -1398,10 +1371,7 @@ public isolated client class Client {
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
         map<json> params = {};
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
+        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
         if effectiveTenant is string && self.mode == "V1_0" {
             params["tenant"] = effectiveTenant;
         }

@@ -562,7 +562,7 @@ function testSendMessageStreamCapturesGrantedExtensionsFromResponse() returns er
     setNextSseResponse(minimalSseResponse, extensionsHeader = "urn:example:ext-a,urn:example:ext-b");
     Client c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a", "urn:example:ext-b"]);
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
     check closeIfStream(events);
 
     test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a", "urn:example:ext-b"]);
@@ -649,7 +649,7 @@ function testSendMessageStreamHappyPath() returns error? {
         parts: [{text: "What is the weather in Colombo?"}]
     };
 
-    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(events.next());
     test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
@@ -679,7 +679,7 @@ function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? 
         parts: [{text: "Research quantum error correction advances in 2024"}]
     };
 
-    stream<StreamResponse, error?> firstStream = check c->sendMessageStream(turn1);
+    stream<StreamResponse, error?> firstStream = check c->sendStreamingMessage(turn1);
 
     StreamResponse working = check expectValue(firstStream.next());
     test:assertEquals((<TaskStatusUpdateEvent>working?.statusUpdate).status.state, TASK_STATE_WORKING);
@@ -705,7 +705,7 @@ function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? 
         parts: [{text: "Focus on surface codes and topological qubits"}]
     };
 
-    stream<StreamResponse, error?> secondStream = check c->sendMessageStream(turn2);
+    stream<StreamResponse, error?> secondStream = check c->sendStreamingMessage(turn2);
 
     StreamResponse resumedWorking = check expectValue(secondStream.next());
     test:assertEquals((<TaskStatusUpdateEvent>resumedWorking?.statusUpdate).status.state, TASK_STATE_WORKING);
@@ -802,9 +802,9 @@ function testTenantPropagatesOnEveryMethod() returns error? {
     check assertLastRequestTenant(tenant, "sendMessage");
 
     setNextSseResponse(minimalSseResponse);
-    stream<StreamResponse, error?>|error sendMessageStreamResult = c->sendMessageStream(msg);
-    check assertLastRequestTenant(tenant, "sendMessageStream");
-    check closeIfStream(sendMessageStreamResult);
+    stream<StreamResponse, error?>|error sendStreamingMessageResult = c->sendStreamingMessage(msg);
+    check assertLastRequestTenant(tenant, "sendStreamingMessage");
+    check closeIfStream(sendStreamingMessageResult);
 
     setNextJsonResponse(validTaskResponse);
     Task|error getTaskResult = c->getTask("task-tenant");
@@ -950,7 +950,7 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
 }
 
 # Same proof as testV03ModeTranslatesSendMessageMethodName, but for
-# sendMessageStream: the outbound body sent over the SSE-opening request
+# sendStreamingMessage: the outbound body sent over the SSE-opening request
 # must also be v0.3-shaped, not just method-translated.
 #
 # + return - an error if any step other than the assertions themselves fails
@@ -969,7 +969,7 @@ function testV03ModeTranslatesSendMessageStreamRequestBody() returns error? {
     ];
     setNextSseResponse(v03SseResponse);
     Message msg = {messageId: "msg-stream-1", role: ROLE_USER, parts: [{text: "hello stream"}]};
-    stream<StreamResponse, error?>|error result = c->sendMessageStream(msg);
+    stream<StreamResponse, error?>|error result = c->sendStreamingMessage(msg);
     check closeIfStream(result);
 
     json lastRequest = getLastRequestBody();
@@ -1152,7 +1152,7 @@ function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error
     ]);
 
     Message msg = {messageId: "msg-1", role: ROLE_USER, parts: [{text: "Convert 100 USD to EUR"}]};
-    stream<StreamResponse, error?> events = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(events.next());
     test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
@@ -1724,7 +1724,7 @@ function testResolveAgentCardReturnsErrorOn304() returns error? {
 
 @test:Config {}
 function testSendMessageStreamReconnectsOnDrop() returns error? {
-    // First script: the opening Task event (sendMessageStream's wrapping
+    // First script: the opening Task event (sendStreamingMessage's wrapping
     // only kicks in once a task exists to resubscribe to — see Step 4 of
     // the design), then a WORKING status, then an abrupt close — scripted
     // via setNextSseResponseThenDrop, which ends the scripted events with
@@ -1739,7 +1739,7 @@ function testSendMessageStreamReconnectsOnDrop() returns error? {
     ]);
     Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task, "first event should be the initial task/message");
 
@@ -1767,7 +1767,7 @@ function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
     ]);
     Client c = check new (getServerBaseUrl());
     Message msg = {messageId: "m2", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task, "first event should be the initial task/message");
@@ -1786,7 +1786,7 @@ function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
 }
 
 # Edge case called out explicitly in the design: a bare Message (no task)
-# as sendMessageStream's first event carries nothing to resubscribe with,
+# as sendStreamingMessage's first event carries nothing to resubscribe with,
 # so wrapping must be a no-op even when maxReconnectAttempts > 0 — a
 # dropped connection after a Message-only reply surfaces its error
 # immediately, exactly like the maxReconnectAttempts = 0 case, rather than
@@ -1798,7 +1798,7 @@ function testSendMessageStreamDoesNotReconnectAfterBareMessage() returns error? 
     ]);
     Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
     Message msg = {messageId: "m5", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.message is Message, "first event should be the bare Message reply");
@@ -1816,9 +1816,9 @@ function testSendMessageStreamDoesNotReconnectAfterBareMessage() returns error? 
 
 # subscribeToTask is the reconnect primitive ReconnectingStreamGenerator
 # calls internally, but its own wrapping (simpler than
-# sendMessageStream's — the taskId is already the input parameter, no
+# sendStreamingMessage's — the taskId is already the input parameter, no
 # peeking needed) had no direct coverage; this exercises it in isolation,
-# not just as a side effect of sendMessageStream's reconnect.
+# not just as a side effect of sendStreamingMessage's reconnect.
 @test:Config {}
 function testSubscribeToTaskReconnectsOnDrop() returns error? {
     setNextSseResponseThenDrop([
@@ -1885,7 +1885,7 @@ function testSendMessageStreamGivesUpAfterExhaustingReconnectAttempts() returns 
     ]);
     Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 1);
     Message msg = {messageId: "m6", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task, "first event should be the initial task/message");
@@ -1924,7 +1924,7 @@ function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns er
     ]);
     Client c = check new (getServerBaseUrl(), maxReconnectAttempts = 2);
     Message msg = {messageId: "m7", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task, "first event should be the initial task/message");
@@ -2116,7 +2116,7 @@ function testRestSendStreamingMessageSendsCorrectPath() returns error? {
     ]);
     Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
     StreamResponse _ = check expectValue(s.next());
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.method, "POST");
@@ -2162,7 +2162,7 @@ function testRestSendMessageStreamDecodesBareStreamResponseNoEnvelope() returns 
     ]);
     Client c = check new (getServerBaseUrl(), binding = "HTTP+JSON");
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
-    stream<StreamResponse, error?> s = check c->sendMessageStream(msg);
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
     StreamResponse first = check expectValue(s.next());
     test:assertEquals(first?.task?.id, "task-1");
 }
@@ -2322,7 +2322,7 @@ function testClientGrpcSendMessageStreamEndToEnd() returns error? {
     ];
     setNextGrpcResponse(scripted);
     Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
-    stream<StreamResponse, error?> s = check grpcClient->sendMessageStream({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    stream<StreamResponse, error?> s = check grpcClient->sendStreamingMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task);
     StreamResponse second = check expectValue(s.next());
