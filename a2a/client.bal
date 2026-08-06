@@ -295,11 +295,19 @@ public isolated function primaryUrl(
 # (`card = check resolveAgentCard(url); client = check new (url, ...,
 # agentCard = card)`).
 #
-# The existing positional `new (serviceUrl, ..., agentCard = card)`
-# constructor remains available as an escape hatch for the cases where the
-# client genuinely needs to point at a different URL than the one the card
-# declares — proxies, tests, or a card with several interfaces where a
-# non-preferred one is wanted deliberately.
+# newClient is the recommended entry point for the common case — you have a
+# URL or a card and want the SDK to derive the rest. It is not the only
+# supported construction path, and `new (serviceUrl, ..., agentCard = card)`
+# is not a deprecated fallback: it remains a fully supported, independently
+# public low-level constructor, both for callers who've already resolved
+# every argument themselves and for the cases where the client genuinely
+# needs to point at a different URL than the one the card declares —
+# proxies, tests, or a card with several interfaces where a non-preferred
+# one is wanted deliberately. This mirrors how the reference `a2a-sdk`
+# (Python) keeps its low-level `BaseClient` constructor fully public
+# alongside the `create_client`/`ClientFactory` convenience layer, and how
+# the Java SDK's `ClientBuilder` is itself a complete, independently usable
+# public entry point rather than something the higher-level API hides.
 #
 # + agent - a base URL to discover the agent at, or an AgentCard already
 #           resolved for it
@@ -487,6 +495,21 @@ public isolated client class Client {
     private final grpcstub:A2AServiceClient? grpcStub;
 
     # Creates a client pointed at a remote A2A agent.
+    #
+    # This is the low-level constructor: it takes a concrete serviceUrl and
+    # treats agentCard as an independent, optional argument that is never
+    # used to derive the URL. For the common case — construct from a URL or
+    # an already-resolved AgentCard, letting the SDK derive the rest — see
+    # newClient instead. This constructor stays fully public and is not a
+    # legacy path superseded by newClient: it's the right choice when the
+    # caller has already resolved every argument itself, or needs to point
+    # at a URL that deliberately differs from what an AgentCard declares
+    # (proxies, tests, a non-preferred interface). newClient is implemented
+    # in terms of this constructor, not a replacement for it — matching how
+    # the reference `a2a-sdk` (Python) keeps its low-level `BaseClient`
+    # constructor fully public alongside its `create_client` convenience
+    # layer, and how the Java SDK's `ClientBuilder` is a complete,
+    # independently usable public entry point in its own right.
     #
     # + serviceUrl - Base URL of the remote agent's A2A endpoint
     # + clientConfig - Full http:ClientConfiguration. Covers auth, TLS,
