@@ -179,28 +179,82 @@ public isolated function resolveAgentCardCached(
 # The A2A transport bindings this library can speak.
 public type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
+# Ranks an AgentInterface's protocolVersion for selectInterface's
+# preference order, per the comparison against the reference Python SDK's
+# _find_best_interface: exactly "1.0" first, then anything newer, then the
+# "0.x" pre-1.0 tier, then unversioned last (never a hard error, since one
+# odd version string on a card shouldn't fail selection).
+#
+# + protocolVersion - the interface's protocolVersion field, if any
+# + return - higher is more preferred
+isolated function protocolVersionRank(string? protocolVersion) returns int {
+    if protocolVersion is () {
+        return 0;
+    }
+    if protocolVersion == "1.0" {
+        return 3;
+    }
+    string[] parts = re `\.`.split(protocolVersion);
+    if parts.length() >= 1 {
+        int|error major = int:fromString(parts[0]);
+        if major is int {
+            int minor = 0;
+            if parts.length() >= 2 {
+                int|error parsedMinor = int:fromString(parts[1]);
+                if parsedMinor is int {
+                    minor = parsedMinor;
+                }
+            }
+            if major > 1 || (major == 1 && minor > 0) {
+                return 2;
+            }
+            if major >= 0 {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
 # protocolVersion, which must come from the same entry the url did, not
 # be independently re-derived (a card can list several interfaces with
 # different tenant/version values).
 #
+# Among multiple entries declaring the same protocolBinding, the one whose
+# protocolVersion ranks highest per protocolVersionRank wins — not simply
+# the first one on the card — so a card's supportedInterfaces ordering
+# can't silently downgrade the protocol version a caller ends up talking.
+# Ties (including cards with only one matching entry, the common case)
+# keep the first-seen entry, so every single-entry-per-binding card
+# behaves exactly as before.
+#
 # + card - the agent card to read the endpoint from
 # + preferredBinding - which transport binding to look for; defaults to
 #                      "JSONRPC", preserving every existing single-binding
 #                      caller's behavior unchanged
-# + return - the first supportedInterfaces entry declaring the matching
-#            protocolBinding, or an error if none exists. The legacy
-#            top-level url field is never treated as a match for
+# + return - the best-ranked supportedInterfaces entry declaring the
+#            matching protocolBinding, or an error if none exists. The
+#            legacy top-level url field is never treated as a match for
 #            "HTTP+JSON" — it predates that binding entirely — so only
 #            "JSONRPC" callers fall back to it (see primaryUrl)
 public isolated function selectInterface(
         AgentCard card,
         TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
+    AgentInterface? best = ();
+    int bestRank = -1;
     foreach AgentInterface iface in card.supportedInterfaces {
         if iface.protocolBinding == preferredBinding {
-            return iface;
+            int rank = protocolVersionRank(iface?.protocolVersion);
+            if rank > bestRank {
+                best = iface;
+                bestRank = rank;
+            }
         }
+    }
+    if best is AgentInterface {
+        return best;
     }
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces`);
 }
@@ -229,6 +283,67 @@ public isolated function primaryUrl(
         }
     }
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
+}
+
+# Creates a Client from whichever of a URL or an already-resolved AgentCard
+# the caller has in hand — never both. Which one varies by the discovery
+# mechanism in use: a caller who only has a base URL lets newClient resolve
+# the card itself; a caller who already resolved (or otherwise obtained) a
+# card passes it directly and skips the extra round trip. Either way, the
+# service URL is derived internally via primaryUrl/selectInterface rather
+# than re-supplied by the caller, closing the double-pass this replaces
+# (`card = check resolveAgentCard(url); client = check new (url, ...,
+# agentCard = card)`).
+#
+# The existing positional `new (serviceUrl, ..., agentCard = card)`
+# constructor remains available as an escape hatch for the cases where the
+# client genuinely needs to point at a different URL than the one the card
+# declares — proxies, tests, or a card with several interfaces where a
+# non-preferred one is wanted deliberately.
+#
+# + agent - a base URL to discover the agent at, or an AgentCard already
+#           resolved for it
+# + clientConfig - Full http:ClientConfiguration, as accepted by Client.init.
+#                  When agent is a URL, also used for the resolveAgentCard
+#                  call that fetches the card
+# + headers - Default headers, as accepted by Client.init. When agent is a
+#             URL, also sent on the resolveAgentCard fetch
+# + tenant - Optional multi-tenant routing identifier. When left unset and
+#            the selected AgentInterface declares a tenant value, that
+#            value is used automatically instead of requiring the caller to
+#            copy it by hand; an explicitly-passed tenant always wins
+# + requestedExtensions - as accepted by Client.init
+# + credentials - as accepted by Client.init
+# + maxReconnectAttempts - as accepted by Client.init
+# + binding - Which transport binding this Client speaks, and which
+#             supportedInterfaces entry to derive the service URL (and
+#             default tenant) from. Defaults to "JSONRPC"
+# + return - the constructed Client, or an error — propagated unchanged
+#            from resolveAgentCard (when agent is a URL: unreachable
+#            endpoint, non-200 status, or a body that doesn't parse as an
+#            AgentCard), from primaryUrl (no supportedInterfaces entry
+#            matching binding and no legacy url field to fall back to), or
+#            from Client.init itself (see its own + return doc)
+public isolated function newClient(
+        AgentCard|string agent,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        string? tenant = (),
+        string[] requestedExtensions = [],
+        map<string> credentials = {},
+        int maxReconnectAttempts = 0,
+        TransportBinding binding = "JSONRPC") returns Client|error {
+    AgentCard card = agent is string ? check resolveAgentCard(agent, clientConfig, headers) : agent;
+    string serviceUrl = check primaryUrl(card, binding);
+    string? effectiveTenant = tenant;
+    if effectiveTenant is () {
+        AgentInterface|error iface = selectInterface(card, binding);
+        if iface is AgentInterface {
+            effectiveTenant = iface?.tenant;
+        }
+    }
+    return new Client(serviceUrl, clientConfig, headers, effectiveTenant, card,
+        requestedExtensions, credentials, maxReconnectAttempts, binding);
 }
 
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild

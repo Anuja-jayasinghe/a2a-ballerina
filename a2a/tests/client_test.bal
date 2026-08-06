@@ -246,6 +246,105 @@ function testSelectInterfaceMixedCardOrdering() returns error? {
     test:assertEquals(check primaryUrl(card, "HTTP+JSON"), "http://localhost:8081");
 }
 
+# Confirms selectInterface prefers the protocolVersion 1.0 entry over a 0.3
+# entry of the same binding when the 1.0 entry comes first on the card —
+# the case a plain first-match scan would already get right, included here
+# only as the control for testSelectInterfacePrefersV1OverV03WhenSecond.
+@test:Config {}
+function testSelectInterfacePrefersV1OverV03WhenFirst() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://v1.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://v03.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card);
+    test:assertEquals(iface.url, "http://v1.example");
+}
+
+# The case that actually distinguishes preference-ranking from first-match:
+# the 0.3 entry comes first on the card, so a first-match scan would wrongly
+# return it. selectInterface must still prefer the 1.0 entry.
+@test:Config {}
+function testSelectInterfacePrefersV1OverV03WhenSecond() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://v03.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"},
+            {url: "http://v1.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+    AgentInterface iface = check selectInterface(card);
+    test:assertEquals(iface.url, "http://v1.example");
+}
+
+@test:Config {}
+function testNewClientFromUrl() returns error? {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
+    Client agentClient = check newClient(getServerBaseUrl());
+    Task|Message result = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    test:assertTrue(result is Task || result is Message);
+}
+
+@test:Config {}
+function testNewClientFromAgentCard() returns error? {
+    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
+    Client agentClient = check newClient(card);
+    Task|Message result = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    test:assertTrue(result is Task || result is Message);
+}
+
+# The default mock card's JSONRPC interface declares tenant "acme-corp"
+# (see testutil.bal's defaultMockAgentCard) — newClient must read it
+# automatically and send it on every request when the caller doesn't pass
+# an explicit tenant.
+@test:Config {}
+function testNewClientAutoWiresTenantFromCard() returns error? {
+    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
+    Client agentClient = check newClient(card);
+    Task|Message _ = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.tenant, "acme-corp");
+}
+
+# An explicitly-passed tenant must win over the card's own declared value.
+@test:Config {}
+function testNewClientExplicitTenantOverridesCard() returns error? {
+    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
+    Client agentClient = check newClient(card, tenant = "explicit-tenant");
+    Task|Message _ = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    json params = check getLastRequestBody().params;
+    test:assertEquals(check params.tenant, "explicit-tenant");
+}
+
+# No JSONRPC entry and no legacy url field: newClient must surface
+# primaryUrl's error rather than constructing a client pointed nowhere.
+@test:Config {}
+function testNewClientErrorsWhenCardHasNoMatchingInterface() {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://rest-only.example", protocolBinding: "HTTP+JSON"}
+        ],
+        skills: []
+    };
+    Client|error result = newClient(card);
+    test:assertTrue(result is error, "newClient should surface primaryUrl's error when the card has no JSONRPC interface and no legacy url");
+}
+
+# An unreachable discovery URL must surface resolveAgentCard's error, not panic.
+@test:Config {}
+function testNewClientFromUrlUnreachableEndpoint() {
+    Client|error result = newClient("http://localhost:1");
+    test:assertTrue(result is error, "unreachable discovery endpoint should surface as an error, not panic");
+}
+
 @test:Config {groups: ["grpc"]}
 function testGrpcSchemeNormalization() {
     test:assertEquals(normalizeGrpcSchemeUrl("grpc://localhost:9090"), "http://localhost:9090");
