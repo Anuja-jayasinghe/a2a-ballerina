@@ -2427,3 +2427,176 @@ function testClientGrpcSendMessageStreamEndToEnd() returns error? {
     StreamResponse second = check expectValue(s.next());
     test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
 }
+
+// ---------------------------------------------------------------------------
+// v1.0 SecurityScheme oneof parsing.
+//
+// A2A v1.0 models SecurityScheme as a protobuf oneof, so each scheme arrives
+// wrapped in an arm key rather than carrying a `type` discriminator. Every
+// pre-existing fixture in this suite uses the v0.3 `type` form, which is why
+// the wrapper form went unnoticed: MutualTlsSecurityScheme requires no fields
+// and defaults its `type`, so it matched every wrapper object and silently
+// mislabelled it. These tests pin the v1.0 form down explicitly.
+// ---------------------------------------------------------------------------
+
+# Overrides the well-known card with a body whose securitySchemes are supplied raw.
+isolated function setV10SchemeCard(json securitySchemes) {
+    setWellKnownOverride({
+        "name": "V1.0 Agent",
+        "description": "Publishes oneof-wrapped security schemes",
+        "version": "1.0.0",
+        "capabilities": {},
+        "supportedInterfaces": [{"url": "http://localhost:19199", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+        "securitySchemes": securitySchemes,
+        "skills": []
+    });
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10CamelCaseSecuritySchemes() returns error? {
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer", "bearerFormat": "JWT"}},
+        "oauth2Auth": {"oauth2SecurityScheme": {"flows": {}, "oauth2MetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server"}},
+        "oidcAuth": {"openIdConnectSecurityScheme": {"openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"}},
+        "mtlsAuth": {"mtlsSecurityScheme": {}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 5, "all five oneof arms must parse");
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme, "apiKeySecurityScheme arm must parse as ApiKeySecurityScheme");
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header", "v1.0 `location` must be mapped onto the record's `in` field");
+        test:assertEquals(apiKey.name, "X-API-Key");
+    }
+
+    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    test:assertTrue(bearer is HttpAuthSecurityScheme);
+    if bearer is HttpAuthSecurityScheme {
+        test:assertEquals(bearer.scheme, "bearer");
+        test:assertEquals(bearer?.bearerFormat, "JWT");
+    }
+
+    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    test:assertTrue(oidc is OpenIdConnectSecurityScheme);
+    if oidc is OpenIdConnectSecurityScheme {
+        test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration");
+    }
+
+    test:assertTrue(card.securitySchemes.get("oauth2Auth") is OAuth2SecurityScheme);
+    test:assertTrue(card.securitySchemes.get("mtlsAuth") is MutualTlsSecurityScheme);
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10SnakeCaseSecuritySchemes() returns error? {
+    // The spec schema accepts every arm under a snake_case spelling too, and
+    // the multi-word scheme fields likewise.
+    setV10SchemeCard({
+        "apiKeyAuth": {"api_key_security_scheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"http_auth_security_scheme": {"scheme": "bearer", "bearer_format": "JWT"}},
+        "oidcAuth": {"open_id_connect_security_scheme": {"open_id_connect_url": "https://auth.example.com/.well-known/openid-configuration"}},
+        "mtlsAuth": {"mtls_security_scheme": {}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 4);
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme);
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header");
+    }
+
+    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    test:assertTrue(bearer is HttpAuthSecurityScheme);
+    if bearer is HttpAuthSecurityScheme {
+        test:assertEquals(bearer?.bearerFormat, "JWT", "snake_case bearer_format must be normalized onto bearerFormat");
+    }
+
+    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    test:assertTrue(oidc is OpenIdConnectSecurityScheme);
+    if oidc is OpenIdConnectSecurityScheme {
+        test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration",
+                "snake_case open_id_connect_url must be normalized onto openIdConnectUrl");
+    }
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10MixedSpellingSecuritySchemes() returns error? {
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "query", "name": "api_key"}},
+        "bearerAuth": {"http_auth_security_scheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 2, "a card mixing both spellings must parse both");
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme);
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "query");
+    }
+    test:assertTrue(card.securitySchemes.get("bearerAuth") is HttpAuthSecurityScheme);
+}
+
+@test:Config {}
+function testResolveAgentCardV10ApiKeyLocationIsCaseInsensitive() returns error? {
+    // The proto documents lowercase values, but a server rendering the field
+    // from a protobuf enum can emit other casing; the reference Python SDK
+    // lowercases before comparing, so this client accepts the same range.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "HEADER", "name": "X-API-Key"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme, "an uppercase location must still resolve, not be dropped");
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header", "location must be normalized to lowercase");
+    }
+}
+
+@test:Config {}
+function testResolveAgentCardDropsV10ApiKeyWithInvalidLocation() returns error? {
+    // An out-of-range location is dropped rather than failing the whole card
+    // parse — the same tolerant contract every other securitySchemes entry
+    // gets — but it must never fall through and be mislabelled instead.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "somewhere-else", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertFalse(card.securitySchemes.hasKey("apiKeyAuth"), "an invalid apiKey location must drop that entry");
+    test:assertTrue(card.securitySchemes.hasKey("bearerAuth"), "one bad entry must not cost the rest of the card");
+}
+
+@test:Config {}
+function testResolveAgentCardV10SchemesAreNeverMislabelledAsMutualTls() returns error? {
+    // Direct regression guard on the original defect: before the oneof was
+    // handled, both of these parsed as MutualTlsSecurityScheme, which made
+    // buildAuthFromCard refuse to wire any credential.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertFalse(card.securitySchemes.get("apiKeyAuth") is MutualTlsSecurityScheme,
+            "a v1.0 apiKey scheme must not be mislabelled as mutual TLS");
+    test:assertFalse(card.securitySchemes.get("bearerAuth") is MutualTlsSecurityScheme,
+            "a v1.0 http auth scheme must not be mislabelled as mutual TLS");
+}
