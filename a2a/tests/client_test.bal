@@ -1166,11 +1166,11 @@ function testClientConfigTimeoutPassthrough() returns error? {
     test:assertTrue(elapsed < 2d, string `expected the timeout to fire well under the mock's 3s delay, took ${elapsed}s`);
 }
 
-isolated function v03Client() returns Client|error {
+isolated function v03Client(AgentCapabilities capabilities = {}) returns Client|error {
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
         protocolVersion: "0.3.0",
-        capabilities: {},
+        capabilities,
         skills: []
     };
     return new (getServerBaseUrl(), agentCard = legacyCard);
@@ -1639,7 +1639,11 @@ function testGetExtendedAgentCardNotConfiguredErrorMapping() returns error? {
 
 @test:Config {}
 function testV03GetExtendedAgentCardTranslatesMethodName() returns error? {
-    Client c = check v03Client();
+    // The card must declare the capability, or getExtendedAgentCard
+    // short-circuits on the held card and never reaches the wire — which is
+    // the point of that short-circuit, but it would leave this test asserting
+    // nothing about the v0.3 method-name translation it exists to cover.
+    Client c = check v03Client(capabilities = {extendedAgentCard: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
@@ -2599,4 +2603,118 @@ function testResolveAgentCardV10SchemesAreNeverMislabelledAsMutualTls() returns 
             "a v1.0 apiKey scheme must not be mislabelled as mutual TLS");
     test:assertFalse(card.securitySchemes.get("bearerAuth") is MutualTlsSecurityScheme,
             "a v1.0 http auth scheme must not be mislabelled as mutual TLS");
+}
+
+// ---------------------------------------------------------------------------
+// getExtendedAgentCard short-circuiting.
+//
+// There is no request counter on the mock, so "no request was sent" is
+// asserted by making a known call first and then checking that the last
+// request the mock saw is still that one.
+// ---------------------------------------------------------------------------
+
+# Builds a minimal AgentCard declaring a given extendedAgentCard capability.
+# The supportedInterfaces entry is required, not decorative: a card without
+# one is treated as a pre-1.0 legacy card by detectProtocolModeForBinding,
+# which would put the Client in V0_3 mode and change the wire method names.
+isolated function cardWithExtendedSupport(boolean supported, string name = "Held Card") returns AgentCard => {
+    name,
+    description: "d",
+    version: "1.0.0",
+    capabilities: {extendedAgentCard: supported},
+    supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+    skills: []
+};
+
+# Sends one getTask so the mock's last-seen request is a known, distinguishable
+# one, then returns the method name it recorded.
+isolated function primeLastRequest(Client c) returns string|error {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {id: "t-prime", contextId: "c1", status: {state: "TASK_STATE_COMPLETED"}}});
+    Task _ = check c->getTask("t-prime");
+    json method = check getLastRequestBody().method;
+    return method.ensureType();
+}
+
+@test:Config {}
+function testGetExtendedAgentCardShortCircuitsWhenCapabilityFalse() returns error? {
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(false, "Public Card"));
+    string primedMethod = check primeLastRequest(c);
+    test:assertEquals(primedMethod, "GetTask");
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Public Card", "the held card should be returned as-is");
+    test:assertEquals(check getLastRequestBody().method, "GetTask",
+            "a card declaring extendedAgentCard=false must not produce a GetExtendedAgentCard request at all");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardCallsOutWhenCapabilityTrue() returns error? {
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: true},
+            skills: []
+        }
+    });
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Extended Card");
+    test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard",
+            "a card declaring the capability must still make the call");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardCallsOutWhenNoCardHeld() returns error? {
+    // Absence of a card is not evidence of absence of the capability, so a
+    // Client built without one must still make the call.
+    Client c = check new (getServerBaseUrl());
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: false},
+            skills: []
+        }
+    });
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Extended Card");
+    test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardStoresFetchedCard() returns error? {
+    // The fetched card replaces the held one, so a second call reasons about
+    // the extended card rather than the public card the Client started with.
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: false},
+            skills: []
+        }
+    });
+    AgentCard first = check c->getExtendedAgentCard();
+    test:assertEquals(first.name, "Extended Card");
+
+    string primedMethod = check primeLastRequest(c);
+    test:assertEquals(primedMethod, "GetTask");
+
+    AgentCard second = check c->getExtendedAgentCard();
+
+    test:assertEquals(second.name, "Extended Card", "the second call should return the stored extended card");
+    test:assertEquals(check getLastRequestBody().method, "GetTask",
+            "the stored card declares extendedAgentCard=false, so the second call must short-circuit");
 }

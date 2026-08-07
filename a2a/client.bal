@@ -483,6 +483,25 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 }
 
 # An A2A protocol client for calling remote agents.
+#
+# LIFECYCLE: there is deliberately no `close`. Unlike the reference a2a-sdk
+# (Python), whose `Client.close()` disposes the `httpx.AsyncClient` it was
+# handed, a Ballerina `http:Client` holds no per-instance connection state to
+# dispose: it routes through the process-wide `globalHttpClientConnPool`, which
+# evicts idle connections on its own. Neither `http:Client` nor `grpc:Client`
+# exposes a client-side close for this reason, so there is no underlying call
+# to make. The A2A specification says nothing about client resource release
+# either — it governs the wire, not SDK object lifetimes.
+#
+# A Client is therefore cheap to construct and needs no teardown. Two caveats
+# worth knowing:
+#
+# - Prefer one long-lived Client per agent over constructing one per request.
+#   Construction still builds an `http:Client` (and, for the GRPC binding, a
+#   gRPC channel), which is wasted work per call even though it leaks nothing.
+# - Setting `poolConfig` inside `clientConfig` opts that Client out of the
+#   shared pool and gives it a private one, which *cannot* be released. If you
+#   do that, reuse the Client — don't create them per request.
 public isolated client class Client {
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;
@@ -493,6 +512,12 @@ public isolated client class Client {
     private final int maxReconnectAttempts;
     private final TransportBinding binding;
     private final grpcstub:A2AServiceClient? grpcStub;
+    # The most recent AgentCard this client knows about: the one supplied to
+    # init, replaced by the extended card once getExtendedAgentCard fetches
+    # one. Mutable (hence lock-guarded, like grantedExtensions) precisely so
+    # that fetching an extended card updates what later calls reason about,
+    # rather than leaving them on the public card forever.
+    private AgentCard? agentCard;
 
     # Creates a client pointed at a remote A2A agent.
     #
@@ -618,6 +643,7 @@ public isolated client class Client {
         }
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
+        self.agentCard = agentCard is AgentCard ? agentCard.clone() : ();
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
@@ -1504,9 +1530,31 @@ public isolated client class Client {
     # ExtendedAgentCardNotConfiguredError if the capability is on but no
     # extended card is actually configured.
     #
+    # When this Client holds an AgentCard (one was passed to init, or a
+    # previous call to this method fetched one) and that card declares
+    # capabilities.extendedAgentCard as false, the held card is returned
+    # directly and no request is sent: the card has already said the endpoint
+    # isn't there, so calling it only converts a knowable no-op into a server
+    # error. This matches the reference a2a-sdk (Python), whose
+    # BaseClient.get_extended_agent_card returns the card it already holds in
+    # exactly this case. A Client constructed without a card can't know, so it
+    # still makes the call.
+    #
+    # On a successful fetch the returned card replaces the held one, so a
+    # later call reflects the extended card rather than the public card the
+    # Client started with.
+    #
     # + tenant - Optional per-call tenant override
-    # + return - The extended AgentCard, or an error
+    # + return - The extended AgentCard, the already-held card when that card
+    #            declares no extended-card support, or an error
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
+        lock {
+            AgentCard? held = self.agentCard;
+            if held is AgentCard && !held.capabilities.extendedAgentCard {
+                return held.clone();
+            }
+        }
+
         map<json> params = {};
         string? effectiveTenant = tenant ?: self.tenant;
         // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
@@ -1515,6 +1563,10 @@ public isolated client class Client {
         }
 
         json result = check self.rpcCall("GetExtendedAgentCard", params);
-        return check parseAgentCardBody(result);
+        AgentCard fetched = check parseAgentCardBody(result);
+        lock {
+            self.agentCard = fetched.clone();
+        }
+        return fetched;
     }
 }
