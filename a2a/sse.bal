@@ -228,6 +228,67 @@ class ReconnectingStreamGenerator {
     }
 }
 
+# Wraps a freshly-opened stream so a dropped connection resubscribes
+# automatically, when the owning client was configured for it.
+#
+# Finding the taskId to resubscribe against requires peeking the stream's
+# first event, so that peeked value is buffered into the generator and
+# replayed as its own first result - the caller never observes that a peek
+# happened. A stream that opens with a bare Message carries nothing to
+# reconnect against, so it is still wrapped, but with a zero attempt budget
+# rather than being handed back raw; that keeps the peeked value spliced
+# back on either way.
+#
+# Shared by every transport binding: reconnection is a client-side policy
+# over a stream of StreamResponse values and has nothing to say about how
+# those values arrived.
+#
+# + rawStream - the stream just opened by the transport
+# + owner - the client to resubscribe through on a drop
+# + maxReconnectAttempts - the caller's configured attempt budget; zero or
+#                          less returns rawStream untouched
+# + tenant - the originating call's per-call tenant override, which must be
+#            threaded through so a reconnect resubscribes under the same
+#            tenant rather than falling back to the client-level default
+# + return - the stream to hand the caller, or an error if the first event
+#            was itself an error
+isolated function wrapReconnecting(
+        stream<StreamResponse, error?> rawStream,
+        StreamReconnectable owner,
+        int maxReconnectAttempts,
+        string? tenant) returns stream<StreamResponse, error?>|error {
+    if maxReconnectAttempts <= 0 {
+        return rawStream;
+    }
+    record {| StreamResponse value; |}|error? peeked = rawStream.next();
+    if peeked is error {
+        return peeked;
+    }
+    if peeked is () {
+        stream<StreamResponse, error?> wrapped =
+            new (new ReconnectingStreamGenerator(rawStream, owner, "", 0, tenant = tenant));
+        return wrapped;
+    }
+    Task? maybeTask = peeked.value?.task;
+    if maybeTask is Task {
+        stream<StreamResponse, error?> wrapped =
+            new (new ReconnectingStreamGenerator(rawStream, owner, maybeTask.id, maxReconnectAttempts, peeked, tenant));
+        return wrapped;
+    }
+    // A stream can also legitimately open with a status update rather than
+    // a Task (e.g. resubscribing to an already-created task), and that
+    // update still carries a taskId worth reconnecting against.
+    string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
+    if maybeTaskId is string {
+        stream<StreamResponse, error?> wrapped =
+            new (new ReconnectingStreamGenerator(rawStream, owner, maybeTaskId, maxReconnectAttempts, peeked, tenant));
+        return wrapped;
+    }
+    stream<StreamResponse, error?> wrapped =
+        new (new ReconnectingStreamGenerator(rawStream, owner, "", 0, peeked, tenant));
+    return wrapped;
+}
+
 # A stream terminates only on a status update carrying a terminal state.
 #
 # + event - the decoded stream event to inspect
