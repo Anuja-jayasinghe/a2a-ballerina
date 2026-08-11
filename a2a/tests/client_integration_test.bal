@@ -208,3 +208,89 @@ function testAgentClientInterfaceAcceptsEveryImplementation() returns error? {
     }
     test:assertTrue(true);
 }
+
+// ---- selection skips interfaces no client could serve ----------------
+
+# A2A v0.3 exists only over JSON-RPC, so a v0.3 HTTP+JSON entry is one the
+# matching client rejects at construction. Listing it first must not sink
+# the whole card when a serviceable interface follows.
+#
+# Before this was handled, such a card failed outright with "A2A protocol
+# v0.3 has no REST/HTTP+JSON binding equivalent" even though its JSON-RPC
+# interface was perfectly usable.
+@test:Config {}
+function testClientSkipsV03RestInterfaceAndFallsToJsonRpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "0.3"},
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client c = check new (card);
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
+    });
+    Task _ = check c->getTask("task-1");
+    test:assertEquals(check getLastRequestBody().method, "tasks/get",
+            "the v0.3 JSONRPC interface behind the unusable REST one must be selected, and speak v0.3");
+}
+
+# The same rule for gRPC, which likewise has no v0.3 form.
+@test:Config {}
+function testClientSkipsV03GrpcInterfaceAndFallsToJsonRpc() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"},
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client c = check new (card);
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {id: "task-1", kind: "task", status: {state: "completed"}}
+    });
+    Task _ = check c->getTask("task-1");
+    test:assertEquals(check getLastRequestBody().method, "tasks/get");
+}
+
+# A card offering nothing serviceable at all must still fail, rather than
+# the skipping rule quietly swallowing every entry.
+@test:Config {}
+function testClientErrorsWhenEveryInterfaceIsUnserviceable() {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "0.3"},
+            {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
+        ],
+        skills: []
+    };
+    Client|error result = new (card);
+    test:assertTrue(result is error,
+            "a card whose every interface is an unserviceable v0.3 combination must fail construction");
+}
+
+# The skipping rule must not change which binding a healthy card selects.
+@test:Config {}
+function testClientStillTakesFirstServiceableEntry() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"},
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
+        skills: []
+    };
+    Client c = check new (card);
+    setNextRestResponse(defaultTaskJson());
+    Task _ = check c->getTask("task-1");
+    test:assertEquals(getLastRestRequest().path, "/tasks/task-1",
+            "a serviceable v1.0 REST entry listed first must still win");
+}
