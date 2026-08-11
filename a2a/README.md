@@ -110,6 +110,20 @@ procedure but defines no API, and the implementation lacked RFC 8785
 canonicalization), automatic auth wiring from a card's security schemes, and
 ETag-aware AgentCard caching.
 
+## Why each public symbol exists
+
+`docs/API_PROVENANCE.md` classifies every public symbol as spec-mandated,
+borrowed from a reference SDK convention the spec doesn't define, or
+invented here — with the justification, and the cost, for everything in the
+last two categories. Worth reading before relying on anything that isn't
+straight from the specification.
+
+The short version: 49 of 57 public symbols are spec-mandated. The main
+divergence from the Python and Java SDKs is that this library exposes
+per-transport client types (`JsonRpcClient`, `RestClient`, `GrpcClient`)
+where they keep the equivalent internal — which is what lets client
+transport preference be a type choice rather than a configuration flag.
+
 ## Client lifecycle
 
 `Client` has no `close` and needs none. A Ballerina `http:Client` routes through
