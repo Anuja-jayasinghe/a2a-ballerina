@@ -92,6 +92,31 @@ callers:
   `http:ClientConfiguration` automatically. OAuth2/OIDC/mTLS remain
   caller-wired by design — they need more than a single credential string.
 
+## Client lifecycle
+
+`Client` has no `close` and needs none. A Ballerina `http:Client` routes through
+the process-wide connection pool, which evicts idle connections itself — there
+is no per-instance resource to release, and neither `http:Client` nor
+`grpc:Client` exposes a client-side close. (The A2A spec governs the wire, not
+SDK object lifetimes, so it asks for nothing here either.)
+
+Two things still worth doing:
+
+- **Reuse a `Client` per agent** rather than constructing one per request.
+  Construction builds an `http:Client` — and, for the `GRPC` binding, a gRPC
+  channel — which is wasted work per call even though it leaks nothing.
+- **If you set `poolConfig`** inside `clientConfig`, that `Client` gets its own
+  private pool instead of the shared one, and that pool cannot be released.
+  Reuse the `Client` in that case; don't create them per request.
+
+**Deliberately not implemented** (present in the reference Python SDK, all
+additive, none required by the spec): a client-call interceptor pipeline, a
+per-call context carrying timeouts and headers, transport negotiation from the
+Agent Card with a pluggable transport registry, client-level send defaults,
+OpenTelemetry tracing, and pluggable/async credential resolution. Auth is wired
+once at construction from the card (`buildAuthFromCard`) rather than resolved
+per call, so rotating a credential means constructing a new `Client`.
+
 **Genuinely still open**: mutual TLS — `MutualTlsSecurityScheme` is fully
 typed in the data model, but `buildAuthFromCard` deliberately doesn't
 auto-wire it (a client certificate isn't a single credential string the way
@@ -105,7 +130,7 @@ haven't all been updated to match).
 
 ## Testing
 
-354 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
+376 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
 pinning in `Ballerina.toml` for why `--sticky` matters here) — this
 package's own fast, deterministic, mock-based suite. Real-server proof
 against independently-built agents lives in the companion

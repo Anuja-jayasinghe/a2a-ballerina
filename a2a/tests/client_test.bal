@@ -1166,11 +1166,11 @@ function testClientConfigTimeoutPassthrough() returns error? {
     test:assertTrue(elapsed < 2d, string `expected the timeout to fire well under the mock's 3s delay, took ${elapsed}s`);
 }
 
-isolated function v03Client() returns Client|error {
+isolated function v03Client(AgentCapabilities capabilities = {}) returns Client|error {
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
         protocolVersion: "0.3.0",
-        capabilities: {},
+        capabilities,
         skills: []
     };
     return new (getServerBaseUrl(), agentCard = legacyCard);
@@ -1639,7 +1639,11 @@ function testGetExtendedAgentCardNotConfiguredErrorMapping() returns error? {
 
 @test:Config {}
 function testV03GetExtendedAgentCardTranslatesMethodName() returns error? {
-    Client c = check v03Client();
+    // The card must declare the capability, or getExtendedAgentCard
+    // short-circuits on the held card and never reaches the wire — which is
+    // the point of that short-circuit, but it would leave this test asserting
+    // nothing about the v0.3 method-name translation it exists to cover.
+    Client c = check v03Client(capabilities = {extendedAgentCard: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
@@ -2426,4 +2430,291 @@ function testClientGrpcSendMessageStreamEndToEnd() returns error? {
     test:assertTrue(first?.task is Task);
     StreamResponse second = check expectValue(s.next());
     test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+}
+
+// ---------------------------------------------------------------------------
+// v1.0 SecurityScheme oneof parsing.
+//
+// A2A v1.0 models SecurityScheme as a protobuf oneof, so each scheme arrives
+// wrapped in an arm key rather than carrying a `type` discriminator. Every
+// pre-existing fixture in this suite uses the v0.3 `type` form, which is why
+// the wrapper form went unnoticed: MutualTlsSecurityScheme requires no fields
+// and defaults its `type`, so it matched every wrapper object and silently
+// mislabelled it. These tests pin the v1.0 form down explicitly.
+// ---------------------------------------------------------------------------
+
+# Overrides the well-known card with a body whose securitySchemes are supplied raw.
+isolated function setV10SchemeCard(json securitySchemes) {
+    setWellKnownOverride({
+        "name": "V1.0 Agent",
+        "description": "Publishes oneof-wrapped security schemes",
+        "version": "1.0.0",
+        "capabilities": {},
+        "supportedInterfaces": [{"url": "http://localhost:19199", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+        "securitySchemes": securitySchemes,
+        "skills": []
+    });
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10CamelCaseSecuritySchemes() returns error? {
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer", "bearerFormat": "JWT"}},
+        "oauth2Auth": {"oauth2SecurityScheme": {"flows": {}, "oauth2MetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server"}},
+        "oidcAuth": {"openIdConnectSecurityScheme": {"openIdConnectUrl": "https://auth.example.com/.well-known/openid-configuration"}},
+        "mtlsAuth": {"mtlsSecurityScheme": {}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 5, "all five oneof arms must parse");
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme, "apiKeySecurityScheme arm must parse as ApiKeySecurityScheme");
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header", "v1.0 `location` must be mapped onto the record's `in` field");
+        test:assertEquals(apiKey.name, "X-API-Key");
+    }
+
+    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    test:assertTrue(bearer is HttpAuthSecurityScheme);
+    if bearer is HttpAuthSecurityScheme {
+        test:assertEquals(bearer.scheme, "bearer");
+        test:assertEquals(bearer?.bearerFormat, "JWT");
+    }
+
+    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    test:assertTrue(oidc is OpenIdConnectSecurityScheme);
+    if oidc is OpenIdConnectSecurityScheme {
+        test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration");
+    }
+
+    test:assertTrue(card.securitySchemes.get("oauth2Auth") is OAuth2SecurityScheme);
+    test:assertTrue(card.securitySchemes.get("mtlsAuth") is MutualTlsSecurityScheme);
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10SnakeCaseSecuritySchemes() returns error? {
+    // The spec schema accepts every arm under a snake_case spelling too, and
+    // the multi-word scheme fields likewise.
+    setV10SchemeCard({
+        "apiKeyAuth": {"api_key_security_scheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"http_auth_security_scheme": {"scheme": "bearer", "bearer_format": "JWT"}},
+        "oidcAuth": {"open_id_connect_security_scheme": {"open_id_connect_url": "https://auth.example.com/.well-known/openid-configuration"}},
+        "mtlsAuth": {"mtls_security_scheme": {}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 4);
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme);
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header");
+    }
+
+    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    test:assertTrue(bearer is HttpAuthSecurityScheme);
+    if bearer is HttpAuthSecurityScheme {
+        test:assertEquals(bearer?.bearerFormat, "JWT", "snake_case bearer_format must be normalized onto bearerFormat");
+    }
+
+    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    test:assertTrue(oidc is OpenIdConnectSecurityScheme);
+    if oidc is OpenIdConnectSecurityScheme {
+        test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration",
+                "snake_case open_id_connect_url must be normalized onto openIdConnectUrl");
+    }
+}
+
+@test:Config {}
+function testResolveAgentCardParsesV10MixedSpellingSecuritySchemes() returns error? {
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "query", "name": "api_key"}},
+        "bearerAuth": {"http_auth_security_scheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertEquals(card.securitySchemes.length(), 2, "a card mixing both spellings must parse both");
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme);
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "query");
+    }
+    test:assertTrue(card.securitySchemes.get("bearerAuth") is HttpAuthSecurityScheme);
+}
+
+@test:Config {}
+function testResolveAgentCardV10ApiKeyLocationIsCaseInsensitive() returns error? {
+    // The proto documents lowercase values, but a server rendering the field
+    // from a protobuf enum can emit other casing; the reference Python SDK
+    // lowercases before comparing, so this client accepts the same range.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "HEADER", "name": "X-API-Key"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertTrue(apiKey is ApiKeySecurityScheme, "an uppercase location must still resolve, not be dropped");
+    if apiKey is ApiKeySecurityScheme {
+        test:assertEquals(apiKey.'in, "header", "location must be normalized to lowercase");
+    }
+}
+
+@test:Config {}
+function testResolveAgentCardDropsV10ApiKeyWithInvalidLocation() returns error? {
+    // An out-of-range location is dropped rather than failing the whole card
+    // parse — the same tolerant contract every other securitySchemes entry
+    // gets — but it must never fall through and be mislabelled instead.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "somewhere-else", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertFalse(card.securitySchemes.hasKey("apiKeyAuth"), "an invalid apiKey location must drop that entry");
+    test:assertTrue(card.securitySchemes.hasKey("bearerAuth"), "one bad entry must not cost the rest of the card");
+}
+
+@test:Config {}
+function testResolveAgentCardV10SchemesAreNeverMislabelledAsMutualTls() returns error? {
+    // Direct regression guard on the original defect: before the oneof was
+    // handled, both of these parsed as MutualTlsSecurityScheme, which made
+    // buildAuthFromCard refuse to wire any credential.
+    setV10SchemeCard({
+        "apiKeyAuth": {"apiKeySecurityScheme": {"location": "header", "name": "X-API-Key"}},
+        "bearerAuth": {"httpAuthSecurityScheme": {"scheme": "bearer"}}
+    });
+    AgentCard|error result = resolveAgentCard(getServerBaseUrl());
+    setWellKnownOverride(());
+    AgentCard card = check result;
+
+    test:assertFalse(card.securitySchemes.get("apiKeyAuth") is MutualTlsSecurityScheme,
+            "a v1.0 apiKey scheme must not be mislabelled as mutual TLS");
+    test:assertFalse(card.securitySchemes.get("bearerAuth") is MutualTlsSecurityScheme,
+            "a v1.0 http auth scheme must not be mislabelled as mutual TLS");
+}
+
+// ---------------------------------------------------------------------------
+// getExtendedAgentCard short-circuiting.
+//
+// There is no request counter on the mock, so "no request was sent" is
+// asserted by making a known call first and then checking that the last
+// request the mock saw is still that one.
+// ---------------------------------------------------------------------------
+
+# Builds a minimal AgentCard declaring a given extendedAgentCard capability.
+# The supportedInterfaces entry is required, not decorative: a card without
+# one is treated as a pre-1.0 legacy card by detectProtocolModeForBinding,
+# which would put the Client in V0_3 mode and change the wire method names.
+isolated function cardWithExtendedSupport(boolean supported, string name = "Held Card") returns AgentCard => {
+    name,
+    description: "d",
+    version: "1.0.0",
+    capabilities: {extendedAgentCard: supported},
+    supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+    skills: []
+};
+
+# Sends one getTask so the mock's last-seen request is a known, distinguishable
+# one, then returns the method name it recorded.
+isolated function primeLastRequest(Client c) returns string|error {
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {id: "t-prime", contextId: "c1", status: {state: "TASK_STATE_COMPLETED"}}});
+    Task _ = check c->getTask("t-prime");
+    json method = check getLastRequestBody().method;
+    return method.ensureType();
+}
+
+@test:Config {}
+function testGetExtendedAgentCardShortCircuitsWhenCapabilityFalse() returns error? {
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(false, "Public Card"));
+    string primedMethod = check primeLastRequest(c);
+    test:assertEquals(primedMethod, "GetTask");
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Public Card", "the held card should be returned as-is");
+    test:assertEquals(check getLastRequestBody().method, "GetTask",
+            "a card declaring extendedAgentCard=false must not produce a GetExtendedAgentCard request at all");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardCallsOutWhenCapabilityTrue() returns error? {
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: true},
+            skills: []
+        }
+    });
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Extended Card");
+    test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard",
+            "a card declaring the capability must still make the call");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardCallsOutWhenNoCardHeld() returns error? {
+    // Absence of a card is not evidence of absence of the capability, so a
+    // Client built without one must still make the call.
+    Client c = check new (getServerBaseUrl());
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: false},
+            skills: []
+        }
+    });
+
+    AgentCard card = check c->getExtendedAgentCard();
+
+    test:assertEquals(card.name, "Extended Card");
+    test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard");
+}
+
+@test:Config {}
+function testGetExtendedAgentCardStoresFetchedCard() returns error? {
+    // The fetched card replaces the held one, so a second call reasons about
+    // the extended card rather than the public card the Client started with.
+    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {
+            name: "Extended Card",
+            description: "d",
+            version: "1.0.0",
+            capabilities: {extendedAgentCard: false},
+            skills: []
+        }
+    });
+    AgentCard first = check c->getExtendedAgentCard();
+    test:assertEquals(first.name, "Extended Card");
+
+    string primedMethod = check primeLastRequest(c);
+    test:assertEquals(primedMethod, "GetTask");
+
+    AgentCard second = check c->getExtendedAgentCard();
+
+    test:assertEquals(second.name, "Extended Card", "the second call should return the stored extended card");
+    test:assertEquals(check getLastRequestBody().method, "GetTask",
+            "the stored card declares extendedAgentCard=false, so the second call must short-circuit");
 }
