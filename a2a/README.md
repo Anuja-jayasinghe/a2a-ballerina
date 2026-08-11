@@ -37,9 +37,12 @@ import ballerina/a2a;
 import ballerina/uuid;
 
 public function main() returns error? {
-    // Discover the agent's capabilities and preferred transport
+    // Pass a URL and the client resolves the Agent Card itself...
+    a2a:Client agentClient = check new ("https://example.com/agent");
+
+    // ...or resolve it yourself first and hand it over — never both.
     a2a:AgentCard card = check a2a:resolveAgentCard("https://example.com/agent");
-    a2a:Client agentClient = check new ("https://example.com/agent", agentCard = card);
+    a2a:Client fromCard = check new (card);
 
     // Send a message and get back a Task or a plain Message
     a2a:Message msg = {
@@ -63,12 +66,19 @@ transparently — the calling code above is identical either way.
 `listTaskPushNotificationConfigs`, `deleteTaskPushNotificationConfig`,
 `getExtendedAgentCard`.
 
-**All three transport bindings** (§5) — a caller picks per-`Client`:
+**All three transport bindings** (§5) — each is its own client type, and the
+common `Client` picks one automatically from the resolved `AgentCard`:
 ```ballerina
-check new (url, agentCard = card, binding = "JSONRPC");  // default
-check new (url, agentCard = card, binding = "HTTP+JSON"); // REST
-check new (url, agentCard = card, binding = "GRPC");
+// auto-detecting: reads the card's preferred binding, delegates to the match
+a2a:AgentClient c = check new a2a:Client(url);
+
+// or skip auto-detection when you already know the binding
+a2a:JsonRpcClient j = check new (url);
+a2a:RestClient    r = check new (url);
+a2a:GrpcClient    g = check new (url);
 ```
+All four implement `a2a:AgentClient`, so binding-agnostic code is written
+against that one type regardless of which it holds.
 
 **Both wire dialects** — current v1.0 and the legacy v0.3 dialect (different
 JSON-RPC method names, enum casing, response wrapping) — detected from the
@@ -78,19 +88,21 @@ resolved `AgentCard`, translated transparently, zero caller-visible branching.
 callers:
 - **`A2A-Extensions` header** — advertise/request extensions, capture what
   the server actually granted (JSON-RPC/REST header and gRPC metadata both).
-- **AgentCard signature (JWS) verification** — `verifyAgentCardSignature`
-  (RFC 7515, RS256/ES256), fail-closed. Known limitation: doesn't yet perform
-  RFC 8785 JSON Canonicalization, so it only verifies signatures computed over
-  this library's own JSON serialization, not a real external signer's — see
-  the function's doc comment in `signature.bal` for the full reasoning.
-- **AgentCard caching** — `resolveAgentCardCached`, ETag/`304`-aware.
 - **Automatic SSE reconnection** — `maxReconnectAttempts` on
   `sendStreamingMessage`/`subscribeToTask`; opt-in, default `0` preserves the
   original manual-reconnect behavior.
-- **Automatic client-auth wiring** — `buildAuthFromCard` (`auth.bal`) turns a
-  parsed `AgentCard`'s API-key/HTTP-auth security scheme into a working
-  `http:ClientConfiguration` automatically. OAuth2/OIDC/mTLS remain
-  caller-wired by design — they need more than a single credential string.
+
+Authentication is configured through `clientConfig.auth` and `headers`, the
+same way as any other Ballerina client.
+
+**Deliberately not included.** Three capabilities were built and then removed
+before release, each because it is neither mandated by the spec nor
+precedented in the reference SDKs — and because removing public surface after
+release is a breaking change, while adding it back is not. Each has a tracking
+issue: AgentCard JWS signature verification (spec §8.4.3 mandates the
+procedure but defines no API, and the implementation lacked RFC 8785
+canonicalization), automatic auth wiring from a card's security schemes, and
+ETag-aware AgentCard caching.
 
 ## Client lifecycle
 
