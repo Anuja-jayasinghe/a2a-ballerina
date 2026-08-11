@@ -145,16 +145,16 @@ Two things still worth doing:
 additive, none required by the spec): a client-call interceptor pipeline, a
 per-call context carrying timeouts and headers, transport negotiation from the
 Agent Card with a pluggable transport registry, client-level send defaults,
-OpenTelemetry tracing, and pluggable/async credential resolution. Auth is wired
-once at construction from the card (`buildAuthFromCard`) rather than resolved
-per call, so rotating a credential means constructing a new `Client`.
+OpenTelemetry tracing, and pluggable/async credential resolution. Auth is
+supplied once at construction via `clientConfig.auth`/`headers` rather than
+resolved per call, so rotating a credential means constructing a new client.
 
 **Genuinely still open**: mutual TLS — `MutualTlsSecurityScheme` is fully
-typed in the data model, but `buildAuthFromCard` deliberately doesn't
-auto-wire it (a client certificate isn't a single credential string the way
-API-key/HTTP-auth are — see `auth.bal`'s module doc comment), and there's no
-higher-level helper for it beyond what `http:ClientConfiguration.secureSocket`
-already offers generically. Plus the JWS canonicalization gap noted above.
+typed in the data model, but there's no higher-level helper for it beyond
+what `http:ClientConfiguration.secureSocket` already offers generically.
+(This library no longer derives any auth from the card, so mTLS is wired the
+same way as every other scheme: by the caller. See issue #13.) Plus the JWS
+canonicalization gap noted above.
 Full, current status: [`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) §12.1
 — though treat that section as a snapshot to re-verify against source, not a
 live source of truth (parts of this design doc predate later features and
