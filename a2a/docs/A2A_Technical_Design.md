@@ -34,7 +34,7 @@ Phase 1 is deliberately client-only. The library is built and validated against 
 > * gRPC protocol binding — still not implemented (see section 12.1)  
 > * ~~HTTP+JSON/REST protocol binding~~ — now implemented; see section 12.1
 >
-> (extendedAgentCard retrieval and the listTasks operation were originally deferred here but have since been implemented — see section 6.6's mapping table. Agent Card JWS signature verification, originally listed here as deferred, has also since been implemented (see `verifyAgentCardSignature` in `signature.bal`), though with a known JCS-canonicalization limitation tracked in section 12.1. The remaining real gap tracked in section 12.1 is full SecurityScheme typing — A2A-Extensions header support has also since been implemented. The HTTP+JSON/REST protocol binding, also originally deferred here, has since been implemented too — see section 12.1; gRPC remains genuinely deferred.)
+> (extendedAgentCard retrieval and the listTasks operation were originally deferred here but have since been implemented — see section 6.6's mapping table. Agent Card JWS signature verification was implemented and then **removed before release** — see section 12.1. The remaining real gap tracked in section 12.1 is full SecurityScheme typing — A2A-Extensions header support has also since been implemented. All three protocol bindings — JSON-RPC, HTTP+JSON/REST, and gRPC — are now implemented, each as its own client type; see section 5.)
 
 # ---
 
@@ -157,7 +157,85 @@ The transport submodule maps every incoming JSON-RPC error code to a typed Balle
 
 **5\. Client design**
 
-## **5.1 Class declaration**
+## **5.0 Client architecture — one type per transport binding**
+
+The A2A spec lets a server expose the same operation set over JSON-RPC,
+REST (HTTP+JSON), or gRPC. This library gives **each binding its own
+concrete client type**, unified behind a shared interface:
+
+```ballerina
+public type AgentClient isolated client object {
+    // the eleven spec §9.4 client operations
+};
+
+public isolated client class JsonRpcClient { *AgentClient; ... }
+public isolated client class RestClient    { *AgentClient; ... }
+public isolated client class GrpcClient    { *AgentClient; ... }
+
+public isolated client class Client {
+    *AgentClient;
+    private final AgentClient delegate;
+}
+```
+
+`JsonRpcClient`, `RestClient`, and `GrpcClient` each own exactly one
+transport's marshaling and carry no `binding` field — which class you
+instantiated already says which transport it speaks, so there is no
+per-call branch to evaluate. The common `Client` resolves the Agent Card,
+reads its preferred binding, constructs the matching concrete client with
+that already-resolved card, and delegates every call to it. Binding
+selection is a one-time construction-time decision, not per-call dispatch.
+
+Because all four implement `AgentClient`, binding-agnostic code is written
+against that one type and works identically whether it holds the
+auto-detecting `Client` or a concrete client constructed directly:
+
+```ballerina
+a2a:AgentClient c = check new a2a:Client(url);   // auto-detects
+a2a:GrpcClient  g = check new (url);             // skips auto-detection
+```
+
+Only the public class boundary multiplies, from one to four. The
+per-binding marshaling stays in shared internal helpers — it is not
+tripled. This supersedes an earlier design of a single `Client` carrying a
+`binding` field with an `if self.binding == ...` branch inside every
+remote function. See
+`docs/superpowers/specs/2026-08-11-transport-specific-clients-design.md`
+for the full rationale.
+
+### Construction
+
+All four types share one constructor shape; the three concrete clients
+omit `binding`:
+
+```ballerina
+public isolated function init(
+        AgentCard|string agent,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        string? tenant = (),
+        string[] requestedExtensions = [],
+        int maxReconnectAttempts = 0,
+        TransportBinding binding = "JSONRPC" /* Client only */) returns error?;
+```
+
+The constructor accepts either a URL or an already-resolved `AgentCard` —
+never both. Given a URL it **always** resolves the card first; there is no
+fetch-free path, because the card is what determines protocol version,
+service URL, and tenant. There is deliberately no parameter for dialing a
+URL the card does not declare: resolving a card exists to establish where
+it is safe to send requests and credentials, and an override reintroduces
+exactly the redirection surface that resolution closes off.
+
+There is also no `credentials` parameter. Auth is configured through
+`clientConfig.auth` and `headers` directly, as with any other Ballerina
+client — see section 10.
+
+## **5.1 Class declaration (superseded — see 5.0)**
+
+The declaration below predates the four-type split and the constructor
+merge. It is retained only as a record of the original single-class,
+`serviceUrl`-parameter design.
 
 ```
 // client.balimport ballerina/http;import ballerina/uuid;import ballerina/a2a.transport;# An A2A protocol client for calling remote agents.## Declared as 'isolated client class'. The 'client' keyword makes this a# proper Ballerina connector — it enables remote call syntax and registers# the type as a connector for Central and Choreo tooling. The 'isolated'# keyword guarantees the object is safe to share across concurrent strands# without locking, which the compiler enforces by requiring every field to# be final and every field type to be isolated or readonly.## Both fields satisfy those constraints: http:Client is itself declared# isolated in the standard library, and an intersection with readonly# produces an immutable map.public isolated client class Client {    private final http:Client httpClient;    private final map<string> & readonly defaultHeaders;    private final string? tenant;    # Creates a client pointed at a remote A2A agent.    #    # + serviceUrl - Base URL of the remote agent's A2A endpoint    # + clientConfig - Full http:ClientConfiguration. Covers auth, TLS,    #                  retry, circuit breaker, proxy, timeouts, and    #                  connection pooling.    # + headers - Default headers merged into every outbound request. Use    #             for API key schemes requiring a custom header name.    #             Bearer and OAuth2 auth belong in clientConfig.auth.    # + tenant - Optional multi-tenant routing identifier. When the selected    #            AgentInterface in the Agent Card declares a tenant value,    #            that value must be supplied here so it is sent with every    #            operation. Leave unset for single-tenant agents.    # + return - error if the underlying http:Client cannot be created    public isolated function init(        string serviceUrl,        http:ClientConfiguration clientConfig = {},        map<string> headers = {},        string? tenant = ()    ) returns error? {        self.httpClient = check new (serviceUrl, clientConfig);        self.defaultHeaders = headers.cloneReadOnly();        self.tenant = tenant;    }}
@@ -517,12 +595,13 @@ Phase 1 is complete when every scenario in the interoperability table passes aga
 
 ## **12.1 Known simplifications**
 
-> * **securitySchemes wire form (fixed — was a defect, not a simplification).** A2A v1.0 models `SecurityScheme` as a protobuf `oneof`, so each scheme arrives wrapped in an arm key (`{"apiKeySecurityScheme": {...}}`), *not* carrying the v0.3/OpenAPI `type` discriminator this module's union is shaped around. `parseSecuritySchemes` originally only understood the `type` form, and because `MutualTlsSecurityScheme` requires no fields and defaults its `type`, it matched every wrapper object — so **every scheme on a v1.0-native card was silently parsed as mutual TLS**, which in turn made `buildAuthFromCard` refuse to wire any credential against a v1.0 agent. `parseSecuritySchemes` now unwraps all five arms first, under both spellings the spec's schema accepts (lowerCamelCase via its `properties`, snake_case via its `patternProperties`), mapping `location` onto the record's `in` field and normalizing the three multi-word snake_case scheme fields. It falls through to the `type`-discriminated clone only when no arm is present, so v0.3 and dual-version cards are untouched. `decodeGrpcSecurityScheme` (grpc_binding.bal) always handled the oneof correctly; the two paths now agree. Remaining known limitations: nested OAuth *flow* objects are not snake_case-normalized (only the scheme-level fields are), and an object carrying neither an arm key nor a `type` still clones into `MutualTlsSecurityScheme` — a deliberately unhardened catch-all, since the arm check now runs first and takes v1.0 cards out of its path.
-> * **securityRequirements/signatures typing.** Now modelled: securityRequirements (on both AgentCard and AgentSkill) is a list of scheme-name-to-scopes maps; signatures is a typed AgentCardSignature list capturing the JWS fields. securitySchemes is parsed tolerantly — an entry matching no known shape is dropped rather than failing the whole card. All four of these fields — securitySchemes, AgentCard.securityRequirements, each AgentSkill's securityRequirements, and signatures — now share the same tolerant, entry-dropping parse: a single malformed entry is silently omitted rather than failing the whole AgentCard parse. A v0.3-dialect card's "security" field name is also now translated to "securityRequirements" during parsing. Automatic client auth configuration derived from a parsed scheme, and JWS signature verification, have both since been implemented (`buildAuthFromCard` in `auth.bal` and `verifyAgentCardSignature` in `signature.bal` respectively — see their doc comments, and the design spec at docs/superpowers/specs/2026-07-29-security-scheme-typing-design.md for background). The remaining known simplification is full SecurityScheme typing beyond the current discriminated-union modelling described above.  
+> * **securitySchemes wire form (fixed — was a defect, not a simplification).** A2A v1.0 models `SecurityScheme` as a protobuf `oneof`, so each scheme arrives wrapped in an arm key (`{"apiKeySecurityScheme": {...}}`), *not* carrying the v0.3/OpenAPI `type` discriminator this module's union is shaped around. `parseSecuritySchemes` originally only understood the `type` form, and because `MutualTlsSecurityScheme` requires no fields and defaults its `type`, it matched every wrapper object — so **every scheme on a v1.0-native card was silently parsed as mutual TLS**, which in turn made the (since-removed) card-driven auth wiring refuse to wire any credential against a v1.0 agent. `parseSecuritySchemes` now unwraps all five arms first, under both spellings the spec's schema accepts (lowerCamelCase via its `properties`, snake_case via its `patternProperties`), mapping `location` onto the record's `in` field and normalizing the three multi-word snake_case scheme fields. It falls through to the `type`-discriminated clone only when no arm is present, so v0.3 and dual-version cards are untouched. `decodeGrpcSecurityScheme` (grpc_binding.bal) always handled the oneof correctly; the two paths now agree. Remaining known limitations: nested OAuth *flow* objects are not snake_case-normalized (only the scheme-level fields are), and an object carrying neither an arm key nor a `type` still clones into `MutualTlsSecurityScheme` — a deliberately unhardened catch-all, since the arm check now runs first and takes v1.0 cards out of its path.
+> * **securityRequirements/signatures typing.** Now modelled: securityRequirements (on both AgentCard and AgentSkill) is a list of scheme-name-to-scopes maps; signatures is a typed AgentCardSignature list capturing the JWS fields. securitySchemes is parsed tolerantly — an entry matching no known shape is dropped rather than failing the whole card. All four of these fields — securitySchemes, AgentCard.securityRequirements, each AgentSkill's securityRequirements, and signatures — now share the same tolerant, entry-dropping parse: a single malformed entry is silently omitted rather than failing the whole AgentCard parse. A v0.3-dialect card's "security" field name is also now translated to "securityRequirements" during parsing. Automatic client auth configuration derived from a parsed scheme, and JWS signature verification, were both implemented and have both since been **removed before release** — see the two entries below for why. The remaining known simplification is full SecurityScheme typing beyond the current discriminated-union modelling described above.  
 > * **A2A-Extensions header support.** Implemented: the client sends `A2A-Extensions` on requests that declare extensions and captures the server's granted extensions from the response header (see `captureGrantedExtensions` in `client.bal`).  
-> * **Agent Card signature verification.** Implemented via `verifyAgentCardSignature` in `signature.bal` (RS256/ES256, per RFC 7515). Known limitation: it does not perform RFC 8785 JSON Canonicalization (JCS) required by spec §8.4.1, so it only verifies signatures computed over Ballerina's own `toJsonString()` serialization — not signatures produced by a real, spec-conformant external signer (e.g. a Python or Java reference implementation). It is fail-closed: a genuinely valid, spec-conformant signature may verify as `false` (never silently skipped), and a forged/tampered card is never falsely accepted. See `verifyAgentCardSignature`'s doc comment in `signature.bal` for the full explanation and rationale for not implementing JCS yet. This JCS gap, not "verification doesn't exist," is the gap to track going forward.  
-> * **Agent Card caching.** `resolveAgentCardCached` now provides a cache-aware variant that respects HTTP caching headers (ETag/If-None-Match, Cache-Control/max-age) and reuses the cached body on a 304. `resolveAgentCard` itself is unchanged and still fetches fresh on every call — that remains the intentional non-caching option for callers who always want the latest card.  
-> * **Single protocol binding.** Partially resolved: the HTTP+JSON/REST binding is now implemented — `TransportBinding`, `selectInterface`, and the `binding` parameter on `Client.init` let a caller pick which transport to speak, and `REST_OPERATIONS`/`buildRestRequest` in `client.bal` map every one of the eleven remote operations onto its REST method/path/query/body shape (matching the reference a2a-python SDK's mapping table). An agent exposing only HTTP+JSON is now reachable. gRPC remains genuinely unimplemented — an agent exposing only gRPC still cannot be reached. AgentInterface.protocolBinding is captured in the data model so a client can at least detect a gRPC-only agent and fail with a clear message.  
+> * **Agent Card signature verification — implemented, then removed before release.** `verifyAgentCardSignature` (`signature.bal`, RS256/ES256 per RFC 7515) has been deleted. Spec §8.4.3 mandates the six-step canonicalize-and-verify *procedure* but defines no API for it, and neither reference SDK (Python `a2a-sdk`, Java) ships an equivalent — so there was no implementation to validate against. More decisively, the implementation did not satisfy the procedure it was written for: it performed no RFC 8785 JSON Canonicalization (JCS), so it only verified signatures computed over Ballerina's own `toJsonString()` output and would have failed against any spec-conformant signer. Shipping it would have advertised a capability the library does not have, and removing it after release would have been a breaking change. `AgentCardSignature` and `AgentCard.signatures` remain — the spec defines those shapes, and parsing must not lose them. Tracked for revival in a GitHub issue.  
+> * **Automatic auth wiring from the Agent Card — implemented, then removed before release.** `buildAuthFromCard`/`ResolvedAuth` (`auth.bal`) and the `credentials` constructor parameter have been deleted. The spec defines `securitySchemes`/`securityRequirements` as a card *data model*; it does not define a client-side API mapping a credential bag onto transport auth, and the reference SDKs accept auth configuration directly on their builders instead. The implementation was also structurally partial by design — it automated only API-key-in-header and HTTP Basic/Bearer, since OAuth2, OpenID Connect, and mutual TLS need a token-acquisition flow or a client certificate rather than one credential string. Callers configure `clientConfig.auth` and `headers` directly. `projectToGrpcClientConfig` and `AuthResolutionError` remain, projecting caller-supplied auth onto gRPC. Tracked for revival in a GitHub issue.  
+> * **Agent Card caching — implemented, then removed before release.** `resolveAgentCardCached`/`CachedAgentCard` (ETag/If-None-Match conditional GET, reusing the cached body on a 304) have been deleted: not spec-mandated, no reference-SDK precedent, and no caller inside the library. `resolveAgentCard` is unchanged and still fetches fresh on every call. Tracked for revival in a GitHub issue.  
+> * **Single protocol binding — resolved.** All three bindings are implemented, each as its own client type (`JsonRpcClient`, `RestClient`, `GrpcClient`; see section 5.0). `REST_OPERATIONS`/`buildRestRequest` map every one of the eleven operations onto its REST method/path/query/body shape (matching the reference a2a-python SDK's mapping table); the gRPC path marshals through the generated `grpcstub` module. An agent exposing any single binding is reachable, and the common `Client` picks the right one from `AgentInterface.protocolBinding` at construction.  
 > * **Client lifecycle.** There is deliberately no `Client.close`. A Ballerina `http:Client` routes through the process-wide `globalHttpClientConnPool` and holds no per-instance connection state to dispose; neither `http:Client` nor `grpc:Client` exposes a client-side close, so there is no underlying call to make. The specification says nothing about client resource release either. Two caveats are documented on the `Client` class and in the README: prefer one long-lived Client per agent over per-request construction, and a caller-supplied `poolConfig` opts that Client into a private pool that cannot be released.
 > * **getExtendedAgentCard short-circuit.** When the Client holds an AgentCard whose `capabilities.extendedAgentCard` is false, `getExtendedAgentCard` returns that held card instead of issuing a request the card has already said will fail — matching the reference a2a-sdk (Python). A successful fetch replaces the held card, so later calls reason about the extended card. A Client constructed without a card still makes the call. Note this is a visible behaviour change: callers who previously received a server error in that case now receive the public card.
 > * **Reconnection.** `subscribeToTask`/`sendStreamingMessage` now support opt-in automatic reconnection via `maxReconnectAttempts` — the client detects a dropped stream and resubscribes on the caller's behalf up to the configured attempt count. When not configured, the caller still implements its own retry policy as before.
