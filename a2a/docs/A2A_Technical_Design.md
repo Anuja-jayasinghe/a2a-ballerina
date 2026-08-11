@@ -186,6 +186,15 @@ reads its preferred binding, constructs the matching concrete client with
 that already-resolved card, and delegates every call to it. Binding
 selection is a one-time construction-time decision, not per-call dispatch.
 
+**The card chooses, not the client.** Per spec §8.3.2 a client should
+"select the first supported transport", preferring "earlier entries in the
+ordered list", because `supportedInterfaces` is ordered by the server's own
+preference. `Client` therefore walks the card in order and takes the first
+binding this library can speak. It has **no `binding` parameter** —
+expressing a client-side preference is what the three concrete types are
+for, so `new GrpcClient(url)` bypasses the card's ordering and
+`new Client(url)` honours it.
+
 Because all four implement `AgentClient`, binding-agnostic code is written
 against that one type and works identically whether it holds the
 auto-detecting `Client` or a concrete client constructed directly:
@@ -215,8 +224,7 @@ public isolated function init(
         map<string> headers = {},
         string? tenant = (),
         string[] requestedExtensions = [],
-        int maxReconnectAttempts = 0,
-        TransportBinding binding = "JSONRPC" /* Client only */) returns error?;
+        int maxReconnectAttempts = 0) returns error?;
 ```
 
 The constructor accepts either a URL or an already-resolved `AgentCard` —
