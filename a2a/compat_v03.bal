@@ -43,19 +43,6 @@ public isolated function detectProtocolModeForBinding(
     return (v is string && !v.startsWith("0.")) ? "V1_0" : "V0_3";
 }
 
-# Detects which wire dialect to use, from a resolved AgentCard, for the
-# JSONRPC binding. Kept as the existing one-argument entry point so every
-# caller from before HTTP+JSON existed keeps behaving identically;
-# delegates to detectProtocolModeForBinding with "JSONRPC".
-#
-# + card - the agent card fetched via resolveAgentCard
-# + return - V0_3 for a legacy card (no supportedInterfaces) unless its
-#            legacy top-level protocolVersion explicitly says otherwise, or
-#            for a card whose JSONRPC supportedInterfaces entry declares a
-#            "0.x" protocolVersion; V1_0 otherwise
-public isolated function detectProtocolMode(AgentCard card) returns ProtocolMode {
-    return detectProtocolModeForBinding(card, "JSONRPC");
-}
 
 # Translates a v1.0 PascalCase JSON-RPC method name to its v0.3 equivalent.
 #

@@ -320,7 +320,7 @@ public type AgentCard record {|
     # Legacy top-level protocol version field, from before v1.0 moved this
     # into each AgentInterface.protocolVersion. A card with no
     # supportedInterfaces (see url below) is a legacy card; this field
-    # helps detectProtocolMode (compat_v03.bal) confirm which dialect it
+    # helps detectProtocolModeForBinding (compat_v03.bal) confirm which dialect it
     # declares. v1.0-native cards omit this and set
     # supportedInterfaces[0].protocolVersion instead.
     string? protocolVersion?;
