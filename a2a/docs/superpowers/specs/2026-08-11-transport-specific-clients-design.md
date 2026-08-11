@@ -253,10 +253,51 @@ does not care which binding it speaks is written against `AgentClient`
 and works identically whether it holds the auto-detecting `Client` or a
 concrete one.
 
+### Transport selection
+
+Spec §8.3.2 is explicit that the card, not the client, decides:
+
+> Parse `supportedInterfaces` if present, and select the first supported
+> transport. […] Prefer earlier entries in the ordered list when multiple
+> options are supported.
+
+and of the array itself:
+
+> `supportedInterfaces` **SHOULD** declare all supported protocol
+> combinations in preference order. […] The first entry represents the
+> preferred interface.
+
+Two consequences, both of which this library previously got wrong.
+
+**Within a binding, the earliest entry wins.** `selectInterface` used to
+rank candidates by `protocolVersion`, taking a 1.0 entry over a 0.3 entry
+even when the card listed the 0.3 one first. The rationale — that card
+ordering shouldn't silently downgrade the protocol version — is real, but
+the spec makes ordering the server's decision, and the reference Java SDK
+agrees, keeping only the first entry per binding
+(`ClientBuilder.getServerInterfacesMap` uses `putIfAbsent`, commented "If
+there are multiple interfaces with the same protocol binding, only the
+first is considered"). The version ranking is removed.
+
+**The binding itself comes from the card.** Today `Client.init` takes
+`binding = "JSONRPC"` and never consults the card's ordering, so a
+GRPC-only agent is unreachable via `new (url)` despite being perfectly
+valid — construction fails with "AgentCard has no JSONRPC entry". That is
+not auto-detection; it is a fixed client preference.
+
+The common `Client` instead walks `supportedInterfaces` in card order and
+constructs the concrete client for the first binding this library
+supports. It takes **no `binding` parameter at all**: expressing a client
+preference is what the three concrete types are for. A caller who wants
+gRPC writes `new GrpcClient(url)`; a caller with no opinion writes
+`new Client(url)` and gets the server's preference. This is the same split
+the Java SDK expresses through its `useClientPreference` flag, but carried
+by the type system instead of a boolean.
+
 ### Construction
 
-All four `init` functions share one shape; the three concrete clients
-omit `binding`, because the type already says which transport it speaks:
+`Client` takes no `binding`; the three concrete clients omit it because
+the type already says which transport it speaks:
 
 ```ballerina
 public isolated function init(
@@ -265,9 +306,12 @@ public isolated function init(
         map<string> headers = {},
         string? tenant = (),
         string[] requestedExtensions = [],
-        int maxReconnectAttempts = 0,
-        TransportBinding binding = "JSONRPC" /* Client only */) returns error?;
+        int maxReconnectAttempts = 0) returns error?;
 ```
+
+The signature is identical for all four types — `Client` has no extra
+parameter, because binding selection is the card's job and client
+preference is expressed by choosing a concrete type.
 
 Rules, identical across all four:
 
