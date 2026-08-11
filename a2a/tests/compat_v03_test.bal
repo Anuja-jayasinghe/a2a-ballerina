@@ -9,7 +9,7 @@ function testDetectProtocolModeFromSupportedInterfaces() returns error? {
         supportedInterfaces: [{url: "http://x", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
         skills: []
     };
-    test:assertEquals(detectProtocolMode(v1Card), "V1_0");
+    test:assertEquals(detectProtocolModeForBinding(v1Card), "V1_0");
 
     AgentCard v03InterfaceCard = {
         name: "x", description: "x", version: "1.0.0",
@@ -17,7 +17,7 @@ function testDetectProtocolModeFromSupportedInterfaces() returns error? {
         supportedInterfaces: [{url: "http://x", protocolBinding: "JSONRPC", protocolVersion: "0.3.0"}],
         skills: []
     };
-    test:assertEquals(detectProtocolMode(v03InterfaceCard), "V0_3");
+    test:assertEquals(detectProtocolModeForBinding(v03InterfaceCard), "V0_3");
 }
 
 @test:Config {}
@@ -28,7 +28,7 @@ function testDetectProtocolModeFromLegacyTopLevelField() returns error? {
         capabilities: {},
         skills: []
     };
-    test:assertEquals(detectProtocolMode(legacyV03Card), "V0_3");
+    test:assertEquals(detectProtocolModeForBinding(legacyV03Card), "V0_3");
 }
 
 @test:Config {}
@@ -43,7 +43,7 @@ function testDetectProtocolModeDefaultsLegacyCardWithNoProtocolVersionToV03() re
         capabilities: {},
         skills: []
     };
-    test:assertEquals(detectProtocolMode(bareLegacyCard), "V0_3");
+    test:assertEquals(detectProtocolModeForBinding(bareLegacyCard), "V0_3");
 }
 
 @test:Config {}
@@ -56,7 +56,7 @@ function testDetectProtocolModeLegacyCardWithNonV03ProtocolVersionToV1() returns
         capabilities: {},
         skills: []
     };
-    test:assertEquals(detectProtocolMode(legacyV1Card), "V1_0");
+    test:assertEquals(detectProtocolModeForBinding(legacyV1Card), "V1_0");
 }
 
 @test:Config {}
@@ -824,9 +824,9 @@ function testDetectProtocolModeStillDelegatesToJsonRpcByDefault() returns error?
         ],
         skills: []
     };
-    // Existing one-arg detectProtocolMode must keep behaving exactly as
+    // The one-arg form must keep behaving exactly as
     // it does today for a single-binding card.
-    test:assertEquals(detectProtocolMode(card), "V0_3");
+    test:assertEquals(detectProtocolModeForBinding(card), "V0_3");
     test:assertEquals(detectProtocolModeForBinding(card), "V0_3");
 }
 

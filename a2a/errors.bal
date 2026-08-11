@@ -41,27 +41,12 @@ public type ExtensionSupportRequiredError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
 
-# Returned by buildAuthFromCard when an AgentCard's declared security
-# requirements cannot be automatically resolved into client auth config —
-# either no SecurityRequirement entry is satisfiable by the given
-# credentials, or one names a scheme buildAuthFromCard doesn't automate
-# (e.g. an apiKey scheme not sent via a header, or an OAuth2/OpenIdConnect/
-# mutualTLS scheme, which need a token-acquisition flow or client cert
-# rather than a single credential string).
+# Returned when a caller-supplied auth configuration cannot be adapted to
+# the transport in use — currently only by projectToGrpcClientConfig
+# (auth.bal), when clientConfig.auth holds a shape the gRPC stack has no
+# structural equivalent for (an OAuth2 or JWT auth config, as opposed to
+# HTTP Basic or Bearer).
 public type AuthResolutionError distinct A2AError;
-
-# Returned by verifyAgentCardSignature when the requested signatureIndex
-# doesn't exist on the card, or when the underlying crypto:verify* call
-# itself fails (as opposed to cleanly returning a true/false validity
-# result) — e.g. an unparsable signature value for the given key type.
-public type SignatureVerificationError distinct A2AError;
-
-# Returned by verifyAgentCardSignature when a signature's protected header
-# declares a JWS `alg` this library has no verifier for. ballerina/crypto
-# only exposes verification functions for RS256 and ES256 (notably, no
-# Ed25519/EdDSA), so any other alg — valid JWS or not — is rejected with
-# this typed error rather than silently skipped or falsely accepted.
-public type UnsupportedSignatureAlgorithmError distinct A2AError;
 
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
 # table in design doc §4.1. Unrecognised codes map to A2AInternalError

@@ -320,7 +320,7 @@ public type AgentCard record {|
     # Legacy top-level protocol version field, from before v1.0 moved this
     # into each AgentInterface.protocolVersion. A card with no
     # supportedInterfaces (see url below) is a legacy card; this field
-    # helps detectProtocolMode (compat_v03.bal) confirm which dialect it
+    # helps detectProtocolModeForBinding (compat_v03.bal) confirm which dialect it
     # declares. v1.0-native cards omit this and set
     # supportedInterfaces[0].protocolVersion instead.
     string? protocolVersion?;
@@ -350,11 +350,8 @@ public type AgentCard record {|
     string[] defaultOutputModes = ["text"];
     # Capabilities this agent exposes
     AgentSkill[] skills;
-    # JWS signatures over this card. Verification is available via
-    # `verifyAgentCardSignature` (see its doc comment in signature.bal for
-    # supported algorithms and a known JCS-canonicalization limitation) —
-    # this field itself is only the captured shape, not a verification
-    # result.
+    # JWS signatures over this card. This library captures the shape only;
+    # it does not verify signatures — see issue #12.
     AgentCardSignature[] signatures = [];
     json...;
 |};
@@ -684,13 +681,14 @@ public type SecurityScheme ApiKeySecurityScheme|HttpAuthSecurityScheme|OAuth2Sec
 public type SecurityRequirement map<string[]>;
 
 # A JSON Web Signature (RFC 7515) computed over an AgentCard, for
-# authenticity verification. This library captures the signature's shape;
-# use `verifyAgentCardSignature` (signature.bal) to verify it. See that
-# function's doc comment for supported algorithms (RS256/ES256) and a
-# known limitation — it does not perform RFC 8785 JSON Canonicalization
-# (JCS), so it only reliably verifies signatures computed over
-# Ballerina's own JSON serialization, not signatures from an arbitrary
-# spec-conformant external signer.
+# authenticity verification.
+#
+# This library captures the signature's shape so a card round-trips
+# without loss, but does **not** verify it. Spec 8.4.3 mandates a
+# canonicalize-and-verify procedure without defining an API for it, and
+# no reference SDK implements one; a prior attempt here could not perform
+# the RFC 8785 canonicalization the procedure requires. Callers needing
+# verification must do it out-of-band for now. See issue #12.
 public type AgentCardSignature record {|
     # Unprotected JWS header values
     map<json>? header?;
@@ -791,8 +789,9 @@ isolated function renameJsonField(map<json> fields, string wireName, string reco
 # only the scheme-level fields are. A v1.0 card sending
 # `{"authorization_code": ...}` inside `flows` parses without error but leaves
 # that flow in `OAuthFlows`' open rest field rather than its typed
-# `authorizationCode` field. OAuth2 is not auto-wired by `buildAuthFromCard`
-# anyway (see auth.bal), so this costs typing detail, not function.
+# `authorizationCode` field. This library does not act on OAuth2 flows
+# itself — auth is caller-configured (see auth.bal) — so this costs typing
+# detail, not function.
 #
 # + entry - a raw securitySchemes entry already known to declare an arm
 # + return - the typed SecurityScheme, or () if the arm's payload doesn't
