@@ -225,73 +225,6 @@ isolated function primaryUrl(
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`);
 }
 
-# Creates a Client from whichever of a URL or an already-resolved AgentCard
-# the caller has in hand — never both. Which one varies by the discovery
-# mechanism in use: a caller who only has a base URL lets newClient resolve
-# the card itself; a caller who already resolved (or otherwise obtained) a
-# card passes it directly and skips the extra round trip. Either way, the
-# service URL is derived internally via primaryUrl/selectInterface rather
-# than re-supplied by the caller, closing the double-pass this replaces
-# (`card = check resolveAgentCard(url); client = check new (url, ...,
-# agentCard = card)`).
-#
-# newClient is the recommended entry point for the common case — you have a
-# URL or a card and want the SDK to derive the rest. It is not the only
-# supported construction path, and `new (serviceUrl, ..., agentCard = card)`
-# is not a deprecated fallback: it remains a fully supported, independently
-# public low-level constructor, both for callers who've already resolved
-# every argument themselves and for the cases where the client genuinely
-# needs to point at a different URL than the one the card declares —
-# proxies, tests, or a card with several interfaces where a non-preferred
-# one is wanted deliberately. This mirrors how the reference `a2a-sdk`
-# (Python) keeps its low-level `BaseClient` constructor fully public
-# alongside the `create_client`/`ClientFactory` convenience layer, and how
-# the Java SDK's `ClientBuilder` is itself a complete, independently usable
-# public entry point rather than something the higher-level API hides.
-#
-# + agent - a base URL to discover the agent at, or an AgentCard already
-#           resolved for it
-# + clientConfig - Full http:ClientConfiguration, as accepted by Client.init.
-#                  When agent is a URL, also used for the resolveAgentCard
-#                  call that fetches the card
-# + headers - Default headers, as accepted by Client.init. When agent is a
-#             URL, also sent on the resolveAgentCard fetch
-# + tenant - Optional multi-tenant routing identifier. When left unset and
-#            the selected AgentInterface declares a tenant value, that
-#            value is used automatically instead of requiring the caller to
-#            copy it by hand; an explicitly-passed tenant always wins
-# + requestedExtensions - as accepted by Client.init
-# + maxReconnectAttempts - as accepted by Client.init
-# + binding - Which transport binding this Client speaks, and which
-#             supportedInterfaces entry to derive the service URL (and
-#             default tenant) from. Defaults to "JSONRPC"
-# + return - the constructed Client, or an error — propagated unchanged
-#            from resolveAgentCard (when agent is a URL: unreachable
-#            endpoint, non-200 status, or a body that doesn't parse as an
-#            AgentCard), from primaryUrl (no supportedInterfaces entry
-#            matching binding and no legacy url field to fall back to), or
-#            from Client.init itself (see its own + return doc)
-public isolated function newClient(
-        AgentCard|string agent,
-        http:ClientConfiguration clientConfig = {},
-        map<string> headers = {},
-        string? tenant = (),
-        string[] requestedExtensions = [],
-        int maxReconnectAttempts = 0,
-        TransportBinding binding = "JSONRPC") returns Client|error {
-    AgentCard card = agent is string ? check resolveAgentCard(agent, clientConfig, headers) : agent;
-    string serviceUrl = check primaryUrl(card, binding);
-    string? effectiveTenant = tenant;
-    if effectiveTenant is () {
-        AgentInterface|error iface = selectInterface(card, binding);
-        if iface is AgentInterface {
-            effectiveTenant = iface?.tenant;
-        }
-    }
-    return new Client(serviceUrl, clientConfig, headers, effectiveTenant, card,
-        requestedExtensions, maxReconnectAttempts, binding);
-}
-
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
 # on some AgentCards) to the http://\https:// form grpc:Client actually
 # accepts. A conformant card's GRPC interface url is already http(s), in
@@ -459,37 +392,32 @@ public isolated client class Client {
 
     # Creates a client pointed at a remote A2A agent.
     #
-    # This is the low-level constructor: it takes a concrete serviceUrl and
-    # treats agentCard as an independent, optional argument that is never
-    # used to derive the URL. For the common case — construct from a URL or
-    # an already-resolved AgentCard, letting the SDK derive the rest — see
-    # newClient instead. This constructor stays fully public and is not a
-    # legacy path superseded by newClient: it's the right choice when the
-    # caller has already resolved every argument itself, or needs to point
-    # at a URL that deliberately differs from what an AgentCard declares
-    # (proxies, tests, a non-preferred interface). newClient is implemented
-    # in terms of this constructor, not a replacement for it — matching how
-    # the reference `a2a-sdk` (Python) keeps its low-level `BaseClient`
-    # constructor fully public alongside its `create_client` convenience
-    # layer, and how the Java SDK's `ClientBuilder` is a complete,
-    # independently usable public entry point in its own right.
+    # Accepts either the agent's base URL or an already-resolved AgentCard —
+    # one or the other, never both. Given a URL, the card is always resolved
+    # first: it is what determines the service URL, the protocol version, and
+    # the tenant, so there is no fetch-free construction path.
     #
-    # + serviceUrl - Base URL of the remote agent's A2A endpoint
+    # There is deliberately no parameter for dialing a URL the card does not
+    # declare. Resolving a card exists to establish where it is safe to send
+    # requests and credentials; an override would reintroduce exactly the
+    # redirection surface that resolving closes off, and neither reference
+    # SDK exposes one. Code that must point elsewhere (including this
+    # library's own tests) builds an AgentCard whose declared interfaces
+    # already point there.
+    #
+    # + agent - the agent's base URL, or an AgentCard already resolved via
+    #           resolveAgentCard
     # + clientConfig - Full http:ClientConfiguration. Covers auth, TLS,
     #                  retry, circuit breaker, proxy, timeouts, and
-    #                  connection pooling.
+    #                  connection pooling. Also used for the card fetch when
+    #                  agent is a URL.
     # + headers - Default headers merged into every outbound request. Use
     #             for API key schemes requiring a custom header name.
     #             Bearer and OAuth2 auth belong in clientConfig.auth.
     # + tenant - Optional multi-tenant routing identifier. When the selected
-    #            AgentInterface in the Agent Card declares a tenant value,
-    #            that value must be supplied here so it is sent with every
-    #            operation. Leave unset for single-tenant agents.
-    # + agentCard - The card previously fetched via resolveAgentCard, if
-    #               any. When given, its declared protocol version is used
-    #               to auto-detect whether to speak v1.0 or v0.3 wire
-    #               format to this server. Omitting it (the default)
-    #               preserves today's v1.0-only behavior exactly.
+    #            AgentInterface declares a tenant, it is used automatically
+    #            rather than requiring the caller to copy it by hand; an
+    #            explicitly-passed tenant always wins.
     # + requestedExtensions - Optional A2A extension URIs to request from
     #                         the remote agent, sent as a comma-joined
     #                         A2A-Extensions header on every request. The
@@ -497,31 +425,42 @@ public isolated client class Client {
     #                         it actually granted; see lastGrantedExtensions.
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
     #                          (the default), sendStreamingMessage and
-    #                          subscribeToTask behave exactly as before —
-    #                          a dropped connection surfaces its error
-    #                          immediately. When positive, the returned
-    #                          stream transparently resubscribes to the
-    #                          task via subscribeToTask up to this many
-    #                          times if the underlying stream ends with an
-    #                          error (not a clean terminal-state close)
-    #                          before giving up and surfacing the error.
+    #                          subscribeToTask surface a dropped connection's
+    #                          error immediately. When positive, the returned
+    #                          stream transparently resubscribes to the task
+    #                          up to this many times if the underlying stream
+    #                          ends with an error rather than a clean
+    #                          terminal-state close.
     # + binding - Which transport binding this Client speaks. Defaults to
-    #             "JSONRPC", preserving today's behavior exactly. When
-    #             agentCard is given, the matching supportedInterfaces
-    #             entry for this binding determines self.mode; v0.3 has no
-    #             REST/HTTP+JSON binding equivalent, so "HTTP+JSON"
-    #             combined with a card that resolves to v0.3 is rejected.
-    # + return - error if the underlying http:Client cannot be created, or
-    #            if binding is "HTTP+JSON" and agentCard resolves to A2A v0.3
+    #             "JSONRPC". The matching supportedInterfaces entry supplies
+    #             the service URL and determines the wire dialect; v0.3 has
+    #             no REST/HTTP+JSON or gRPC equivalent, so those bindings
+    #             combined with a card that resolves to v0.3 are rejected.
+    # + return - an error from resolveAgentCard (unreachable endpoint,
+    #            non-200 status, or a body that does not parse as an
+    #            AgentCard), from interface selection (no supportedInterfaces
+    #            entry matching binding and no legacy url to fall back to),
+    #            if the underlying http:Client cannot be created, or if
+    #            binding has no equivalent in the card's protocol version
     public isolated function init(
-            string serviceUrl,
+            AgentCard|string agent,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
-            AgentCard? agentCard = (),
             string[] requestedExtensions = [],
             int maxReconnectAttempts = 0,
             TransportBinding binding = "JSONRPC") returns error? {
+        AgentCard card = agent is string
+            ? check resolveAgentCard(agent, clientConfig, headers)
+            : agent;
+        string serviceUrl = check primaryUrl(card, binding);
+        string? effectiveTenant = tenant;
+        if effectiveTenant is () {
+            AgentInterface|error iface = selectInterface(card, binding);
+            if iface is AgentInterface {
+                effectiveTenant = iface?.tenant;
+            }
+        }
         // http:ClientConfiguration isn't Cloneable (some of its fields
         // aren't pure data), so a mapping-constructor spread is used
         // instead of .clone() to shallow-copy it — otherwise this could
@@ -531,11 +470,9 @@ public isolated client class Client {
         map<string> effectiveHeaders = headers.clone();
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = effectiveHeaders.cloneReadOnly();
-        self.tenant = tenant;
+        self.tenant = effectiveTenant;
         self.binding = binding;
-        self.mode = agentCard is AgentCard
-            ? detectProtocolModeForBinding(agentCard, binding)
-            : "V1_0";
+        self.mode = detectProtocolModeForBinding(card, binding);
         if self.mode == "V0_3" && binding == "HTTP+JSON" {
             return error VersionNotSupportedError(
                 "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent",
@@ -556,7 +493,7 @@ public isolated client class Client {
         }
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
-        self.agentCard = agentCard is AgentCard ? agentCard.clone() : ();
+        self.agentCard = card.clone();
     }
 
     # Builds the header map for an outbound request. The A2A-Version header
