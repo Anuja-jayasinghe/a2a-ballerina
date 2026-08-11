@@ -944,43 +944,7 @@ public isolated client class Client {
         map<json> params = check buildSendMessageParams(
                 message, config, metadata, effectiveTenant, self.mode);
         stream<StreamResponse, error?> rawStream = check self.openEventStream("SendStreamingMessage", params);
-        if self.maxReconnectAttempts <= 0 {
-            return rawStream;
-        }
-
-        // Peek the first event to find the taskId to resubscribe to on a
-        // dropped connection. A bare Message (no task) carries nothing to
-        // reconnect against, so wrapping is a no-op in that case: the raw
-        // stream is returned untouched, with the peeked value re-spliced
-        // back on as ReconnectingStreamGenerator's buffered first result
-        // (with maxAttempts 0, so it never actually attempts a reconnect)
-        // so the caller never observes that a peek happened either way.
-        record {| StreamResponse value; |}|error? peeked = rawStream.next();
-        if peeked is error {
-            return peeked;
-        }
-        if peeked is () {
-            stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, tenant = effectiveTenant));
-            return wrapped;
-        }
-        Task? maybeTask = peeked.value?.task;
-        if maybeTask is Task {
-            stream<StreamResponse, error?> wrapped =
-                new (new ReconnectingStreamGenerator(rawStream, self, maybeTask.id, self.maxReconnectAttempts, peeked, effectiveTenant));
-            return wrapped;
-        }
-        // A stream can also legitimately open with a status update rather
-        // than a Task (e.g. resubscribing to an already-created task), and
-        // that update still carries a taskId worth reconnecting against —
-        // so this isn't limited to the first-event-is-a-Task case above.
-        string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
-        if maybeTaskId is string {
-            stream<StreamResponse, error?> wrapped =
-                new (new ReconnectingStreamGenerator(rawStream, self, maybeTaskId, self.maxReconnectAttempts, peeked, effectiveTenant));
-            return wrapped;
-        }
-        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, "", 0, peeked, effectiveTenant));
-        return wrapped;
+        return wrapReconnecting(rawStream, self, self.maxReconnectAttempts, effectiveTenant);
     }
 
     # Retrieves the current state of a task.
