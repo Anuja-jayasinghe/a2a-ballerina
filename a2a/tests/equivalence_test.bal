@@ -13,7 +13,7 @@ function testJsonRpcAndGrpcReturnIdenticalSendMessageResult() returns error? {
     Task|Message jsonRpcResult = check jsonRpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
 
     setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: {id: "t1", status: {state: grpcstub:TASK_STATE_COMPLETED}}});
-    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
+    GrpcClient grpcClient = check new (getServerBaseUrl());
     Task|Message grpcResult = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
 
     test:assertTrue(jsonRpcResult is Task && grpcResult is Task);
@@ -30,7 +30,7 @@ function testJsonRpcAndGrpcReturnIdenticalNotFoundErrorType() returns error? {
     Task|error jsonRpcResult = jsonRpcClient->getTask("missing");
 
     setNextGrpcError(error grpc:NotFoundError("not found"));
-    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
+    GrpcClient grpcClient = check new (getServerBaseUrl());
     Task|error grpcResult = grpcClient->getTask("missing");
 
     // Per design spec Design decision 6, the error half of this
