@@ -789,8 +789,9 @@ isolated function renameJsonField(map<json> fields, string wireName, string reco
 # only the scheme-level fields are. A v1.0 card sending
 # `{"authorization_code": ...}` inside `flows` parses without error but leaves
 # that flow in `OAuthFlows`' open rest field rather than its typed
-# `authorizationCode` field. OAuth2 is not auto-wired by `buildAuthFromCard`
-# anyway (see auth.bal), so this costs typing detail, not function.
+# `authorizationCode` field. This library does not act on OAuth2 flows
+# itself — auth is caller-configured (see auth.bal) — so this costs typing
+# detail, not function.
 #
 # + entry - a raw securitySchemes entry already known to declare an arm
 # + return - the typed SecurityScheme, or () if the arm's payload doesn't
