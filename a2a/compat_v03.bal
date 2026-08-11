@@ -10,7 +10,7 @@
 import ballerina/lang.array;
 
 # Which A2A wire dialect a Client speaks to a given server.
-public type ProtocolMode "V1_0"|"V0_3";
+type ProtocolMode "V1_0"|"V0_3";
 
 # Resolves the wire dialect for the interface matching preferredBinding,
 # rather than assuming supportedInterfaces[0] — the same interface
@@ -27,7 +27,7 @@ public type ProtocolMode "V1_0"|"V0_3";
 #                      protocolVersion from; defaults to "JSONRPC"
 # + return - V0_3 or V1_0, per the matched interface's protocolVersion,
 #            or the existing index-0/legacy rules if no interface matches
-public isolated function detectProtocolModeForBinding(
+isolated function detectProtocolModeForBinding(
         AgentCard card,
         TransportBinding preferredBinding = "JSONRPC") returns ProtocolMode {
     AgentInterface|error iface = selectInterface(card, preferredBinding);

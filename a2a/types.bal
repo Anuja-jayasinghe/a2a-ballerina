@@ -148,7 +148,7 @@ isolated function decodePartsRawField(json partsValue) returns json|error {
 # + value - a json value (or subtree) to walk
 # + return - the same tree with every Part.raw integer-array rewritten to
 #            a base64 string
-public isolated function encodeRawBytesForWire(json value) returns json {
+isolated function encodeRawBytesForWire(json value) returns json {
     if value is json[] {
         json[] result = [];
         foreach json v in value {
@@ -191,7 +191,7 @@ public isolated function encodeRawBytesForWire(json value) returns json {
 # + return - the same tree with every Part.raw base64 string rewritten to
 #            an integer-array, or an error if a "raw" string on an actual
 #            Part isn't valid base64
-public isolated function decodeRawBytesFromWire(json value) returns json|error {
+isolated function decodeRawBytesFromWire(json value) returns json|error {
     if value is json[] {
         json[] result = [];
         foreach json v in value {
@@ -860,7 +860,7 @@ isolated function unwrapV10SecurityScheme(map<json> entry) returns SecuritySchem
 #
 # + raw - the raw JSON value of the AgentCard's `securitySchemes` field
 # + return - a map containing only the entries that parsed successfully
-public isolated function parseSecuritySchemes(json raw) returns map<SecurityScheme>|error {
+isolated function parseSecuritySchemes(json raw) returns map<SecurityScheme>|error {
     map<json> rawMap = check raw.ensureType();
     map<SecurityScheme> result = {};
     foreach [string, json] [name, schemeJson] in rawMap.entries() {
@@ -889,7 +889,7 @@ public isolated function parseSecuritySchemes(json raw) returns map<SecuritySche
 #
 # + raw - the raw JSON value of a securityRequirements field
 # + return - a list containing only the entries that parsed successfully
-public isolated function parseSecurityRequirements(json raw) returns SecurityRequirement[]|error {
+isolated function parseSecurityRequirements(json raw) returns SecurityRequirement[]|error {
     json[] rawArray = check raw.ensureType();
     SecurityRequirement[] result = [];
     foreach json entry in rawArray {
@@ -908,7 +908,7 @@ public isolated function parseSecurityRequirements(json raw) returns SecurityReq
 #
 # + raw - the raw JSON value of the AgentCard's `signatures` field
 # + return - a list containing only the entries that parsed successfully
-public isolated function parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error {
+isolated function parseAgentCardSignatures(json raw) returns AgentCardSignature[]|error {
     json[] rawArray = check raw.ensureType();
     AgentCardSignature[] result = [];
     foreach json entry in rawArray {
