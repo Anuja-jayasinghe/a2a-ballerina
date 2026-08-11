@@ -296,11 +296,15 @@ coverage it holds).
 
 ## Follow-up issues
 
-Filed on `Anuja-jayasinghe/a2a-ballerina`, one per removed capability, each
-recording what existed, why it was pulled, and what would justify its
-return:
+One per removed capability, each recording what existed, why it was
+pulled, and what would justify its return:
 
-1. AgentCard signature verification (spec §8.4.3) — revisit when a
-   reference implementation or a JCS-capable verification path exists.
-2. Auto-auth wiring from AgentCard security schemes.
-3. ETag-aware AgentCard caching.
+- [#12](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/12) —
+  AgentCard signature verification (spec §8.4.3). Revisit when a reference
+  implementation or a JCS-capable verification path exists.
+- [#13](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/13) —
+  Auto-auth wiring from AgentCard security schemes. Records the
+  reserved-header collision check and the first-colon-only Basic split as
+  worth preserving if it returns.
+- [#14](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/14) —
+  ETag-aware AgentCard caching.
