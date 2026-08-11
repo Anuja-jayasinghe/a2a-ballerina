@@ -222,13 +222,20 @@ enforcement — that `modules/transport/` is "internal and unexported".
 
 ## Resulting public surface
 
-- Every spec-facing type in `types.bal`, unchanged.
-- `resolveAgentCard` — the module's only public free function.
-- `TransportBinding`.
-- The `A2AError` hierarchy minus the two signature errors.
+- Every spec-facing type in `types.bal` (36), unchanged.
+- The `A2AError` hierarchy in `errors.bal` (13), minus the two signature
+  errors.
+- `resolveAgentCard` — the module's **only** public free function.
 - `AgentClient`, `Client`, `JsonRpcClient`, `RestClient`, `GrpcClient`.
 
 Nothing from `a2a.grpcstub` or `a2a.transport`.
+
+`TransportBinding` is **not** public either, which was not the original
+plan. Once `Client` took its binding from the card rather than a
+parameter, the name stopped appearing in any public signature — the same
+mechanical consequence that made `ProtocolMode` internal. A caller selects
+a binding by choosing `JsonRpcClient`, `RestClient`, or `GrpcClient`, never
+by naming one, so there is nothing left for the type to be used for.
 
 ## Target architecture
 

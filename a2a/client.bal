@@ -118,7 +118,12 @@ public isolated function resolveAgentCard(
 }
 
 # The A2A transport bindings this library can speak.
-public type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
+#
+# Not public: with Client taking its binding from the Agent Card rather
+# than from a parameter, this name appears in no public signature. A caller
+# selects a binding by choosing JsonRpcClient, RestClient, or GrpcClient,
+# never by naming one.
+type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
