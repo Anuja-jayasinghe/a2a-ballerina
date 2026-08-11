@@ -281,32 +281,41 @@ function testSelectInterfacePrefersV1OverV03WhenSecond() returns error? {
     test:assertEquals(iface.url, "http://v1.example");
 }
 
+# A card declaring a tenant on its JSONRPC interface. The shared default
+# mock card deliberately declares none, so tenant auto-wiring gets its own
+# fixture rather than silently colouring every other test's request params.
+isolated function cardWithTenant(string tenant) returns AgentCard => {
+    name: "n", description: "d", version: "1.0.0",
+    capabilities: {streaming: true},
+    supportedInterfaces: [
+        {url: "http://localhost:19199", protocolBinding: "JSONRPC", tenant}
+    ],
+    skills: []
+};
+
 @test:Config {}
-function testNewClientFromUrl() returns error? {
+function testClientInitFromUrl() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
-    Client agentClient = check newClient(getServerBaseUrl());
+    Client agentClient = check new (getServerBaseUrl());
     Task|Message result = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     test:assertTrue(result is Task || result is Message);
 }
 
 @test:Config {}
-function testNewClientFromAgentCard() returns error? {
+function testClientInitFromAgentCard() returns error? {
     AgentCard card = check resolveAgentCard(getServerBaseUrl());
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
-    Client agentClient = check newClient(card);
+    Client agentClient = check new (card);
     Task|Message result = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     test:assertTrue(result is Task || result is Message);
 }
 
-# The default mock card's JSONRPC interface declares tenant "acme-corp"
-# (see testutil.bal's defaultMockAgentCard) — newClient must read it
-# automatically and send it on every request when the caller doesn't pass
-# an explicit tenant.
+# When the selected AgentInterface declares a tenant, init must read it
+# automatically and send it on every request without the caller repeating it.
 @test:Config {}
-function testNewClientAutoWiresTenantFromCard() returns error? {
-    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+function testClientInitAutoWiresTenantFromCard() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
-    Client agentClient = check newClient(card);
+    Client agentClient = check new (cardWithTenant("acme-corp"));
     Task|Message _ = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.tenant, "acme-corp");
@@ -314,19 +323,18 @@ function testNewClientAutoWiresTenantFromCard() returns error? {
 
 # An explicitly-passed tenant must win over the card's own declared value.
 @test:Config {}
-function testNewClientExplicitTenantOverridesCard() returns error? {
-    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+function testClientInitExplicitTenantOverridesCard() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: {id: "t1", status: {state: "TASK_STATE_COMPLETED"}}}});
-    Client agentClient = check newClient(card, tenant = "explicit-tenant");
+    Client agentClient = check new (cardWithTenant("acme-corp"), tenant = "explicit-tenant");
     Task|Message _ = check agentClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.tenant, "explicit-tenant");
 }
 
-# No JSONRPC entry and no legacy url field: newClient must surface
-# primaryUrl's error rather than constructing a client pointed nowhere.
+# No JSONRPC entry and no legacy url field: init must surface the URL
+# derivation error rather than constructing a client pointed nowhere.
 @test:Config {}
-function testNewClientErrorsWhenCardHasNoMatchingInterface() {
+function testClientInitErrorsWhenCardHasNoMatchingInterface() {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
@@ -334,14 +342,14 @@ function testNewClientErrorsWhenCardHasNoMatchingInterface() {
         ],
         skills: []
     };
-    Client|error result = newClient(card);
-    test:assertTrue(result is error, "newClient should surface primaryUrl's error when the card has no JSONRPC interface and no legacy url");
+    Client|error result = new (card);
+    test:assertTrue(result is error, "init should surface the URL-derivation error when the card has no JSONRPC interface and no legacy url");
 }
 
 # An unreachable discovery URL must surface resolveAgentCard's error, not panic.
 @test:Config {}
-function testNewClientFromUrlUnreachableEndpoint() {
-    Client|error result = newClient("http://localhost:1");
+function testClientInitFromUrlUnreachableEndpoint() {
+    Client|error result = new ("http://localhost:1");
     test:assertTrue(result is error, "unreachable discovery endpoint should surface as an error, not panic");
 }
 
@@ -362,7 +370,7 @@ function testClientInitRejectsV03PlusGrpc() returns error? {
         ],
         skills: []
     };
-    Client|error result = new (getGrpcMockUrl(), agentCard = card, binding = "GRPC");
+    Client|error result = new (card, binding = "GRPC");
     test:assertTrue(result is VersionNotSupportedError,
             "constructing a GRPC client against a card that resolves to V0_3 must fail fast with a typed error, since A2A v0.3 has no gRPC binding equivalent");
 }
@@ -371,7 +379,7 @@ function testClientInitRejectsV03PlusGrpc() returns error? {
 function testClientGrpcSendMessageUnary() returns error? {
     grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_COMPLETED}};
     setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     Task|Message result = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     test:assertTrue(result is Task);
     if result is Task {
@@ -382,7 +390,7 @@ function testClientGrpcSendMessageUnary() returns error? {
 @test:Config {groups: ["grpc"]}
 function testClientGrpcGetTaskMapsNotFoundError() returns error? {
     setNextGrpcError(error grpc:NotFoundError("no such task"));
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     Task|error result = grpcClient->getTask("missing");
     test:assertTrue(result is TaskNotFoundError);
 }
@@ -391,7 +399,7 @@ function testClientGrpcGetTaskMapsNotFoundError() returns error? {
 function testClientGrpcSendsMandatoryA2AVersionHeader() returns error? {
     grpcstub:Task scriptedTask = {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}};
     setNextGrpcResponse(<grpcstub:SendMessageResponse>{task: scriptedTask});
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     map<string|string[]> metadata = getLastGrpcMetadata();
     // gRPC/HTTP2 metadata keys are lowercased on the wire regardless of the
@@ -418,7 +426,7 @@ function testClientGrpcGetTaskPushNotificationConfigEndToEnd() returns error? {
         id: "webhook-1",
         url: "https://cb.example.com"
     });
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1");
     test:assertEquals(result?.taskId, "t1");
     test:assertEquals(result?.id, "webhook-1");
@@ -433,7 +441,7 @@ function testClientGrpcGetTaskPushNotificationConfigWithTenantEndToEnd() returns
         url: "https://cb.example.com",
         tenant: "tenant1"
     });
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     TaskPushNotificationConfig result = check grpcClient->getTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
     test:assertEquals(result?.tenant, "tenant1");
 }
@@ -444,7 +452,7 @@ function testClientGrpcDeleteTaskPushNotificationConfigEndToEnd() returns error?
     // "scripted a success", see grpcmock_service.bal's
     // DeleteTaskPushNotificationConfig comment.
     setNextGrpcResponse({});
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1");
     test:assertTrue(result is (), "deleteTaskPushNotificationConfig must return nil on a scripted success over the real grpc wire");
 }
@@ -452,7 +460,7 @@ function testClientGrpcDeleteTaskPushNotificationConfigEndToEnd() returns error?
 @test:Config {groups: ["grpc"]}
 function testClientGrpcDeleteTaskPushNotificationConfigWithTenantEndToEnd() returns error? {
     setNextGrpcResponse({});
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     error? result = grpcClient->deleteTaskPushNotificationConfig("t1", "webhook-1", "tenant1");
     test:assertTrue(result is (), "deleteTaskPushNotificationConfig with a tenant must also round-trip over the real grpc wire");
 }
@@ -470,7 +478,7 @@ function testClientGrpcCapturesGrantedExtensionsFromLowercaseMetadata() returns 
     // real wire casing, not just a same-cased echo of what a naive
     // exact-match lookup would already handle.
     setNextGrpcResponseMetadata({"a2a-extensions": "https://example.com/ext1,https://example.com/ext2"});
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     Task|Message _ = check grpcClient->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     string[] granted = grpcClient.lastGrantedExtensions();
     test:assertEquals(granted, ["https://example.com/ext1", "https://example.com/ext2"],
@@ -948,11 +956,15 @@ function testTenantPropagatesOnEveryMethod() returns error? {
 function testTenantOmittedInV03Mode() returns error? {
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
+        // A pre-1.0 card declares its endpoint in the legacy top-level
+        // `url` field rather than supportedInterfaces; primaryUrl falls
+        // back to it for JSONRPC, which is what keeps this card reachable.
+        url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {},
         skills: []
     };
-    Client c = check new (getServerBaseUrl(), tenant = "acme-corp", agentCard = legacyCard);
+    Client c = check new (legacyCard, tenant = "acme-corp");
 
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
@@ -982,11 +994,15 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
     // succeeds.
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
+        // A pre-1.0 card declares its endpoint in the legacy top-level
+        // `url` field rather than supportedInterfaces; primaryUrl falls
+        // back to it for JSONRPC, which is what keeps this card reachable.
+        url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {},
         skills: []
     };
-    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+    Client c = check new (legacyCard);
 
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
@@ -1020,11 +1036,15 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
 function testV03ModeTranslatesSendMessageStreamRequestBody() returns error? {
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
+        // A pre-1.0 card declares its endpoint in the legacy top-level
+        // `url` field rather than supportedInterfaces; primaryUrl falls
+        // back to it for JSONRPC, which is what keeps this card reachable.
+        url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {streaming: true},
         skills: []
     };
-    Client c = check new (getServerBaseUrl(), agentCard = legacyCard);
+    Client c = check new (legacyCard);
 
     http:SseEvent[] v03SseResponse = [
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-stream-1","contextId":"ctx-stream-1","status":{"state":"working"}}}`}
@@ -1110,14 +1130,25 @@ function testClientConfigTimeoutPassthrough() returns error? {
     // A generous delay/threshold gap (0.1s timeout vs. a 3s mock delay,
     // asserting well under that at 2s) so this doesn't flake under
     // scheduling jitter when the full suite runs concurrently.
-    setNextDelay(3);
+    // Construct from an already-resolved card, not a URL: init resolves the
+    // card over HTTP using this same clientConfig, and a 0.1s timeout would
+    // trip during construction rather than during the operation under test —
+    // the mock's delay is shared state and other tests run concurrently.
+    // Resolving separately (on the default config) keeps the tight timeout
+    // scoped to the call being measured.
+    AgentCard card = check resolveAgentCard(getServerBaseUrl());
+    Client c = check new (card, {timeout: 0.1});
+
+    // setNextJsonResponse resets delaySeconds to 0, so the delay has to be
+    // scripted after it, not before. The original order set the delay first
+    // and had it immediately cleared - that test only passed by borrowing a
+    // concurrently-running test's delay from the shared mock script.
     setNextJsonResponse({
         jsonrpc: "2.0",
         id: "1",
         result: {id: "task-slow", status: {state: "TASK_STATE_COMPLETED"}}
     });
-
-    Client c = check new (getServerBaseUrl(), {timeout: 0.1});
+    setNextDelay(3);
 
     decimal before = time:monotonicNow();
     Task|error result = c->getTask("task-slow");
@@ -1132,11 +1163,15 @@ function testClientConfigTimeoutPassthrough() returns error? {
 isolated function v03Client(AgentCapabilities capabilities = {}) returns Client|error {
     AgentCard legacyCard = {
         name: "x", description: "x", version: "1.0.0",
+        // A pre-1.0 card declares its endpoint in the legacy top-level
+        // `url` field rather than supportedInterfaces; primaryUrl falls
+        // back to it for JSONRPC, which is what keeps this card reachable.
+        url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities,
         skills: []
     };
-    return new (getServerBaseUrl(), agentCard = legacyCard);
+    return new (legacyCard);
 }
 
 @test:Config {}
@@ -1987,7 +2022,7 @@ function testClientInitRejectsV03WithHttpJsonBinding() returns error? {
         ],
         skills: []
     };
-    Client|error result = new (getServerBaseUrl(), agentCard = card, binding = "HTTP+JSON");
+    Client|error result = new (card, binding = "HTTP+JSON");
     test:assertTrue(result is VersionNotSupportedError,
             "constructing an HTTP+JSON client against a card that resolves to V0_3 must fail fast with a typed error, not send a v0.3 JSON-RPC method name to a REST path");
 }
@@ -2003,7 +2038,7 @@ function testClientInitAllowsV03WithJsonRpcBinding() returns error? {
     };
     // binding defaults to "JSONRPC" — v0.3 + JSONRPC is the existing,
     // already-supported combination and must still construct cleanly.
-    Client _ = check new (getServerBaseUrl(), agentCard = card);
+    Client _ = check new (card);
 }
 
 @test:Config {}
@@ -2358,7 +2393,7 @@ function testClientGrpcSendMessageStreamEndToEnd() returns error? {
         {status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_COMPLETED}}}
     ];
     setNextGrpcResponse(scripted);
-    Client grpcClient = check new (getGrpcMockUrl(), binding = "GRPC");
+    Client grpcClient = check new (getServerBaseUrl(), binding = "GRPC");
     stream<StreamResponse, error?> s = check grpcClient->sendStreamingMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     StreamResponse first = check expectValue(s.next());
     test:assertTrue(first?.task is Task);
@@ -2571,7 +2606,7 @@ isolated function primeLastRequest(Client c) returns string|error {
 
 @test:Config {}
 function testGetExtendedAgentCardShortCircuitsWhenCapabilityFalse() returns error? {
-    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(false, "Public Card"));
+    Client c = check new (cardWithExtendedSupport(false, "Public Card"));
     string primedMethod = check primeLastRequest(c);
     test:assertEquals(primedMethod, "GetTask");
 
@@ -2584,7 +2619,7 @@ function testGetExtendedAgentCardShortCircuitsWhenCapabilityFalse() returns erro
 
 @test:Config {}
 function testGetExtendedAgentCardCallsOutWhenCapabilityTrue() returns error? {
-    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    Client c = check new (cardWithExtendedSupport(true, "Public Card"));
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
@@ -2604,32 +2639,10 @@ function testGetExtendedAgentCardCallsOutWhenCapabilityTrue() returns error? {
 }
 
 @test:Config {}
-function testGetExtendedAgentCardCallsOutWhenNoCardHeld() returns error? {
-    // Absence of a card is not evidence of absence of the capability, so a
-    // Client built without one must still make the call.
-    Client c = check new (getServerBaseUrl());
-    setNextJsonResponse({
-        jsonrpc: "2.0", id: "1",
-        result: {
-            name: "Extended Card",
-            description: "d",
-            version: "1.0.0",
-            capabilities: {extendedAgentCard: false},
-            skills: []
-        }
-    });
-
-    AgentCard card = check c->getExtendedAgentCard();
-
-    test:assertEquals(card.name, "Extended Card");
-    test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard");
-}
-
-@test:Config {}
 function testGetExtendedAgentCardStoresFetchedCard() returns error? {
     // The fetched card replaces the held one, so a second call reasons about
     // the extended card rather than the public card the Client started with.
-    Client c = check new (getServerBaseUrl(), agentCard = cardWithExtendedSupport(true, "Public Card"));
+    Client c = check new (cardWithExtendedSupport(true, "Public Card"));
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
