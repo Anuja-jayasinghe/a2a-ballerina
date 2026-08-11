@@ -321,7 +321,6 @@ public isolated function primaryUrl(
 #            value is used automatically instead of requiring the caller to
 #            copy it by hand; an explicitly-passed tenant always wins
 # + requestedExtensions - as accepted by Client.init
-# + credentials - as accepted by Client.init
 # + maxReconnectAttempts - as accepted by Client.init
 # + binding - Which transport binding this Client speaks, and which
 #             supportedInterfaces entry to derive the service URL (and
@@ -338,7 +337,6 @@ public isolated function newClient(
         map<string> headers = {},
         string? tenant = (),
         string[] requestedExtensions = [],
-        map<string> credentials = {},
         int maxReconnectAttempts = 0,
         TransportBinding binding = "JSONRPC") returns Client|error {
     AgentCard card = agent is string ? check resolveAgentCard(agent, clientConfig, headers) : agent;
@@ -351,7 +349,7 @@ public isolated function newClient(
         }
     }
     return new Client(serviceUrl, clientConfig, headers, effectiveTenant, card,
-        requestedExtensions, credentials, maxReconnectAttempts, binding);
+        requestedExtensions, maxReconnectAttempts, binding);
 }
 
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
@@ -557,16 +555,6 @@ public isolated client class Client {
     #                         A2A-Extensions header on every request. The
     #                         agent's response indicates which extensions
     #                         it actually granted; see lastGrantedExtensions.
-    # + credentials - Optional credential strings, keyed by security scheme
-    #                 name exactly as declared in agentCard.securitySchemes.
-    #                 When agentCard is given and this is non-empty,
-    #                 buildAuthFromCard resolves them into auth config and
-    #                 headers, merged in underneath clientConfig and headers
-    #                 respectively — an explicit value the caller already
-    #                 set always wins over the auto-wired one. Ignored (no
-    #                 error) when agentCard is not given, so passing
-    #                 credentials without a card is a silent no-op rather
-    #                 than a hard failure.
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
     #                          (the default), sendStreamingMessage and
     #                          subscribeToTask behave exactly as before —
@@ -584,9 +572,7 @@ public isolated client class Client {
     #             REST/HTTP+JSON binding equivalent, so "HTTP+JSON"
     #             combined with a card that resolves to v0.3 is rejected.
     # + return - error if the underlying http:Client cannot be created, or
-    #            if credentials is non-empty but does not satisfy any of
-    #            agentCard's declared SecurityRequirements, or if binding
-    #            is "HTTP+JSON" and agentCard resolves to A2A v0.3
+    #            if binding is "HTTP+JSON" and agentCard resolves to A2A v0.3
     public isolated function init(
             string serviceUrl,
             http:ClientConfiguration clientConfig = {},
@@ -594,28 +580,15 @@ public isolated client class Client {
             string? tenant = (),
             AgentCard? agentCard = (),
             string[] requestedExtensions = [],
-            map<string> credentials = {},
             int maxReconnectAttempts = 0,
             TransportBinding binding = "JSONRPC") returns error? {
         // http:ClientConfiguration isn't Cloneable (some of its fields
         // aren't pure data), so a mapping-constructor spread is used
-        // instead of .clone() to shallow-copy it before mutating .auth —
-        // otherwise this would mutate the caller's own clientConfig in
-        // place, corrupting it for any other Client.init call that reuses
-        // the same variable.
+        // instead of .clone() to shallow-copy it — otherwise this could
+        // mutate the caller's own clientConfig in place, corrupting it for
+        // any other Client.init call that reuses the same variable.
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
         map<string> effectiveHeaders = headers.clone();
-        if agentCard is AgentCard && credentials.length() > 0 {
-            ResolvedAuth resolved = check buildAuthFromCard(agentCard, credentials);
-            if effectiveClientConfig.auth is () {
-                effectiveClientConfig.auth = resolved.clientConfig.auth;
-            }
-            foreach [string, string] [k, v] in resolved.headers.entries() {
-                if !effectiveHeaders.hasKey(k) {
-                    effectiveHeaders[k] = v;
-                }
-            }
-        }
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = effectiveHeaders.cloneReadOnly();
         self.tenant = tenant;

@@ -12,7 +12,6 @@ org = "ballerina"
 name = "a2a"
 version = "0.2.0"
 dependencies = [
-	{org = "ballerina", name = "crypto"},
 	{org = "ballerina", name = "grpc"},
 	{org = "ballerina", name = "http"},
 	{org = "ballerina", name = "io"},
@@ -69,9 +68,6 @@ version = "2.12.1"
 dependencies = [
 	{org = "ballerina", name = "jballerina.java"},
 	{org = "ballerina", name = "time"}
-]
-modules = [
-	{org = "ballerina", packageName = "crypto", moduleName = "crypto"}
 ]
 
 [[package]]

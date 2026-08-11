@@ -41,13 +41,11 @@ public type ExtensionSupportRequiredError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
 
-# Returned by buildAuthFromCard when an AgentCard's declared security
-# requirements cannot be automatically resolved into client auth config —
-# either no SecurityRequirement entry is satisfiable by the given
-# credentials, or one names a scheme buildAuthFromCard doesn't automate
-# (e.g. an apiKey scheme not sent via a header, or an OAuth2/OpenIdConnect/
-# mutualTLS scheme, which need a token-acquisition flow or client cert
-# rather than a single credential string).
+# Returned when a caller-supplied auth configuration cannot be adapted to
+# the transport in use — currently only by projectToGrpcClientConfig
+# (auth.bal), when clientConfig.auth holds a shape the gRPC stack has no
+# structural equivalent for (an OAuth2 or JWT auth config, as opposed to
+# HTTP Basic or Bearer).
 public type AuthResolutionError distinct A2AError;
 
 # Maps a JSON-RPC error code to its typed A2AError, per the error code

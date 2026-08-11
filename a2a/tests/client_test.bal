@@ -559,89 +559,52 @@ function testSendMessageSendsRequestedExtensionsHeader() returns error? {
 }
 
 @test:Config {}
-function testClientInitAutoWiresApiKeyHeaderFromAgentCard() returns error? {
-    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    AgentCard card = {
-        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
-        capabilities: {},
-        securitySchemes: {
-            "apiKeyAuth": {'type: "apiKey", 'in: "header", name: "X-Api-Key"}
-        },
-        securityRequirements: [{"apiKeyAuth": []}],
-        skills: []
-    };
-    Client c = check new (getServerBaseUrl(), agentCard = card, credentials = {"apiKeyAuth": "secret-123"});
-    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
-    Task|Message _ = check c->sendMessage(msg);
-
-    map<string> headers = getLastRequestHeaders();
-    test:assertEquals(headers["x-api-key"], "secret-123");
-}
-
-@test:Config {}
-function testClientInitDoesNotLeakAuthAcrossSharedConfig() returns error? {
+function testClientInitDoesNotMutateCallerSuppliedConfigOrHeaders() returns error? {
     // Regression test: Client.init must not mutate the caller's own
-    // clientConfig/headers in place. Two Client.init calls sharing the
-    // same base variables must each resolve their own auth independently
-    // — e.g. constructing several agent clients in a loop from one shared
-    // base config must not leak the first call's resolved auth into the
-    // second.
+    // clientConfig/headers in place. Constructing several agent clients in
+    // a loop from one shared base config must not let the first client's
+    // settings leak into the second. init defends against this with a
+    // mapping-constructor spread and a headers clone; this pins that down.
     http:ClientConfiguration sharedConfig = {};
     map<string> sharedHeaders = {};
-    AgentCard card = {
-        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
-        capabilities: {},
-        securitySchemes: {"bearerAuth": {'type: "http", scheme: "Bearer"}},
-        securityRequirements: [{"bearerAuth": []}],
-        skills: []
-    };
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
 
+    map<string> headers1 = sharedHeaders.clone();
+    headers1["X-Trace"] = "one";
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    Client c1 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = sharedHeaders,
-            agentCard = card, credentials = {"bearerAuth": "tok-1"});
+    Client c1 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = headers1);
     Task|Message _ = check c1->sendMessage(msg);
-    map<string> headers1 = getLastRequestHeaders();
-    test:assertEquals(headers1["authorization"], "Bearer tok-1");
+    test:assertEquals(getLastRequestHeaders()["x-trace"], "one");
 
+    map<string> headers2 = sharedHeaders.clone();
+    headers2["X-Trace"] = "two";
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    Client c2 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = sharedHeaders,
-            agentCard = card, credentials = {"bearerAuth": "tok-2"});
+    Client c2 = check new (getServerBaseUrl(), clientConfig = sharedConfig, headers = headers2);
     Task|Message _ = check c2->sendMessage(msg);
-    map<string> headers2 = getLastRequestHeaders();
-    test:assertEquals(headers2["authorization"], "Bearer tok-2",
-            "a second Client.init sharing the same base clientConfig/headers variables should resolve its own auth independently, not inherit the first Client's");
+    test:assertEquals(getLastRequestHeaders()["x-trace"], "two",
+            "a second Client sharing the same base clientConfig must not inherit the first Client's headers");
 
     test:assertTrue(sharedConfig.auth is (), "Client.init must not mutate the caller's own clientConfig in place");
     test:assertEquals(sharedHeaders.length(), 0, "Client.init must not mutate the caller's own headers map in place");
 }
 
 @test:Config {}
-function testClientInitPreservesCallerSuppliedAuthAndHeaderOverAutoWired() returns error? {
+function testClientInitAppliesCallerSuppliedAuthAndHeaders() returns error? {
+    // Auth is configured through clientConfig.auth and headers directly —
+    // this library does not derive it from the AgentCard's security
+    // schemes (see issue #13). Both must reach the wire.
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    AgentCard card = {
-        name: "n", description: "d", version: "1.0.0", protocolVersion: "1.0",
-        capabilities: {},
-        securitySchemes: {
-            "apiKeyAuth": {'type: "apiKey", 'in: "header", name: "X-Api-Key"},
-            "bearerAuth": {'type: "http", scheme: "Bearer"}
-        },
-        securityRequirements: [{"apiKeyAuth": [], "bearerAuth": []}],
-        skills: []
-    };
     Client c = check new (getServerBaseUrl(),
             clientConfig = {auth: {token: "explicit-tok"}},
-            headers = {"X-Api-Key": "explicit-key"},
-            agentCard = card,
-            credentials = {"apiKeyAuth": "auto-key", "bearerAuth": "auto-tok"});
+            headers = {"X-Api-Key": "explicit-key"});
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
     Task|Message _ = check c->sendMessage(msg);
 
     map<string> headers = getLastRequestHeaders();
     test:assertEquals(headers["authorization"], "Bearer explicit-tok",
-            "an explicit clientConfig.auth should win over buildAuthFromCard's resolved auth");
+            "an explicit clientConfig.auth must be sent");
     test:assertEquals(headers["x-api-key"], "explicit-key",
-            "an explicit headers entry should win over buildAuthFromCard's resolved header");
+            "an explicit headers entry must be sent");
 }
 
 @test:Config {}
