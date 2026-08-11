@@ -1,11 +1,12 @@
-// A2A client implementation.
+// Agent Card resolution, interface selection, the REST request table, and
+// the common Client that delegates to whichever transport-specific client
+// the card prefers.
+//
+// The transport marshaling that used to live here now sits with the client
+// that owns it: jsonrpc_client.bal, rest_client.bal, grpc_client.bal.
 
-import ballerina/a2a.grpcstub;
-import ballerina/a2a.transport;
-import ballerina/grpc;
 import ballerina/http;
 import ballerina/url;
-import ballerina/uuid;
 
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
 # v0.3 security field-name rename and the tolerant parsing of
@@ -307,7 +308,88 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
     return [path, ()];
 }
 
-# An A2A protocol client for calling remote agents.
+# Chooses which transport binding to speak, from the Agent Card alone.
+#
+# Per spec section 8.3.2 the card decides, not the client: "select the
+# first supported transport", preferring "earlier entries in the ordered
+# list", because supportedInterfaces is ordered by the server's own
+# preference and "the first entry represents the preferred interface".
+# So this walks the card in order and takes the first binding this library
+# can speak, rather than consulting any preference of its own.
+#
+# A caller who does want to express a preference constructs
+# JsonRpcClient/RestClient/GrpcClient directly - that is what the
+# transport-specific types are for, and why this client takes no binding
+# parameter to override the card with.
+#
+# + card - the resolved Agent Card
+# + return - the binding to use, or an error if the card declares no
+#            interface this library can speak
+isolated function selectBindingFromCard(AgentCard card) returns TransportBinding|error {
+    foreach AgentInterface iface in card.supportedInterfaces {
+        string binding = iface.protocolBinding;
+        if binding == "JSONRPC" || binding == "HTTP+JSON" || binding == "GRPC" {
+            return <TransportBinding>binding;
+        }
+    }
+    // A pre-1.0 card declares no supportedInterfaces at all, only a
+    // top-level url, which predates every binding but JSON-RPC.
+    if card?.url is string {
+        return "JSONRPC";
+    }
+    return error(
+        "AgentCard declares no supportedInterfaces entry this library can speak (JSONRPC, HTTP+JSON, or GRPC) and no legacy url field");
+}
+
+# Constructs the transport-specific client for a chosen binding, handing it
+# the already-resolved card so it is not fetched a second time.
+#
+# + card - the already-resolved Agent Card
+# + binding - the binding chosen from that card
+# + clientConfig - as accepted by every client type
+# + headers - as accepted by every client type
+# + tenant - as accepted by every client type
+# + requestedExtensions - as accepted by every client type
+# + maxReconnectAttempts - as accepted by every client type
+# + return - the constructed client, or an error from its own construction
+isolated function buildDelegate(
+        AgentCard card,
+        TransportBinding binding,
+        http:ClientConfiguration clientConfig,
+        map<string> headers,
+        string? tenant,
+        string[] requestedExtensions,
+        int maxReconnectAttempts) returns AgentClient|error {
+    if binding == "HTTP+JSON" {
+        return new RestClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+    }
+    if binding == "GRPC" {
+        return new GrpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+    }
+    return new JsonRpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+}
+
+# An A2A protocol client that speaks whichever transport binding the agent
+# prefers.
+#
+# Resolves the Agent Card, reads the binding the card lists first, builds
+# the matching transport-specific client, and delegates every operation to
+# it. Binding selection happens once, at construction - there is no
+# per-call dispatch.
+#
+# ```ballerina
+# a2a:Client agent = check new ("https://agent.example.com");
+# a2a:Task|a2a:Message reply = check agent->sendMessage(msg);
+# ```
+#
+# There is deliberately no `binding` parameter. Expressing a client-side
+# preference is what the transport-specific types are for: construct
+# `JsonRpcClient`, `RestClient`, or `GrpcClient` directly and the card's
+# ordering is bypassed. Use this type when the agent's own preference
+# should win, which is the spec's default (section 8.3.2).
+#
+# Since all four types implement `AgentClient`, code that does not care can
+# hold the interface and be handed either.
 #
 # LIFECYCLE: there is deliberately no `close`. Unlike the reference a2a-sdk
 # (Python), whose `Client.close()` disposes the `httpx.AsyncClient` it was
@@ -316,7 +398,7 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 # evicts idle connections on its own. Neither `http:Client` nor `grpc:Client`
 # exposes a client-side close for this reason, so there is no underlying call
 # to make. The A2A specification says nothing about client resource release
-# either — it governs the wire, not SDK object lifetimes.
+# either - it governs the wire, not SDK object lifetimes.
 #
 # A Client is therefore cheap to construct and needs no teardown. Two caveats
 # worth knowing:
@@ -326,851 +408,126 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 #   gRPC channel), which is wasted work per call even though it leaks nothing.
 # - Setting `poolConfig` inside `clientConfig` opts that Client out of the
 #   shared pool and gives it a private one, which *cannot* be released. If you
-#   do that, reuse the Client — don't create them per request.
+#   do that, reuse the Client - do not create them per request.
 public isolated client class Client {
-    private final http:Client httpClient;
-    private final map<string> & readonly defaultHeaders;
-    private final string? tenant;
-    private final ProtocolMode mode;
-    private final string[] & readonly requestedExtensions;
-    private string[] grantedExtensions = [];
-    private final int maxReconnectAttempts;
-    private final TransportBinding binding;
-    private final grpcstub:A2AServiceClient? grpcStub;
-    # The most recent AgentCard this client knows about: the one supplied to
-    # init, replaced by the extended card once getExtendedAgentCard fetches
-    # one. Mutable (hence lock-guarded, like grantedExtensions) precisely so
-    # that fetching an extended card updates what later calls reason about,
-    # rather than leaving them on the public card forever.
-    private AgentCard? agentCard;
+    *AgentClient;
 
-    # Creates a client pointed at a remote A2A agent.
+    private final AgentClient delegate;
+
+    # Creates a client pointed at a remote A2A agent, speaking whichever
+    # binding the agent's card prefers.
     #
-    # Accepts either the agent's base URL or an already-resolved AgentCard —
-    # one or the other, never both. Given a URL, the card is always resolved
-    # first: it is what determines the service URL, the protocol version, and
-    # the tenant, so there is no fetch-free construction path.
-    #
-    # There is deliberately no parameter for dialing a URL the card does not
-    # declare. Resolving a card exists to establish where it is safe to send
-    # requests and credentials; an override would reintroduce exactly the
-    # redirection surface that resolving closes off, and neither reference
-    # SDK exposes one. Code that must point elsewhere (including this
-    # library's own tests) builds an AgentCard whose declared interfaces
-    # already point there.
+    # Accepts either the agent's base URL or an already-resolved AgentCard.
+    # Given a URL the card is always resolved first: it is what determines
+    # the binding, the service URL, the protocol version, and the tenant.
+    # Given a card, it is passed straight to the transport-specific client,
+    # so it is never fetched twice.
     #
     # + agent - the agent's base URL, or an AgentCard already resolved via
     #           resolveAgentCard
     # + clientConfig - Full http:ClientConfiguration. Covers auth, TLS,
     #                  retry, circuit breaker, proxy, timeouts, and
-    #                  connection pooling. Also used for the card fetch when
-    #                  agent is a URL.
-    # + headers - Default headers merged into every outbound request. Use
-    #             for API key schemes requiring a custom header name.
-    #             Bearer and OAuth2 auth belong in clientConfig.auth.
-    # + tenant - Optional multi-tenant routing identifier. When the selected
-    #            AgentInterface declares a tenant, it is used automatically
-    #            rather than requiring the caller to copy it by hand; an
-    #            explicitly-passed tenant always wins.
-    # + requestedExtensions - Optional A2A extension URIs to request from
-    #                         the remote agent, sent as a comma-joined
-    #                         A2A-Extensions header on every request. The
-    #                         agent's response indicates which extensions
-    #                         it actually granted; see lastGrantedExtensions.
-    # + maxReconnectAttempts - Opt-in automatic SSE reconnection. When 0
-    #                          (the default), sendStreamingMessage and
-    #                          subscribeToTask surface a dropped connection's
-    #                          error immediately. When positive, the returned
-    #                          stream transparently resubscribes to the task
-    #                          up to this many times if the underlying stream
-    #                          ends with an error rather than a clean
-    #                          terminal-state close.
-    # + binding - Which transport binding this Client speaks. Defaults to
-    #             "JSONRPC". The matching supportedInterfaces entry supplies
-    #             the service URL and determines the wire dialect; v0.3 has
-    #             no REST/HTTP+JSON or gRPC equivalent, so those bindings
-    #             combined with a card that resolves to v0.3 are rejected.
-    # + return - an error from resolveAgentCard (unreachable endpoint,
-    #            non-200 status, or a body that does not parse as an
-    #            AgentCard), from interface selection (no supportedInterfaces
-    #            entry matching binding and no legacy url to fall back to),
-    #            if the underlying http:Client cannot be created, or if
-    #            binding has no equivalent in the card's protocol version
+    #                  connection pooling.
+    # + headers - Default headers merged into every outbound request
+    # + tenant - Optional multi-tenant routing identifier; the selected
+    #            interface supplies one automatically when it declares it,
+    #            and an explicit value wins
+    # + requestedExtensions - Optional A2A extension URIs to request
+    # + maxReconnectAttempts - Opt-in automatic stream reconnection
+    # + return - an error from resolveAgentCard, if the card declares no
+    #            binding this library can speak, or from the underlying
+    #            transport-specific client's own construction
     public isolated function init(
             AgentCard|string agent,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0,
-            TransportBinding binding = "JSONRPC") returns error? {
+            int maxReconnectAttempts = 0) returns error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
-        string serviceUrl = check primaryUrl(card, binding);
-        string? effectiveTenant = tenant;
-        if effectiveTenant is () {
-            AgentInterface|error iface = selectInterface(card, binding);
-            if iface is AgentInterface {
-                effectiveTenant = iface?.tenant;
-            }
-        }
-        // http:ClientConfiguration isn't Cloneable (some of its fields
-        // aren't pure data), so a mapping-constructor spread is used
-        // instead of .clone() to shallow-copy it — otherwise this could
-        // mutate the caller's own clientConfig in place, corrupting it for
-        // any other Client.init call that reuses the same variable.
-        http:ClientConfiguration effectiveClientConfig = {...clientConfig};
-        map<string> effectiveHeaders = headers.clone();
-        self.httpClient = check new (serviceUrl, effectiveClientConfig);
-        self.defaultHeaders = effectiveHeaders.cloneReadOnly();
-        self.tenant = effectiveTenant;
-        self.binding = binding;
-        self.mode = detectProtocolModeForBinding(card, binding);
-        if self.mode == "V0_3" && binding == "HTTP+JSON" {
-            return error VersionNotSupportedError(
-                "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent",
-                message = "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent"
-            );
-        }
-        if self.mode == "V0_3" && binding == "GRPC" {
-            return error VersionNotSupportedError(
-                "A2A protocol v0.3 has no gRPC binding equivalent",
-                message = "A2A protocol v0.3 has no gRPC binding equivalent"
-            );
-        }
-        if binding == "GRPC" {
-            grpc:ClientConfiguration grpcConfig = check projectToGrpcClientConfig(effectiveClientConfig);
-            self.grpcStub = check new (normalizeGrpcSchemeUrl(serviceUrl), grpcConfig);
-        } else {
-            self.grpcStub = ();
-        }
-        self.requestedExtensions = requestedExtensions.cloneReadOnly();
-        self.maxReconnectAttempts = maxReconnectAttempts;
-        self.agentCard = card.clone();
+        TransportBinding binding = check selectBindingFromCard(card);
+        self.delegate = check buildDelegate(
+                card, binding, clientConfig, headers, tenant,
+                requestedExtensions, maxReconnectAttempts);
     }
 
-    # Builds the header map for an outbound request. The A2A-Version header
-    # is mandatory on every request per specification section 3.6.1; an
-    # agent receiving an empty value assumes protocol version 0.3, which
-    # would silently downgrade the interaction. Sends "0.3" instead of
-    # "1.0" when this Client was constructed for a v0.3 server, per the
-    # spec's per-interface header-negotiation guidance.
-    #
-    # + return - the headers to send with the request
-    private isolated function buildHeaders() returns map<string> {
-        map<string> headers = {
-            "A2A-Version": self.mode == "V0_3" ? "0.3" : "1.0"
-        };
-        if self.binding != "GRPC" {
-            headers["Content-Type"] = "application/json";
-        }
-        foreach [string, string] [k, v] in self.defaultHeaders.entries() {
-            headers[k] = v;
-        }
-        if self.requestedExtensions.length() > 0 {
-            headers["A2A-Extensions"] = string:'join(",", ...self.requestedExtensions);
-        }
-        return headers;
-    }
-
-    # Returns the extensions the remote agent granted on the most recent
-    # call that reported them, per the response's A2A-Extensions header.
-    # Empty until the first call completes. Note: a call whose response
-    # omits the header does not clear a previous grant — this reflects the
-    # most recent call that reported an A2A-Extensions header, not
-    # necessarily literally the single most recent call.
-    #
-    # + return - the granted extension URIs
     public isolated function lastGrantedExtensions() returns string[] {
-        lock {
-            return self.grantedExtensions.clone();
-        }
+        return self.delegate.lastGrantedExtensions();
     }
 
-    # Captures the response's A2A-Extensions header, if present, into
-    # self.grantedExtensions. Shared by rpcCall and openEventStream, since
-    # both read a granted-extensions header off their respective
-    # http:Response before doing anything else with it.
-    #
-    # Per spec §14.2.2, the request and response directions use the exact
-    # same header name (`A2A-Extensions`, not the deprecated `X-`-prefixed
-    # convention) — this reads that name first, falling back to the
-    # legacy `X-A2A-Extensions` spelling only for non-conformant servers
-    # that still send it.
-    #
-    # + resp - the response just received from the remote agent
-    private isolated function captureGrantedExtensions(http:Response resp) {
-        string|error extHeader = resp.getHeader("A2A-Extensions");
-        if extHeader is error {
-            extHeader = resp.getHeader("X-A2A-Extensions");
-        }
-        if extHeader is string {
-            string[] granted = [];
-            if extHeader.length() > 0 {
-                foreach string entry in re `,`.split(extHeader) {
-                    granted.push(entry.trim());
-                }
-            }
-            lock {
-                self.grantedExtensions = granted.clone();
-            }
-        }
-    }
-
-    # Performs a unary JSON-RPC call and returns the unwrapped result.
-    #
-    # + method - the JSON-RPC method name
-    # + params - the JSON-RPC method parameters
-    # + return - the unwrapped result, or an error
-    private isolated function rpcCall(string method, map<json> params) returns json|error {
-        if self.binding == "HTTP+JSON" {
-            return self.restCall(method, params);
-        }
-        if self.binding == "GRPC" {
-            return self.grpcCall(method, params);
-        }
-        string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
-        transport:JsonRpcRequest req = {
-            id: uuid:createType4AsString(),
-            method: wireMethod,
-            params: params
-        };
-        http:Response resp = check self.httpClient->post(
-            "", req.toJson(), self.buildHeaders()
-        );
-        self.captureGrantedExtensions(resp);
-        json body = check resp.getJsonPayload();
-        transport:JsonRpcResponse rpcResp =
-            check body.cloneWithType(transport:JsonRpcResponse);
-        transport:JsonRpcError? rpcErr = rpcResp?.'error;
-        if rpcErr is transport:JsonRpcError {
-            return toA2AError(rpcErr);
-        }
-        json? result = rpcResp?.result;
-        if result is () {
-            return error InvalidAgentResponseError(
-                "JSON-RPC response contained neither result nor error"
-            );
-        }
-        return result;
-    }
-
-    # Performs one REST binding call and returns the unwrapped result, or
-    # (), matching rpcCall's contract for callers that only need the
-    # unwrapped result on the JSON-RPC side. DeleteTaskPushNotificationConfig
-    # returns google.protobuf.Empty over the wire — an absent or empty
-    # body must be tolerated here rather than treated as
-    # InvalidAgentResponseError, unlike a genuinely malformed response.
-    #
-    # + method - the JSON-RPC-style method name (see buildRestRequest)
-    # + params - the same params map the JSON-RPC binding would build
-    # + return - the unwrapped result json (or an empty map for a bodiless
-    #            success response), or a typed A2AError
-    private isolated function restCall(string method, map<json> params) returns json|error {
-        [string, json?] [path, body] = check buildRestRequest(method, params);
-        RestOperation op = REST_OPERATIONS.get(method);
-        map<string> headers = self.buildHeaders();
-        http:Response resp;
-        if op.httpMethod == "GET" {
-            resp = check self.httpClient->get(path, headers);
-        } else if op.httpMethod == "DELETE" {
-            resp = check self.httpClient->delete(path, headers = headers);
-        } else {
-            resp = check self.httpClient->post(path, body ?: {}, headers);
-        }
-        self.captureGrantedExtensions(resp);
-        if resp.statusCode >= 200 && resp.statusCode < 300 {
-            json|error payload = resp.getJsonPayload();
-            if payload is json {
-                return payload;
-            }
-            // No parseable body (e.g. 204 No Content) — treat as an
-            // empty successful result. Callers of a void operation like
-            // deleteTaskPushNotificationConfig discard this; callers of
-            // an operation expecting real content will fail their own
-            // cloneWithType, which is the correct place for that failure
-            // to surface, not here.
-            return {};
-        }
-        json? errorBody = resp.getJsonPayload() is json ? check resp.getJsonPayload() : ();
-        return toA2AErrorFromRest(resp.statusCode, errorBody);
-    }
-
-    # Performs one gRPC binding call and returns the unwrapped result,
-    # matching rpcCall's contract. Uses the generated *Context method
-    # variants exclusively (never the plain ones) so response metadata —
-    # specifically A2A-Extensions — is reachable; see design spec Design
-    # decision 4.
-    #
-    # + method - the JSON-RPC-style method name (see encodeGrpcRequest)
-    # + params - the same params map the JSON-RPC binding would build
-    # + return - the unwrapped result json, or a typed A2AError
-    private isolated function grpcCall(string method, map<json> params) returns json|error {
-        grpcstub:A2AServiceClient stub = <grpcstub:A2AServiceClient>self.grpcStub;
-        anydata req = check encodeGrpcRequest(method, params);
-        map<string|string[]> headers = self.buildHeaders();
-        anydata|grpc:Error response = self.dispatchGrpcContextCall(stub, method, req, headers);
-        if response is grpc:Error {
-            return toA2AErrorFromGrpc(response);
-        }
-        return decodeGrpcResponse(method, response);
-    }
-
-    # Dispatches to the correct generated *Context method for one unary
-    # operation. A single match here (rather than a match inline in
-    # grpcCall) keeps grpcCall's own control flow readable and gives the
-    # streaming adapter (Task 14) an obvious place alongside this to add
-    # its own two streaming-operation cases without touching this one.
-    #
-    # Every generated *Context remote function takes a single parameter —
-    # a union of the plain request type or the corresponding
-    # `grpcstub:Context{Operation}Request` wrapper record (`{content,
-    # headers}`) — not a separate trailing headers parameter as originally
-    # predicted. Outbound metadata is therefore sent by constructing that
-    # wrapper record here, not by passing headers positionally. Confirmed
-    # against the real generated `a2a/modules/grpcstub/a2a_pb.bal`.
-    #
-    # + stub - the generated gRPC client stub
-    # + method - the JSON-RPC-style method name
-    # + req - the typed grpcstub request value from encodeGrpcRequest
-    # + headers - outbound metadata (A2A-Version, A2A-Extensions, auth headers)
-    # + return - the typed grpcstub response value, or a grpc:Error
-    private isolated function dispatchGrpcContextCall(
-            grpcstub:A2AServiceClient stub, string method, anydata req,
-            map<string|string[]> headers) returns anydata|grpc:Error {
-        match method {
-            "SendMessage" => {
-                var result = stub->SendMessageContext({content: <grpcstub:SendMessageRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "GetTask" => {
-                var result = stub->GetTaskContext({content: <grpcstub:GetTaskRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "CancelTask" => {
-                var result = stub->CancelTaskContext({content: <grpcstub:CancelTaskRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "ListTasks" => {
-                var result = stub->ListTasksContext({content: <grpcstub:ListTasksRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "CreateTaskPushNotificationConfig" => {
-                var result = stub->CreateTaskPushNotificationConfigContext({content: <grpcstub:TaskPushNotificationConfig>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "GetTaskPushNotificationConfig" => {
-                var result = stub->GetTaskPushNotificationConfigContext({content: <grpcstub:GetTaskPushNotificationConfigRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "ListTaskPushNotificationConfigs" => {
-                var result = stub->ListTaskPushNotificationConfigsContext({content: <grpcstub:ListTaskPushNotificationConfigsRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            "DeleteTaskPushNotificationConfig" => {
-                var result = stub->DeleteTaskPushNotificationConfigContext({content: <grpcstub:DeleteTaskPushNotificationConfigRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                // google.protobuf.Empty (empty:ContextNil) carries no
-                // `content` field at all -- decodeGrpcResponse's
-                // "DeleteTaskPushNotificationConfig" branch ignores its
-                // response argument entirely and always returns {}, so ()
-                // here is discarded downstream, not silently wrong.
-                return ();
-            }
-            "GetExtendedAgentCard" => {
-                var result = stub->GetExtendedAgentCardContext({content: <grpcstub:GetExtendedAgentCardRequest>req, headers});
-                if result is grpc:Error {
-                    return result;
-                }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
-                return result.content;
-            }
-            _ => {
-                return error grpc:InternalError(string `no gRPC dispatch for unary method "${method}"`);
-            }
-        }
-    }
-
-    # gRPC analogue of captureGrantedExtensions — reads A2A-Extensions off
-    # response metadata instead of an http:Response header, per design
-    # spec Design decision 4 (only the *Context method variants surface
-    # response metadata at all).
-    #
-    # Unlike http:Response.getHeader (case-insensitive), a map<string|
-    # string[]> key lookup in Ballerina is exact-match. HTTP/2 mandates
-    # lowercase header/metadata field names at the protocol level (RFC
-    # 7540 §8.1.2), so a real, spec-conformant gRPC server sends this
-    # metadata key as "a2a-extensions", not "A2A-Extensions" — the same
-    # casing issue already fixed for outbound headers (see
-    # testClientGrpcSendsMandatoryA2AVersionHeader, which asserts against
-    # "a2a-version"). This scans entries for a case-insensitive match
-    # instead of doing an exact-match lookup, so it actually finds the
-    # header a real server sends.
-    #
-    # + headers - the response metadata from a *Context call
-    private isolated function captureGrantedExtensionsFromGrpc(map<string|string[]> headers) {
-        string|string[]? extHeader = ();
-        foreach [string, string|string[]] [k, v] in headers.entries() {
-            if k.toLowerAscii() == "a2a-extensions" {
-                extHeader = v;
-                break;
-            }
-        }
-        string[] granted = [];
-        if extHeader is string && extHeader.length() > 0 {
-            foreach string entry in re `,`.split(extHeader) {
-                granted.push(entry.trim());
-            }
-        } else if extHeader is string[] {
-            granted = extHeader;
-        }
-        lock {
-            self.grantedExtensions = granted.clone();
-        }
-    }
-
-    # Sends a message to the remote agent.
-    #
-    # Blocking by default: the call does not return until the task reaches
-    # a terminal or interrupted state. Set config.returnImmediately to true
-    # for non-blocking behaviour, then poll with getTask or subscribe with
-    # subscribeToTask.
-    #
-    # The agent may respond with a Task for tracked work, or with a Message
-    # for a simple direct reply that needs no task lifecycle. Both are
-    # valid per specification section 3.1.1, so the return type covers
-    # both.
-    #
-    # + message - The message to send; messageId must be set by the caller
-    # + config - Optional send configuration
-    # + tenant - Optional per-call tenant override
-    # + metadata - Optional request-level metadata, per SendMessageRequest
-    #              (specification section 3.2.1) — distinct from
-    #              message.metadata, which is metadata on the Message itself
-    # + return - A Task or a Message on success, or an error on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        map<json> params = check buildSendMessageParams(
-                message, config, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("SendMessage", params);
-        return decodeSendMessageResult(result, self.mode);
+        return self.delegate->sendMessage(message, config, tenant, metadata);
     }
 
-    # Opens a JSON-RPC streaming call and hands the response to
-    # readSseStream. Shared by sendStreamingMessage and subscribeToTask.
-    #
-    # + method - the JSON-RPC method name
-    # + params - the JSON-RPC method parameters
-    # + return - a stream of StreamResponse values, or an error
-    private isolated function openEventStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
-        if self.binding == "GRPC" {
-            return self.openGrpcStream(method, params);
-        }
-        if self.binding == "HTTP+JSON" {
-            return self.openRestSseStream(method, params);
-        }
-        string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
-        transport:JsonRpcRequest req = {
-            id: uuid:createType4AsString(),
-            method: wireMethod,
-            params: params
-        };
-        map<string> headers = self.buildHeaders();
-        headers["Accept"] = "text/event-stream";
-        http:Response resp = check self.httpClient->post(
-            "", req.toJson(), headers
-        );
-        self.captureGrantedExtensions(resp);
-        if resp.statusCode != 200 {
-            return error A2AInternalError(
-                string `Stream request failed with HTTP ${resp.statusCode}`,
-                code = resp.statusCode
-            );
-        }
-
-        // A rejected streaming request (e.g. subscribing to a task already
-        // in a terminal state) can come back as a plain JSON-RPC error with
-        // HTTP 200, not an SSE-framed stream — resp.getSseEventStream()
-        // rejects that Content-Type with a raw, untyped error rather than
-        // surfacing the actual JSON-RPC error underneath. Detect that case
-        // first and route it through the same error mapping as a unary call.
-        if !resp.getContentType().startsWith("text/event-stream") {
-            json body = check resp.getJsonPayload();
-            transport:JsonRpcResponse rpcResp =
-                check body.cloneWithType(transport:JsonRpcResponse);
-            transport:JsonRpcError? rpcErr = rpcResp?.'error;
-            if rpcErr is transport:JsonRpcError {
-                return toA2AError(rpcErr);
-            }
-            return error InvalidAgentResponseError(
-                "Stream request returned a non-streaming response with neither a JSON-RPC error nor an SSE stream"
-            );
-        }
-
-        return readSseStream(resp, self.mode, self.binding);
-    }
-
-    # Opens a gRPC streaming call and wraps it in a GrpcStreamAdapter.
-    #
-    # Uses the generated *Context method variants exclusively (never the
-    # plain ones), matching grpcCall's rationale, so response metadata —
-    # specifically A2A-Extensions — is reachable; see design spec Design
-    # decision 4. Every generated *Context streaming remote function takes
-    # a single parameter — a union of the plain request type or the
-    # corresponding `grpcstub:Context{Operation}Request` wrapper record
-    # (`{content, headers}`) — not a separate trailing headers parameter,
-    # confirmed against the real generated `a2a/modules/grpcstub/a2a_pb.bal`
-    # (same finding as dispatchGrpcContextCall for the unary methods).
-    #
-    # + method - "SendStreamingMessage" or "SubscribeToTask"
-    # + params - the same params map the JSON-RPC binding would build
-    # + return - a stream of StreamResponse values, or a typed A2AError
-    private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
-        grpcstub:A2AServiceClient stub = <grpcstub:A2AServiceClient>self.grpcStub;
-        anydata req = check encodeGrpcRequest(method, params);
-        map<string|string[]> headers = self.buildHeaders();
-        if method == "SendStreamingMessage" {
-            grpcstub:ContextStreamResponseStream|grpc:Error result =
-                stub->SendStreamingMessageContext({content: <grpcstub:SendMessageRequest>req, headers});
-            if result is grpc:Error {
-                return toA2AErrorFromGrpc(result);
-            }
-            self.captureGrantedExtensionsFromGrpc(result.headers);
-            stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
-            return wrapped;
-        }
-        grpcstub:ContextStreamResponseStream|grpc:Error result =
-            stub->SubscribeToTaskContext({content: <grpcstub:SubscribeToTaskRequest>req, headers});
-        if result is grpc:Error {
-            return toA2AErrorFromGrpc(result);
-        }
-        self.captureGrantedExtensionsFromGrpc(result.headers);
-        stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
-        return wrapped;
-    }
-
-    # Opens a REST binding SSE stream for a streaming operation
-    # (SendStreamingMessage or SubscribeToTask).
-    #
-    # + method - the JSON-RPC-style method name (see buildRestRequest)
-    # + params - the same params map the JSON-RPC binding would build
-    # + return - a stream of StreamResponse values, or a typed A2AError
-    private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
-        [string, json?] [path, body] = check buildRestRequest(method, params);
-        RestOperation op = REST_OPERATIONS.get(method);
-        map<string> headers = self.buildHeaders();
-        headers["Accept"] = "text/event-stream";
-        http:Response resp;
-        if op.httpMethod == "GET" {
-            resp = check self.httpClient->get(path, headers);
-            // SubscribeToTask's proto annotation says GET, but a
-            // non-reference server that hand-rolled its REST routes
-            // following the reference *client* (which sends POST) might
-            // only have registered POST. Scoped to exactly this one
-            // operation — retrying broadly for every operation would
-            // mask genuine method-not-allowed errors elsewhere.
-            if method == "SubscribeToTask" && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
-                resp = check self.httpClient->post(path, body ?: {}, headers);
-            }
-        } else {
-            resp = check self.httpClient->post(path, body ?: {}, headers);
-        }
-        self.captureGrantedExtensions(resp);
-        if !resp.getContentType().startsWith("text/event-stream") {
-            json|error errBody = resp.getJsonPayload();
-            return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());
-        }
-        return readSseStream(resp, self.mode, self.binding);
-    }
-
-    # Sends a message and receives updates in real time over SSE.
-    #
-    # Requires the remote agent to declare capabilities.streaming as true;
-    # otherwise the agent returns UnsupportedOperationError.
-    #
-    # The stream opens with a Task or a Message, then delivers zero or more
-    # TaskStatusUpdateEvent and TaskArtifactUpdateEvent values, and closes
-    # when the task reaches a terminal state. Each StreamResponse carries
-    # exactly one non-nil field.
-    #
-    # + message - The message to send
-    # + config - Optional send configuration
-    # + tenant - Optional per-call tenant override
-    # + metadata - Optional request-level metadata, per SendMessageRequest
-    #              (specification section 3.2.1) — distinct from
-    #              message.metadata, which is metadata on the Message itself
-    # + return - A stream of StreamResponse values, or an error
     isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
-        string? effectiveTenant = tenant ?: self.tenant;
-        map<json> params = check buildSendMessageParams(
-                message, config, metadata, effectiveTenant, self.mode);
-        stream<StreamResponse, error?> rawStream = check self.openEventStream("SendStreamingMessage", params);
-        return wrapReconnecting(rawStream, self, self.maxReconnectAttempts, effectiveTenant);
+        return self.delegate->sendStreamingMessage(message, config, tenant, metadata);
     }
 
-    # Retrieves the current state of a task.
-    #
-    # Used for polling after a non-blocking send, for fetching final state
-    # after a push notification, or for inspecting a task after a stream
-    # has ended.
-    #
-    # + taskId - The task identifier returned by a previous sendMessage
-    # + historyLength - Maximum messages to include in task.history. Unset
-    #                   means no limit; zero requests that history be
-    #                   omitted.
-    # + tenant - Optional per-call tenant override
-    # + return - The current Task, or an error if unknown
     isolated remote function getTask(
             string taskId,
             int? historyLength = (),
             string? tenant = ()) returns Task|error {
-        map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("GetTask", params);
-        return decodeTaskResult(result, self.mode);
+        return self.delegate->getTask(taskId, historyLength, tenant);
     }
 
-    # Requests cancellation of an in-progress task.
-    #
-    # Cancellation is best effort. If the task has already reached a
-    # terminal state the agent returns TaskNotCancelableError.
-    #
-    # + taskId - The task to cancel
-    # + metadata - Optional additional context passed to the agent
-    # + tenant - Optional per-call tenant override
-    # + return - The updated Task, or an error
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
             string? tenant = ()) returns Task|error {
-        map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("CancelTask", params);
-        return decodeTaskResult(result, self.mode);
+        return self.delegate->cancelTask(taskId, metadata, tenant);
     }
 
-    # Opens a stream on an existing task.
-    #
-    # The primary use is recovering from a dropped sendStreamingMessage
-    # connection. Per specification section 3.1.6 the first event
-    # delivered is always the task's current state, which prevents
-    # information loss between calling getTask and re-subscribing.
-    #
-    # Requires capabilities.streaming to be true. Returns
-    # UnsupportedOperationError if attempted on a task already in a
-    # terminal state.
-    #
-    # + taskId - The task to subscribe to
-    # + tenant - Optional per-call tenant override
-    # + return - A stream of StreamResponse values, or an error
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
-        stream<StreamResponse, error?> rawStream = check self.openTaskSubscriptionStream(taskId, tenant);
-        if self.maxReconnectAttempts <= 0 {
-            return rawStream;
-        }
-        stream<StreamResponse, error?> wrapped = new (new ReconnectingStreamGenerator(rawStream, self, taskId, self.maxReconnectAttempts, tenant = tenant));
-        return wrapped;
+        return self.delegate->subscribeToTask(taskId, tenant);
     }
 
-    # Opens the raw, unwrapped subscribeToTask stream — the same request
-    # subscribeToTask itself sends, but without any reconnect wrapping.
-    #
-    # Used internally by both subscribeToTask (which wraps this in a
-    # ReconnectingStreamGenerator when maxReconnectAttempts > 0) and by
-    # ReconnectingStreamGenerator itself when it resubscribes on a drop.
-    # The latter must go through this raw helper rather than the public
-    # subscribeToTask remote function: calling the public
-    # subscribeToTask would construct a brand-new
-    # ReconnectingStreamGenerator with its own fresh
-    # attemptsUsed/maxAttempts budget on every single reconnect, silently
-    # resetting the attempt count each time and defeating
-    # maxReconnectAttempts entirely — against a persistently-failing
-    # agent, reconnection would recurse without bound instead of ever
-    # giving up. Going through this raw helper keeps exactly one budget
-    # (the outer generator's own) governing the whole reconnect chain.
-    #
-    # + taskId - The task to subscribe to
-    # + tenant - Optional per-call tenant override
-    # + return - A stream of StreamResponse values, or an error
-    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
-        map<json> params = buildSubscribeToTaskParams(taskId, tenant ?: self.tenant, self.mode);
-        return self.openEventStream("SubscribeToTask", params);
-    }
-
-    # Lists tasks matching an optional filter, with cursor-based pagination.
-    #
-    # Has no equivalent in A2A protocol v0.3 (confirmed new in v1.0) — a
-    # Client detected as V0_3 fails immediately with
-    # VersionNotSupportedError rather than sending a request the server
-    # can't possibly understand.
-    #
-    # + filter - Optional filter/pagination parameters
-    # + tenant - Optional per-call tenant override
-    # + return - A page of matching tasks, or an error
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
             string? tenant = ()) returns ListTasksResult|error {
-        check guardListTasksSupported(self.mode);
-        map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("ListTasks", params);
-        return decodeListTasksResult(result);
+        return self.delegate->listTasks(filter, tenant);
     }
 
-    # Registers a webhook to receive updates for a task.
-    #
-    # + config - The webhook configuration; config.taskId identifies the task
-    # + tenant - Optional per-call tenant override
-    # + return - The created config as the server persisted it, or an error
-    #            (PushNotificationNotSupportedError if capabilities.pushNotifications is false)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
-        map<json> params = check buildCreateTaskPushNotificationConfigParams(
-                config, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("CreateTaskPushNotificationConfig", params);
-        return decodeTaskPushNotificationConfig(result, self.mode);
+        return self.delegate->createTaskPushNotificationConfig(config, tenant);
     }
 
-    # Retrieves a previously registered push-notification webhook config.
-    #
-    # + taskId - The task the config was registered against
-    # + id - The config's identifier, from its creation response
-    # + tenant - Optional per-call tenant override
-    # + return - The config, or an error
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
-        // v0.3's GetTaskPushNotificationConfigParams is {id: <taskId>,
-        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
-        // per a2a-sdk 0.3.23's GetTaskPushNotificationConfigParams.
-        map<json> params = buildPushNotificationConfigRefParams(
-                taskId, id, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("GetTaskPushNotificationConfig", params);
-        return decodeTaskPushNotificationConfig(result, self.mode);
+        return self.delegate->getTaskPushNotificationConfig(taskId, id, tenant);
     }
 
-    # Lists all push-notification webhook configs registered for a task.
-    #
-    # + taskId - The task to list configs for
-    # + pageSize - Maximum results per page
-    # + pageToken - Opaque cursor from a previous result's nextPageToken
-    # + tenant - Optional per-call tenant override
-    # + return - A page of matching configs, or an error
     isolated remote function listTaskPushNotificationConfigs(
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
             string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
-        // v0.3's ListTaskPushNotificationConfigParams is {id: <taskId>}
-        // only — no pageSize/pageToken, since v0.3 has no pagination
-        // concept for this operation — per a2a-sdk 0.3.23's
-        // ListTaskPushNotificationConfigParams.
-        map<json> params = buildListTaskPushNotificationConfigsParams(
-                taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("ListTaskPushNotificationConfigs", params);
-        return decodeListTaskPushNotificationConfigsResult(result, self.mode);
+        return self.delegate->listTaskPushNotificationConfigs(taskId, pageSize, pageToken, tenant);
     }
 
-    # Deletes a push-notification webhook config. Idempotent per
-    # specification section 3.1.10 — deleting an already-deleted or
-    # nonexistent config is not an error.
-    #
-    # + taskId - The task the config was registered against
-    # + id - The config's identifier
-    # + tenant - Optional per-call tenant override
-    # + return - nil on success, or an error
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
             string? tenant = ()) returns error? {
-        // v0.3's DeleteTaskPushNotificationConfigParams is {id: <taskId>,
-        // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
-        // per a2a-sdk 0.3.23's DeleteTaskPushNotificationConfigParams.
-        map<json> params = buildPushNotificationConfigRefParams(
-                taskId, id, tenant ?: self.tenant, self.mode);
-        json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
+        return self.delegate->deleteTaskPushNotificationConfig(taskId, id, tenant);
     }
 
-    # Retrieves the agent's extended AgentCard, available after client
-    # authentication (via the same http:ClientConfiguration.auth every
-    # other operation already uses — no separate auth wiring needed).
-    #
-    # Requires capabilities.extendedAgentCard to be true; otherwise the
-    # agent returns UnsupportedOperationError, or
-    # ExtendedAgentCardNotConfiguredError if the capability is on but no
-    # extended card is actually configured.
-    #
-    # When this Client holds an AgentCard (one was passed to init, or a
-    # previous call to this method fetched one) and that card declares
-    # capabilities.extendedAgentCard as false, the held card is returned
-    # directly and no request is sent: the card has already said the endpoint
-    # isn't there, so calling it only converts a knowable no-op into a server
-    # error. This matches the reference a2a-sdk (Python), whose
-    # BaseClient.get_extended_agent_card returns the card it already holds in
-    # exactly this case. A Client constructed without a card can't know, so it
-    # still makes the call.
-    #
-    # On a successful fetch the returned card replaces the held one, so a
-    # later call reflects the extended card rather than the public card the
-    # Client started with.
-    #
-    # + tenant - Optional per-call tenant override
-    # + return - The extended AgentCard, the already-held card when that card
-    #            declares no extended-card support, or an error
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
-        lock {
-            AgentCard? held = self.agentCard;
-            if held is AgentCard && !held.capabilities.extendedAgentCard {
-                return held.clone();
-            }
-        }
-
-        map<json> params = buildGetExtendedAgentCardParams(tenant ?: self.tenant, self.mode);
-        json result = check self.rpcCall("GetExtendedAgentCard", params);
-        AgentCard fetched = check parseAgentCardBody(result);
-        lock {
-            self.agentCard = fetched.clone();
-        }
-        return fetched;
+        return self.delegate->getExtendedAgentCard(tenant);
     }
 }
