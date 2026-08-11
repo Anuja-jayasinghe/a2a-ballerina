@@ -246,29 +246,30 @@ function testSelectInterfaceMixedCardOrdering() returns error? {
     test:assertEquals(check primaryUrl(card, "HTTP+JSON"), "http://localhost:8081");
 }
 
-# Confirms selectInterface prefers the protocolVersion 1.0 entry over a 0.3
-# entry of the same binding when the 1.0 entry comes first on the card —
-# the case a plain first-match scan would already get right, included here
-# only as the control for testSelectInterfacePrefersV1OverV03WhenSecond.
+# Spec 8.3.2: supportedInterfaces is ordered by the server's own
+# preference, so among entries sharing a protocolBinding the earliest wins.
+# The entry's protocolVersion plays no part in the choice — the server
+# ordered the list deliberately, and the reference Java SDK reads it the
+# same way (it keeps only the first entry per binding).
 @test:Config {}
-function testSelectInterfacePrefersV1OverV03WhenFirst() returns error? {
+function testSelectInterfaceTakesFirstEntryForBinding() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://v1.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
-            {url: "http://v03.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
+            {url: "http://first.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://second.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
         skills: []
     };
     AgentInterface iface = check selectInterface(card);
-    test:assertEquals(iface.url, "http://v1.example");
+    test:assertEquals(iface.url, "http://first.example");
 }
 
-# The case that actually distinguishes preference-ranking from first-match:
-# the 0.3 entry comes first on the card, so a first-match scan would wrongly
-# return it. selectInterface must still prefer the 1.0 entry.
+# The discriminating case: the card lists its 0.3 interface first. A client
+# must still honour that ordering rather than hunting for a higher
+# protocolVersion further down the list.
 @test:Config {}
-function testSelectInterfacePrefersV1OverV03WhenSecond() returns error? {
+function testSelectInterfaceHonoursCardOrderOverProtocolVersion() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
@@ -278,7 +279,8 @@ function testSelectInterfacePrefersV1OverV03WhenSecond() returns error? {
         skills: []
     };
     AgentInterface iface = check selectInterface(card);
-    test:assertEquals(iface.url, "http://v1.example");
+    test:assertEquals(iface.url, "http://v03.example",
+            "the server's declared order wins; selection must not rank by protocolVersion");
 }
 
 # A card declaring a tenant on its JSONRPC interface. The shared default

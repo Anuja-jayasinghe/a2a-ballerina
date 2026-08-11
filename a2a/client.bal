@@ -119,56 +119,19 @@ public isolated function resolveAgentCard(
 # The A2A transport bindings this library can speak.
 public type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
-# Ranks an AgentInterface's protocolVersion for selectInterface's
-# preference order, per the comparison against the reference Python SDK's
-# _find_best_interface: exactly "1.0" first, then anything newer, then the
-# "0.x" pre-1.0 tier, then unversioned last (never a hard error, since one
-# odd version string on a card shouldn't fail selection).
-#
-# + protocolVersion - the interface's protocolVersion field, if any
-# + return - higher is more preferred
-isolated function protocolVersionRank(string? protocolVersion) returns int {
-    if protocolVersion is () {
-        return 0;
-    }
-    if protocolVersion == "1.0" {
-        return 3;
-    }
-    string[] parts = re `\.`.split(protocolVersion);
-    if parts.length() >= 1 {
-        int|error major = int:fromString(parts[0]);
-        if major is int {
-            int minor = 0;
-            if parts.length() >= 2 {
-                int|error parsedMinor = int:fromString(parts[1]);
-                if parsedMinor is int {
-                    minor = parsedMinor;
-                }
-            }
-            if major > 1 || (major == 1 && minor > 0) {
-                return 2;
-            }
-            if major >= 0 {
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
-
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
 # protocolVersion, which must come from the same entry the url did, not
 # be independently re-derived (a card can list several interfaces with
 # different tenant/version values).
 #
-# Among multiple entries declaring the same protocolBinding, the one whose
-# protocolVersion ranks highest per protocolVersionRank wins — not simply
-# the first one on the card — so a card's supportedInterfaces ordering
-# can't silently downgrade the protocol version a caller ends up talking.
-# Ties (including cards with only one matching entry, the common case)
-# keep the first-seen entry, so every single-entry-per-binding card
-# behaves exactly as before.
+# Among multiple entries declaring the same protocolBinding, the earliest
+# on the card wins. Per spec 8.3.2 the supportedInterfaces array is ordered
+# by the server's own preference — "the first entry represents the
+# preferred interface", and a client should "prefer earlier entries in the
+# ordered list" — so the order is the server's decision to make, not this
+# library's to second-guess. The reference Java SDK reads it the same way,
+# keeping only the first entry per binding.
 #
 # + card - the agent card to read the endpoint from
 # + preferredBinding - which transport binding to look for; defaults to
@@ -182,19 +145,10 @@ isolated function protocolVersionRank(string? protocolVersion) returns int {
 isolated function selectInterface(
         AgentCard card,
         TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
-    AgentInterface? best = ();
-    int bestRank = -1;
     foreach AgentInterface iface in card.supportedInterfaces {
         if iface.protocolBinding == preferredBinding {
-            int rank = protocolVersionRank(iface?.protocolVersion);
-            if rank > bestRank {
-                best = iface;
-                bestRank = rank;
-            }
+            return iface;
         }
-    }
-    if best is AgentInterface {
-        return best;
     }
     return error(string `AgentCard has no ${preferredBinding} entry in supportedInterfaces`);
 }
