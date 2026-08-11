@@ -1,0 +1,262 @@
+# Public API provenance
+
+Every public symbol in `ballerina/a2a`, classified by where it comes from:
+the A2A specification, a convention borrowed from a reference SDK, or an
+invention of this library. For anything in the last two categories, the
+justification for carrying it.
+
+This exists because the honest question about any SDK is *"why is this
+here?"* — and for a pre-release library the answer needs to be written
+down, since public surface cannot be withdrawn after release without
+breaking callers.
+
+**Sources checked directly, not from memory:**
+
+- A2A specification §8.3.2 (client protocol selection), §8.4.3 (signature
+  verification), §9.4 (client operations), §14.2.2 (extension headers).
+- Java SDK — `a2aproject/sdk`: `ClientBuilder`, `Client`, `ClientTransport`
+  (SPI), `A2A.getAgentCard`, `A2AHeaders`.
+- Python `a2a-sdk` — `a2a.client`: `client_factory.py`, `client.py`,
+  `base_client.py`, `card_resolver.py`, and the package's `__all__`.
+
+---
+
+## Summary
+
+| Category | Count |
+|---|---|
+| Spec-mandated | 49 |
+| Reference-SDK convention (not in spec) | 3 |
+| Invented here | 5 |
+| **Total public symbols** | **57** |
+
+---
+
+## 1. Spec-mandated (49)
+
+Carried because the protocol defines them. No further justification needed.
+
+**Domain types — `types.bal` (36).** `Role`, `Part`, `Message`,
+`AgentProvider`, `AgentExtension`, `AgentCapabilities`, `AgentSkill`,
+`AgentInterface`, `AgentCard`, `TaskState`, `TaskStatus`, `Artifact`,
+`Task`, `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`,
+`StreamResponse`, `SendMessageResult`, `AuthenticationInfo`,
+`TaskPushNotificationConfig`, `SendMessageConfiguration`, `ListTasksFilter`,
+`ListTasksResult`, `ListTaskPushNotificationConfigsResult`,
+`AgentCardSignature`, plus the security-scheme set (`ApiKeySecurityScheme`,
+`HttpAuthSecurityScheme`, `OAuth2SecurityScheme`,
+`OpenIdConnectSecurityScheme`, `MutualTlsSecurityScheme`, `SecurityScheme`,
+`SecurityRequirement`) and the four OAuth flow records with `OAuthFlows`.
+
+The security types follow OpenAPI 3.0's Security Scheme Object, which the
+spec adopts by reference rather than redefining.
+
+**The eleven operations (§9.4)**, declared on `AgentClient` and implemented
+by all four client types: `sendMessage`, `sendStreamingMessage`, `getTask`,
+`cancelTask`, `subscribeToTask`, `listTasks`,
+`createTaskPushNotificationConfig`, `getTaskPushNotificationConfig`,
+`listTaskPushNotificationConfigs`, `deleteTaskPushNotificationConfig`,
+`getExtendedAgentCard`.
+
+**Error taxonomy — `errors.bal` (12 of 13).** `A2AErrorDetail`, `A2AError`,
+and the nine subtypes mapping one-to-one onto the spec's JSON-RPC error
+code table (§4.1): `TaskNotFoundError` (-32001) through
+`VersionNotSupportedError` (-32009), plus `A2AInternalError` as the
+catch-all for unrecognised codes.
+
+The *codes* are the spec's. Modelling them as distinct Ballerina error
+types rather than one error carrying a code is a language-idiom decision —
+Ballerina has no exception inheritance, so a distinct-error hierarchy is
+the idiomatic equivalent.
+
+---
+
+## 2. Reference-SDK convention, not in the spec (3)
+
+The spec is silent on these. Both reference SDKs do them, so a Ballerina
+user coming from either finds what they expect.
+
+### `resolveAgentCard`
+
+The spec defines discovery as a fetch of `/.well-known/agent-card.json`
+(§8.2). It does not define an SDK function for it.
+
+Both reference SDKs expose one:
+
+- Java: `A2A.getAgentCard(String agentUrl)` — static, four overloads
+- Python: `A2ACardResolver.get_agent_card()`
+
+Carried because discovery is separable from calling: a caller frequently
+wants to inspect a card (capabilities, skills, security requirements)
+before deciding whether to construct a client at all. Passing a URL
+straight to a constructor covers the common path; this covers the rest.
+
+### Server-preference transport selection, with client preference as an opt-out
+
+Spec §8.3.2 says a client should *"select the first supported transport"*,
+preferring *"earlier entries in the ordered list"*. What it does **not**
+define is how a caller overrides that.
+
+Both reference SDKs make the override explicit and default it off:
+
+- Java: `ClientConfig.isUseClientPreference()`, default `false`
+- Python: `use_client_preference: bool = False`, documented
+  *"Recommended to use server preferences in most situations"*
+
+This library draws the same distinction, but through the type system rather
+than a boolean: `Client` honours the card's ordering, and constructing
+`JsonRpcClient`/`RestClient`/`GrpcClient` directly expresses a client
+preference. The *semantics* are borrowed; the *mechanism* is ours (see §3).
+
+### `AuthResolutionError`
+
+Not a spec error code — it never crosses the wire. It reports that a
+caller-supplied `http:ClientConfiguration.auth` has no gRPC equivalent
+(OAuth2/JWT configs cannot be projected onto `grpc:ClientConfiguration`).
+
+Kept because the alternative is silently dropping auth on the gRPC binding,
+which fails later as an opaque authentication error from the server. Both
+reference SDKs surface transport-configuration problems at construction
+too, though neither has this exact error because neither projects auth
+across two transport stacks the way `ballerina/grpc` forces here.
+
+---
+
+## 3. Invented here (5)
+
+Nothing in the spec or either reference SDK. Each is here for a stated
+reason, and each is additive — removable only before release, which is why
+they are listed.
+
+### `AgentClient` (interface type)
+
+**Closest precedent, not an equivalent.** Java has `ClientTransport`, an
+SPI interface with per-transport implementations, but it is internal
+plumbing behind a single public `Client`. Python exposes `Client` and
+`BaseClient` and no transport interface at all.
+
+Ours is a *public* interface implemented by all four client types, so
+binding-agnostic code can be written against one type:
+
+```ballerina
+a2a:AgentClient agent = check new a2a:Client(url);
+```
+
+**Why:** the type split (below) is only free for callers if there is a type
+that unifies the four. Without it, every function taking a client would
+have to name a concrete class and lose the ability to accept another.
+
+### `JsonRpcClient`, `RestClient`, `GrpcClient` (public per-transport types)
+
+**This is the significant divergence from both reference SDKs.** Neither
+exposes per-transport client classes:
+
+- Java has `JSONRPCTransportProvider`, `RestTransportProvider`,
+  `GrpcTransportProvider` — but behind the `ClientTransport` SPI, selected
+  by `ClientBuilder`, never constructed directly by a caller.
+- Python's `__all__` is `AuthInterceptor`, `BaseClient`, `Client`,
+  `ClientCallContext`, `ClientCallInterceptor`, `ClientConfig`,
+  `ClientEvent`, `ClientFactory` — no transport classes.
+
+**Why here:** the concept exists in both SDKs; only its visibility differs.
+Making it public is what lets client preference be expressed by choosing a
+type instead of by a boolean flag — replacing Java's `useClientPreference`
+and Python's `use_client_preference` with something the compiler checks.
+It also removes per-call binding dispatch entirely: `JsonRpcClient` *is*
+the JSON-RPC client, so there is no `if binding == …` to evaluate on every
+operation and no reachable-but-wrong branch to test.
+
+**The cost, stated plainly:** three more public types than either reference
+SDK, and a caller reading their docs will not find them. If per-transport
+types prove to be surface nobody wants, they are the most likely candidate
+for withdrawal — which is precisely why the decision is recorded here.
+
+### `lastGrantedExtensions()`
+
+The `A2A-Extensions` header is spec (§14.2.2), in both directions. Reading
+what the agent *granted* back to the caller is not.
+
+Verified: **neither reference SDK exposes an accessor for this.** Java
+defines the header constant (`A2AHeaders.A2A_EXTENSIONS`) and sends it;
+Python takes an `extensions` argument described as *"List of extensions to
+be activated"*. Both treat it as request-side only.
+
+**Why here:** requesting an extension is negotiation, and a negotiation the
+caller cannot observe the result of is not much of one. Without this, a
+caller that requested an extension has no way to know whether the agent
+honoured it short of inferring from response shape.
+
+**Caveat worth knowing:** it reflects the most recent call that *reported*
+the header. A response omitting the header does not clear a previous grant.
+
+### `maxReconnectAttempts` (automatic SSE/stream reconnection)
+
+**Neither reference SDK does this.** Verified by search: Java's "reconnect"
+references are docstrings telling the caller to invoke `subscribeToTask`
+again; Python's is a comment on `TaskResubscriptionRequest` in its legacy
+module. Both leave reconnection to the caller.
+
+The spec defines `subscribeToTask` as the mechanism for resuming (§3.1.6,
+noting the first event is always the task's current state, which is what
+makes resumption lossless) — but says nothing about a client doing it
+automatically.
+
+**Why here:** opt-in and default `0`, which preserves exactly the
+manual-reconnect behaviour both reference SDKs have. When enabled, the
+client resubscribes on a dropped (non-terminal) stream up to the configured
+count. The attempt budget is deliberately shared across the whole reconnect
+chain rather than reset per reconnect — otherwise a persistently failing
+agent would retry without bound.
+
+### `requestedExtensions` (constructor parameter)
+
+Sending the header is spec. Making the set a per-client construction
+parameter rather than a per-call argument is this library's shape — Python
+takes `extensions` per call.
+
+**Why here:** in practice the extension set a client wants is a property of
+the client, not of each message. Per-call remains available implicitly, in
+that a caller wanting different sets can construct different clients.
+Narrower than Python's per-call form; the difference is worth knowing.
+
+---
+
+## 4. Deliberately absent
+
+Built, then removed before release for lack of spec definition or SDK
+precedent. Each has a tracking issue recording what existed and what would
+justify bringing it back.
+
+| Removed | Issue | Reason |
+|---|---|---|
+| `verifyAgentCardSignature` | [#12](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/12) | §8.4.3 mandates a *procedure*, defines no API; no reference SDK implements one; the implementation lacked RFC 8785 canonicalization and so would have failed against any conformant signer |
+| `buildAuthFromCard` / `ResolvedAuth` / `credentials` | [#13](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/13) | spec models security schemes as card *data*, not a client auth-wiring API; both SDKs take auth on the builder; the implementation covered only 2 of 5 scheme kinds by design |
+| `resolveAgentCardCached` / `CachedAgentCard` | [#14](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/14) | ETag conditional GET: not spec, no SDK precedent, and no caller inside the library |
+
+Also removed, without issues, because nothing was lost: `newClient` (folded
+into `init`), the `serviceUrl` escape hatch (a caller could dial a URL the
+card never declared — the redirection surface that resolving a card exists
+to close), `detectProtocolMode` (a one-line delegate), and a leftover
+`main()` scaffold.
+
+---
+
+## 5. Internal by design
+
+Not public, listed so the choice is visible rather than accidental:
+
+`TransportBinding`, `ProtocolMode`, `selectInterface`, `primaryUrl`,
+`detectProtocolModeForBinding`, `encodeRawBytesForWire`,
+`decodeRawBytesFromWire`, `parseSecuritySchemes`,
+`parseSecurityRequirements`, `parseAgentCardSignatures`, and every symbol in
+`modules/grpcstub` and `modules/transport` (held back at the package
+boundary with `export = false`).
+
+`selectInterface` is the closest call: it implements the spec's own §8.3.2
+algorithm, which is a defensible thing to expose. It is internal because
+once construction performs selection, a consumer has no reason to run it by
+hand. Publicizing it later is additive; the reverse is not.
+
+`TransportBinding` became internal as a consequence rather than a decision:
+once `Client` took its binding from the card instead of a parameter, the
+type stopped appearing in any public signature.

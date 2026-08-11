@@ -110,6 +110,20 @@ procedure but defines no API, and the implementation lacked RFC 8785
 canonicalization), automatic auth wiring from a card's security schemes, and
 ETag-aware AgentCard caching.
 
+## Why each public symbol exists
+
+`docs/API_PROVENANCE.md` classifies every public symbol as spec-mandated,
+borrowed from a reference SDK convention the spec doesn't define, or
+invented here — with the justification, and the cost, for everything in the
+last two categories. Worth reading before relying on anything that isn't
+straight from the specification.
+
+The short version: 49 of 57 public symbols are spec-mandated. The main
+divergence from the Python and Java SDKs is that this library exposes
+per-transport client types (`JsonRpcClient`, `RestClient`, `GrpcClient`)
+where they keep the equivalent internal — which is what lets client
+transport preference be a type choice rather than a configuration flag.
+
 ## Client lifecycle
 
 `Client` has no `close` and needs none. A Ballerina `http:Client` routes through
@@ -131,16 +145,16 @@ Two things still worth doing:
 additive, none required by the spec): a client-call interceptor pipeline, a
 per-call context carrying timeouts and headers, transport negotiation from the
 Agent Card with a pluggable transport registry, client-level send defaults,
-OpenTelemetry tracing, and pluggable/async credential resolution. Auth is wired
-once at construction from the card (`buildAuthFromCard`) rather than resolved
-per call, so rotating a credential means constructing a new `Client`.
+OpenTelemetry tracing, and pluggable/async credential resolution. Auth is
+supplied once at construction via `clientConfig.auth`/`headers` rather than
+resolved per call, so rotating a credential means constructing a new client.
 
 **Genuinely still open**: mutual TLS — `MutualTlsSecurityScheme` is fully
-typed in the data model, but `buildAuthFromCard` deliberately doesn't
-auto-wire it (a client certificate isn't a single credential string the way
-API-key/HTTP-auth are — see `auth.bal`'s module doc comment), and there's no
-higher-level helper for it beyond what `http:ClientConfiguration.secureSocket`
-already offers generically. Plus the JWS canonicalization gap noted above.
+typed in the data model, but there's no higher-level helper for it beyond
+what `http:ClientConfiguration.secureSocket` already offers generically.
+(This library no longer derives any auth from the card, so mTLS is wired the
+same way as every other scheme: by the caller. See issue #13.) Plus the JWS
+canonicalization gap noted above.
 Full, current status: [`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) §12.1
 — though treat that section as a snapshot to re-verify against source, not a
 live source of truth (parts of this design doc predate later features and
