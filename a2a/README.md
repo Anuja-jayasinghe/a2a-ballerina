@@ -66,19 +66,25 @@ transparently — the calling code above is identical either way.
 `listTaskPushNotificationConfigs`, `deleteTaskPushNotificationConfig`,
 `getExtendedAgentCard`.
 
-**All three transport bindings** (§5) — each is its own client type, and the
-common `Client` picks one automatically from the resolved `AgentCard`:
+**All three transport bindings** (§5) — each is its own client type, and
+whether the agent or the caller chooses is expressed by which type you
+construct:
 ```ballerina
-// auto-detecting: reads the card's preferred binding, delegates to the match
-a2a:AgentClient c = check new a2a:Client(url);
+// the agent's preference wins: Client walks the card's supportedInterfaces
+// in order and speaks the first binding this library supports (spec §8.3.2)
+a2a:Client agent = check new (url);
 
-// or skip auto-detection when you already know the binding
+// the caller's preference wins: bypasses the card's ordering entirely
 a2a:JsonRpcClient j = check new (url);
 a2a:RestClient    r = check new (url);
 a2a:GrpcClient    g = check new (url);
 ```
-All four implement `a2a:AgentClient`, so binding-agnostic code is written
-against that one type regardless of which it holds.
+There is no `binding` parameter — picking a type *is* how you pick a
+binding. All four implement `a2a:AgentClient`, so binding-agnostic code is
+written against that one type regardless of which it holds:
+```ballerina
+a2a:AgentClient c = check new a2a:Client(url);
+```
 
 **Both wire dialects** — current v1.0 and the legacy v0.3 dialect (different
 JSON-RPC method names, enum casing, response wrapping) — detected from the
