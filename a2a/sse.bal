@@ -131,9 +131,20 @@ class A2AStreamGenerator {
 # delivered again) — callers already need to tolerate duplicate/out-of-order
 # status updates per the spec's own guidance on this, so this is not a new
 # burden.
+# The single capability ReconnectingStreamGenerator needs from the client
+# that owns it: reopening a task subscription, raw, without wrapping the
+# result in another reconnect layer.
+#
+# Declared as an object type rather than naming a concrete class so that
+# every transport-specific client can hand itself to the generator. The
+# generator has no interest in which binding it is reconnecting over.
+type StreamReconnectable isolated object {
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant) returns stream<StreamResponse, error?>|error;
+};
+
 class ReconnectingStreamGenerator {
     private stream<StreamResponse, error?> current;
-    private final Client a2aClient;
+    private final StreamReconnectable a2aClient;
     private final string taskId;
     // The per-call tenant override (if any) from the originating
     // sendStreamingMessage/subscribeToTask call. Must be threaded through to
@@ -151,7 +162,7 @@ class ReconnectingStreamGenerator {
     // own first result, so the caller never observes that a peek happened.
     private record {| StreamResponse value; |}? bufferedFirst;
 
-    isolated function init(stream<StreamResponse, error?> initial, Client a2aClient, string taskId, int maxAttempts, record {| StreamResponse value; |}? bufferedFirst = (), string? tenant = ()) {
+    isolated function init(stream<StreamResponse, error?> initial, StreamReconnectable a2aClient, string taskId, int maxAttempts, record {| StreamResponse value; |}? bufferedFirst = (), string? tenant = ()) {
         self.current = initial;
         self.a2aClient = a2aClient;
         self.taskId = taskId;
