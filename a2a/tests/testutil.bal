@@ -323,9 +323,26 @@ isolated function defaultMockAgentCard() returns json {
         description: "A scripted mock agent used by Client tests",
         version: "1.0.0",
         url: "http://localhost:19199",
-        capabilities: {streaming: true},
+        // The mock answers GetExtendedAgentCard, so the card declares the
+        // capability. This matters now that every Client holds a card:
+        // getExtendedAgentCard short-circuits on a card declaring
+        // extendedAgentCard=false, so a neutral fixture would silently stop
+        // every extended-card test from ever reaching the wire.
+        capabilities: {streaming: true, extendedAgentCard: true},
+        // All three bindings are declared so a test can construct any
+        // binding's client from getServerBaseUrl() alone. The client
+        // resolves this card over HTTP from the 19199 mock, then dials
+        // whichever interface matches its binding — for GRPC that is the
+        // separate gRPC mock port.
+        //
+        // No tenant is declared here on purpose: tenant auto-wiring is
+        // exercised by tests that override the well-known card with one
+        // that does declare it, so the common fixture stays neutral and
+        // every other test's request params are unaffected.
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "JSONRPC", tenant: "acme-corp"}
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC"},
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON"},
+            {url: string `http://localhost:${GRPC_MOCK_PORT}`, protocolBinding: "GRPC"}
         ],
         skills: [
             {
