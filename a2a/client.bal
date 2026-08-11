@@ -179,7 +179,7 @@ isolated function protocolVersionRank(string? protocolVersion) returns int {
 #            legacy top-level url field is never treated as a match for
 #            "HTTP+JSON" — it predates that binding entirely — so only
 #            "JSONRPC" callers fall back to it (see primaryUrl)
-public isolated function selectInterface(
+isolated function selectInterface(
         AgentCard card,
         TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
     AgentInterface? best = ();
@@ -209,7 +209,7 @@ public isolated function selectInterface(
 # + return - the matching supportedInterfaces entry's url, the legacy url
 #            field if preferredBinding is "JSONRPC" and no such entry
 #            exists, or an error if neither is present
-public isolated function primaryUrl(
+isolated function primaryUrl(
         AgentCard card,
         TransportBinding preferredBinding = "JSONRPC") returns string|error {
     AgentInterface|error iface = selectInterface(card, preferredBinding);
