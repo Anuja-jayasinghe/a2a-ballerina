@@ -187,6 +187,39 @@ is additive.
 `TransportBinding` **stays public** — `Client.init`'s `binding` parameter
 is typed with it.
 
+## Submodules held back at the package boundary
+
+`modules/grpcstub` and `modules/transport` are implementation detail, but
+their symbols cannot simply drop `public`: Ballerina requires `public` for
+cross-module access within a package, so the root module using them forces
+them public.
+
+`grpcstub` is the acute case. It is protoc-generated, and it re-declares
+its own `Task`, `Message`, `AgentCard`, `Part`, `SecurityScheme` and
+friends — same names as the root module's spec types, structurally
+different shapes (protobuf field naming versus JSON camelCase). A consumer
+importing it directly would end up holding an incompatible `Task` next to
+`a2a:Task`. Worse, the shapes are whatever `protoc-gen-ballerina` emits, so
+regeneration could change them without anyone deciding to.
+
+The fix is at the package boundary rather than the symbol level:
+
+```toml
+[[package.modules]]
+name = "a2a.grpcstub"
+export = false
+```
+
+Verified against a scratch consumer package built on a locally-published
+bala: `import ballerina/a2a.grpcstub` fails with `cannot resolve module
+'ballerina/a2a.grpcstub:0.2.0 is not exported'`, while `import
+ballerina/a2a` resolves normally. Intra-package use is unaffected, and the
+setting survives stub regeneration because it lives in `Ballerina.toml`
+rather than the generated file.
+
+This also makes true a claim `a2a/CLAUDE.md` had been making without
+enforcement — that `modules/transport/` is "internal and unexported".
+
 ## Resulting public surface
 
 - Every spec-facing type in `types.bal`, unchanged.
@@ -194,6 +227,8 @@ is typed with it.
 - `TransportBinding`.
 - The `A2AError` hierarchy minus the two signature errors.
 - `AgentClient`, `Client`, `JsonRpcClient`, `RestClient`, `GrpcClient`.
+
+Nothing from `a2a.grpcstub` or `a2a.transport`.
 
 ## Target architecture
 

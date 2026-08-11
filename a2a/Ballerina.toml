@@ -4,6 +4,31 @@ name = "a2a"
 version = "0.2.0"
 distribution = "2201.13.4"
 
+# modules/grpcstub and modules/transport are implementation detail, not API.
+#
+# Ballerina requires `public` for cross-module access within a package, so
+# the root module using these forces every type in them to be `public` —
+# which would otherwise make them part of this package's compatibility
+# promise. grpcstub is the worst case: it is protoc-generated, and it
+# re-declares its own `Task`, `Message`, `AgentCard`, `Part`,
+# `SecurityScheme` and friends that collide by NAME with the root module's
+# spec types while being structurally different (protobuf field naming vs.
+# JSON camelCase). A consumer importing it directly would get an
+# incompatible `Task` sitting next to `a2a:Task`.
+#
+# `export = false` blocks the import at the package boundary while leaving
+# intra-package use unaffected, and it survives stub regeneration because
+# it lives here rather than in the generated file. Verified against a
+# scratch consumer package: `import ballerina/a2a.grpcstub` fails with
+# "is not exported", while `import ballerina/a2a` resolves normally.
+[[package.modules]]
+name = "a2a.grpcstub"
+export = false
+
+[[package.modules]]
+name = "a2a.transport"
+export = false
+
 [build-options]
 observabilityIncluded = true
 
