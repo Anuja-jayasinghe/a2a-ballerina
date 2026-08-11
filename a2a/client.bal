@@ -332,9 +332,25 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 #            interface this library can speak
 isolated function selectBindingFromCard(AgentCard card) returns TransportBinding|error {
     foreach AgentInterface iface in card.supportedInterfaces {
-        string binding = iface.protocolBinding;
-        if binding == "JSONRPC" || binding == "HTTP+JSON" || binding == "GRPC" {
-            return <TransportBinding>binding;
+        string declared = iface.protocolBinding;
+        if declared != "JSONRPC" && declared != "HTTP+JSON" && declared != "GRPC" {
+            continue;
+        }
+        TransportBinding binding = <TransportBinding>declared;
+        // "First *supported* transport" has to mean supported in practice,
+        // not merely a binding name this library recognises. A2A v0.3
+        // exists only over JSON-RPC, so a v0.3 REST or gRPC interface is
+        // something the matching client would reject at construction.
+        // Skipping it here lets a card that lists one ahead of a
+        // serviceable interface still connect, instead of failing outright
+        // on an entry no client could ever have used.
+        //
+        // The mode is resolved per binding rather than off this entry, so
+        // the judgement matches exactly what the concrete client will
+        // resolve: both go through selectInterface, which takes the first
+        // interface declaring that binding.
+        if binding == "JSONRPC" || detectProtocolModeForBinding(card, binding) == "V1_0" {
+            return binding;
         }
     }
     // A pre-1.0 card declares no supportedInterfaces at all, only a
