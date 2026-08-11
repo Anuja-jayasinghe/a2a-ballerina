@@ -785,55 +785,10 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
-        map<json> params = {"message": messageJson};
-        if config is SendMessageConfiguration {
-            params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
-        }
-        if metadata is map<json> {
-            params["metadata"] = metadata;
-        }
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing is a v1.0-only concept (per-AgentInterface tenant
-        // values); v0.3 has no wire counterpart, so it's omitted rather
-        // than sent as an unrecognized param a strict v0.3 server might
-        // reject.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = check buildSendMessageParams(
+                message, config, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("SendMessage", params);
-
-        if self.mode == "V0_3" {
-            return check decodeV03SendResult(result);
-        }
-
-        // The wire response wraps the payload — {"task": {...}} or
-        // {"message": {...}} — rather than returning either one flat.
-        SendMessageResult wrapped = check (check decodeRawBytesFromWire(result)).cloneWithType(SendMessageResult);
-        Task? maybeTask = wrapped?.task;
-        Message? maybeMessage = wrapped?.message;
-
-        // A conforming server can't produce this — task/message form a real
-        // protobuf oneof upstream, which makes both being set structurally
-        // impossible in a well-formed response. But SendMessageResult is a
-        // plain open record on our side, not an actual oneof, so nothing
-        // stops a non-conforming server from sending both. Rather than
-        // silently preferring one, treat it as the malformed response it is.
-        if maybeTask is Task && maybeMessage is Message {
-            return error InvalidAgentResponseError(
-                "Response contained both a task and a message"
-            );
-        }
-        if maybeTask is Task {
-            return maybeTask;
-        }
-        if maybeMessage is Message {
-            return maybeMessage;
-        }
-        return error InvalidAgentResponseError(
-            "Response contained neither a task nor a message"
-        );
+        return decodeSendMessageResult(result, self.mode);
     }
 
     # Opens a JSON-RPC streaming call and hands the response to
@@ -985,19 +940,9 @@ public isolated client class Client {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
-        json messageJson = self.mode == "V0_3" ? check encodeV03Message(message) : encodeRawBytesForWire(message.toJson());
-        map<json> params = {"message": messageJson};
-        if config is SendMessageConfiguration {
-            params["configuration"] = self.mode == "V0_3" ? encodeV03SendConfiguration(config) : config.toJson();
-        }
-        if metadata is map<json> {
-            params["metadata"] = metadata;
-        }
         string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
+        map<json> params = check buildSendMessageParams(
+                message, config, metadata, effectiveTenant, self.mode);
         stream<StreamResponse, error?> rawStream = check self.openEventStream("SendStreamingMessage", params);
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
@@ -1054,17 +999,9 @@ public isolated client class Client {
             string taskId,
             int? historyLength = (),
             string? tenant = ()) returns Task|error {
-        map<json> params = {"id": taskId};
-        if historyLength is int {
-            params["historyLength"] = historyLength;
-        }
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
+        map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("GetTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
+        return decodeTaskResult(result, self.mode);
     }
 
     # Requests cancellation of an in-progress task.
@@ -1080,17 +1017,9 @@ public isolated client class Client {
             string taskId,
             map<json>? metadata = (),
             string? tenant = ()) returns Task|error {
-        map<json> params = {"id": taskId};
-        if metadata is map<json> {
-            params["metadata"] = metadata;
-        }
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
+        map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("CancelTask", params);
-        return self.mode == "V0_3" ? check parseV03Task(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(Task);
+        return decodeTaskResult(result, self.mode);
     }
 
     # Opens a stream on an existing task.
@@ -1139,12 +1068,7 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or an error
     isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
-        map<json> params = {"id": taskId};
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
+        map<json> params = buildSubscribeToTaskParams(taskId, tenant ?: self.tenant, self.mode);
         return self.openEventStream("SubscribeToTask", params);
     }
 
@@ -1161,52 +1085,10 @@ public isolated client class Client {
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
             string? tenant = ()) returns ListTasksResult|error {
-        if self.mode == "V0_3" {
-            return error VersionNotSupportedError(
-                "ListTasks has no equivalent in A2A protocol v0.3",
-                message = "ListTasks has no equivalent in A2A protocol v0.3"
-            );
-        }
-
-        map<json> params = {};
-        if filter is ListTasksFilter {
-            string? contextId = filter?.contextId;
-            TaskState? status = filter?.status;
-            int? pageSize = filter?.pageSize;
-            string? pageToken = filter?.pageToken;
-            int? historyLength = filter?.historyLength;
-            string? statusTimestampAfter = filter?.statusTimestampAfter;
-            boolean? includeArtifacts = filter?.includeArtifacts;
-            if contextId is string {
-                params["contextId"] = contextId;
-            }
-            if status is TaskState {
-                params["status"] = status;
-            }
-            if pageSize is int {
-                params["pageSize"] = pageSize;
-            }
-            if pageToken is string {
-                params["pageToken"] = pageToken;
-            }
-            if historyLength is int {
-                params["historyLength"] = historyLength;
-            }
-            if statusTimestampAfter is string {
-                params["statusTimestampAfter"] = statusTimestampAfter;
-            }
-            if includeArtifacts is boolean {
-                params["includeArtifacts"] = includeArtifacts;
-            }
-        }
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        check guardListTasksSupported(self.mode);
+        map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("ListTasks", params);
-        return check (check decodeRawBytesFromWire(result)).cloneWithType(ListTasksResult);
+        return decodeListTasksResult(result);
     }
 
     # Registers a webhook to receive updates for a task.
@@ -1218,19 +1100,10 @@ public isolated client class Client {
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
-        map<json> params = self.mode == "V0_3"
-            ? encodeV03TaskPushNotificationConfig(config)
-            : check config.toJson().ensureType();
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = check buildCreateTaskPushNotificationConfigParams(
+                config, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("CreateTaskPushNotificationConfig", params);
-        return self.mode == "V0_3"
-            ? check parseV03TaskPushNotificationConfig(result)
-            : check result.cloneWithType(TaskPushNotificationConfig);
+        return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
     # Retrieves a previously registered push-notification webhook config.
@@ -1246,19 +1119,10 @@ public isolated client class Client {
         // v0.3's GetTaskPushNotificationConfigParams is {id: <taskId>,
         // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
         // per a2a-sdk 0.3.23's GetTaskPushNotificationConfigParams.
-        map<json> params = self.mode == "V0_3"
-            ? {id: taskId, pushNotificationConfigId: id}
-            : {taskId, id};
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = buildPushNotificationConfigRefParams(
+                taskId, id, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("GetTaskPushNotificationConfig", params);
-        return self.mode == "V0_3"
-            ? check parseV03TaskPushNotificationConfig(result)
-            : check result.cloneWithType(TaskPushNotificationConfig);
+        return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
     # Lists all push-notification webhook configs registered for a task.
@@ -1277,25 +1141,10 @@ public isolated client class Client {
         // only — no pageSize/pageToken, since v0.3 has no pagination
         // concept for this operation — per a2a-sdk 0.3.23's
         // ListTaskPushNotificationConfigParams.
-        map<json> params = self.mode == "V0_3" ? {id: taskId} : {taskId};
-        if self.mode == "V1_0" {
-            if pageSize is int {
-                params["pageSize"] = pageSize;
-            }
-            if pageToken is string {
-                params["pageToken"] = pageToken;
-            }
-        }
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = buildListTaskPushNotificationConfigsParams(
+                taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("ListTaskPushNotificationConfigs", params);
-        return self.mode == "V0_3"
-            ? check parseV03ListTaskPushNotificationConfigsResult(result)
-            : check result.cloneWithType(ListTaskPushNotificationConfigsResult);
+        return decodeListTaskPushNotificationConfigsResult(result, self.mode);
     }
 
     # Deletes a push-notification webhook config. Idempotent per
@@ -1313,15 +1162,8 @@ public isolated client class Client {
         // v0.3's DeleteTaskPushNotificationConfigParams is {id: <taskId>,
         // pushNotificationConfigId: <id>} — not {taskId, id} like v1.0 —
         // per a2a-sdk 0.3.23's DeleteTaskPushNotificationConfigParams.
-        map<json> params = self.mode == "V0_3"
-            ? {id: taskId, pushNotificationConfigId: id}
-            : {taskId, id};
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = buildPushNotificationConfigRefParams(
+                taskId, id, tenant ?: self.tenant, self.mode);
         json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
     }
 
@@ -1359,13 +1201,7 @@ public isolated client class Client {
             }
         }
 
-        map<json> params = {};
-        string? effectiveTenant = tenant ?: self.tenant;
-        // tenant routing: v0.3 has no wire counterpart, see the comment in sendMessage above.
-        if effectiveTenant is string && self.mode == "V1_0" {
-            params["tenant"] = effectiveTenant;
-        }
-
+        map<json> params = buildGetExtendedAgentCardParams(tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("GetExtendedAgentCard", params);
         AgentCard fetched = check parseAgentCardBody(result);
         lock {
