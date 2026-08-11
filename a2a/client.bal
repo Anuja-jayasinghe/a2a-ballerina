@@ -74,35 +74,38 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
     return card;
 }
 
-# Internal helper that fetches and parses an Agent Card with optional
-# conditional-request support. Shared by resolveAgentCard and
-# resolveAgentCardCached.
+# Fetches and parses a remote agent's Agent Card from its well-known
+# endpoint.
+#
+# Per spec 8.2 the canonical discovery path is
+# /.well-known/agent-card.json relative to the agent's base URL. That
+# endpoint is public and unauthenticated by design (spec 14.3), so the
+# headers parameter is for proxy or tracing use rather than credentials.
+#
+# This always fetches fresh. An earlier ETag-aware conditional-GET variant
+# was removed before release - see issue #14.
 #
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
-# + headers - Optional default headers, for API key authentication
-# + conditionalEtag - Optional ETag value to send in If-None-Match header
-# + return - A tuple of {card?, etag, notModified} where card is nil for 304
-#            responses, or an error
-isolated function fetchAgentCardWithCaching(
+# + headers - Optional default headers
+# + return - The parsed AgentCard, or an error. Note this is a bare
+#            `error` rather than a narrowed A2A error union: raw
+#            un-wrapped http/JSON errors (connection failures, malformed
+#            JSON) propagate via `check` alongside the typed
+#            A2AInternalError constructed here, so a caller needing to
+#            tell them apart must pattern-match on the concrete type.
+public isolated function resolveAgentCard(
         string agentBaseUrl,
-        http:ClientConfiguration clientConfig,
-        map<string> headers,
-        string? conditionalEtag = ()) returns record {|AgentCard? card; string? etag; boolean notModified;|}|error {
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {}) returns AgentCard|error {
     http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
     map<string> reqHeaders = {"A2A-Version": "1.0"};
     foreach [string, string] [k, v] in headers.entries() {
         reqHeaders[k] = v;
     }
-    if conditionalEtag is string {
-        reqHeaders["If-None-Match"] = conditionalEtag;
-    }
     http:Response resp = check discoveryClient->get(
         "/.well-known/agent-card.json", reqHeaders
     );
-    if resp.statusCode == 304 && conditionalEtag is string {
-        return {card: (), etag: conditionalEtag, notModified: true};
-    }
     if resp.statusCode != 200 {
         return error A2AInternalError(
             string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
@@ -110,70 +113,7 @@ isolated function fetchAgentCardWithCaching(
         );
     }
     json body = check resp.getJsonPayload();
-    AgentCard card = check parseAgentCardBody(body);
-    string|http:HeaderNotFoundError etagHeader = resp.getHeader("ETag");
-    return {card, etag: etagHeader is string ? etagHeader : (), notModified: false};
-}
-
-# Fetches and parses a remote agent's Agent Card from its well-known
-# endpoint.
-#
-# For cache-aware fetching with HTTP 304 support, see resolveAgentCardCached.
-#
-# + agentBaseUrl - Root URL of the agent with no path component
-# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
-# + headers - Optional default headers, for API key authentication
-# + return - The parsed AgentCard, or an error if the fetch or parse fails
-public isolated function resolveAgentCard(
-        string agentBaseUrl,
-        http:ClientConfiguration clientConfig = {},
-        map<string> headers = {}) returns AgentCard|error {
-    record {|AgentCard? card; string? etag; boolean notModified;|} result =
-        check fetchAgentCardWithCaching(agentBaseUrl, clientConfig, headers);
-    return <AgentCard>result.card;
-}
-
-# An AgentCard together with the HTTP caching metadata needed to make a
-# conditional follow-up request.
-public type CachedAgentCard record {|
-    # The parsed AgentCard
-    AgentCard card;
-    # The ETag header value from the response, if any, for use in conditional requests
-    string? etag;
-|};
-
-# Fetches an agent's Agent Card, reusing a previous fetch's body when the
-# server confirms nothing changed (HTTP 304), per standard HTTP caching —
-# resolveAgentCard's original per-call fetch was always correct but never
-# cheap; this adds the standard conditional-GET optimization on top without
-# changing resolveAgentCard's own behavior.
-#
-# + agentBaseUrl - Root URL of the agent with no path component
-# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
-# + headers - Optional default headers, for API key authentication
-# + previous - A card previously returned by this function, to enable a
-#              conditional (If-None-Match) request
-# + return - The parsed AgentCard plus its caching metadata, or an error.
-#            Note: like resolveAgentCard, this is a bare `error` rather
-#            than a narrowed A2A error union — it shares
-#            fetchAgentCardWithCaching with resolveAgentCard, which
-#            propagates raw, un-wrapped http/JSON errors (e.g. connection
-#            failures, malformed JSON) via `check` alongside the typed
-#            A2AInternalError cases it constructs itself. Callers that
-#            need to distinguish typed A2A errors from these raw
-#            passthroughs must still pattern-match on the concrete error
-#            type.
-public isolated function resolveAgentCardCached(
-        string agentBaseUrl,
-        http:ClientConfiguration clientConfig = {},
-        map<string> headers = {},
-        CachedAgentCard? previous = ()) returns CachedAgentCard|error {
-    record {|AgentCard? card; string? etag; boolean notModified;|} result =
-        check fetchAgentCardWithCaching(agentBaseUrl, clientConfig, headers, previous?.etag);
-    if result.notModified && previous is CachedAgentCard {
-        return previous;
-    }
-    return {card: <AgentCard>result.card, etag: result.etag};
+    return parseAgentCardBody(body);
 }
 
 # The A2A transport bindings this library can speak.

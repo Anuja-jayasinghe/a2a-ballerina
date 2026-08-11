@@ -1745,35 +1745,6 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
 }
 
 @test:Config {}
-function testResolveAgentCardHonors304() returns error? {
-    setWellKnownOverride(defaultMockAgentCard(), 200);
-    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
-    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
-    test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
-
-    setWellKnownConditionalOverride(304);
-    // Deliberately re-script the well-known endpoint to serve a DIFFERENT
-    // card body (a different name) while the conditional-304 logic stays
-    // active (setWellKnownOverride preserves the existing ETag and
-    // conditionalStatus). If the client failed to send If-None-Match — or
-    // if it did but then didn't correctly reuse the cached body — the mock
-    // would serve this different, fresh 200 body instead of a genuine 304,
-    // and `second.card` would end up equal to this different card rather
-    // than the original. Only a real conditional round-trip (If-None-Match
-    // sent, genuine 304 received, cached body reused) makes this test pass.
-    json differentCard = defaultMockAgentCard();
-    map<json> differentCardMap = <map<json>>differentCard;
-    differentCardMap["name"] = "A Completely Different Mock Agent";
-    setWellKnownOverride(differentCardMap, 200);
-
-    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
-    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached (original) card unchanged, not the newly-scripted different body");
-    test:assertNotEquals(second.card.name, differentCardMap["name"], "a genuine 304 must never surface the newly-scripted different card body");
-
-    setWellKnownOverride(());
-}
-
-@test:Config {}
 function testResolveAgentCardReturnsErrorOn304() returns error? {
     // Regression test: resolveAgentCard (non-cached) should never panic on 304.
     // If a non-compliant server sends 304 to an unconditional GET, it should

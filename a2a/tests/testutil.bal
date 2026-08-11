@@ -38,9 +38,6 @@ public isolated function getGrpcMockPort() returns int {
 
 listener http:Listener mockListener = check new (19199);
 
-// ETag value for the default mock Agent Card
-final string DEFAULT_MOCK_CARD_ETAG = "\"default-card-v1\"";
-
 type MockRpcScript record {|
     json jsonBody = {};
     int statusCode = 200;
@@ -61,8 +58,6 @@ type MockWellKnownScript record {|
     boolean hasOverride = false;
     json overrideBody = {};
     int overrideStatus = 200;
-    string? etag = ();
-    int? conditionalStatus = ();
 |};
 
 isolated MockRpcScript rpcScript = {};
@@ -259,31 +254,8 @@ public isolated function setWellKnownOverride(json? body, int statusCode = 200) 
         if body is () {
             wellKnownScript = {};
         } else {
-            // Preserve existing ETag and conditionalStatus when setting override
-            string? existingEtag = wellKnownScript.etag;
-            int? existingConditional = wellKnownScript.conditionalStatus;
-            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode, etag: existingEtag, conditionalStatus: existingConditional};
+            wellKnownScript = {hasOverride: true, overrideBody: body.clone(), overrideStatus: statusCode};
         }
-    }
-}
-
-# Sets the ETag value for well-known endpoint responses, enabling conditional
-# request testing.
-#
-# + etagValue - the ETag value to include in responses (e.g., "\"v1\"")
-public isolated function setWellKnownETag(string etagValue) {
-    lock {
-        wellKnownScript.etag = etagValue;
-    }
-}
-
-# Sets the HTTP status code for a conditional well-known response when an
-# If-None-Match header is present and matches the scripted ETag.
-#
-# + statusCode - the HTTP status code to respond with (typically 304)
-public isolated function setWellKnownConditionalOverride(int statusCode) {
-    lock {
-        wellKnownScript.conditionalStatus = statusCode;
     }
 }
 
@@ -396,26 +368,6 @@ service / on mockListener {
             wk = wellKnownScript.clone();
         }
 
-        // Ensure default card has an ETag for conditional requests
-        string etag;
-        if wk.etag is string {
-            etag = <string>wk.etag;
-        } else if !wk.hasOverride {
-            etag = DEFAULT_MOCK_CARD_ETAG;
-        } else {
-            etag = "";
-        }
-
-        // Check for conditional request (If-None-Match header)
-        string|http:HeaderNotFoundError ifNoneMatch = req.getHeader("If-None-Match");
-        if ifNoneMatch is string && wk.conditionalStatus is int && etag.length() > 0 && ifNoneMatch == etag {
-            // Send conditional response (typically 304 Not Modified)
-            http:Response res = new;
-            res.statusCode = <int>wk.conditionalStatus;
-            check caller->respond(res);
-            return;
-        }
-
         http:Response res = new;
         if wk.hasOverride {
             res.statusCode = wk.overrideStatus;
@@ -423,9 +375,6 @@ service / on mockListener {
         } else {
             res.statusCode = 200;
             res.setJsonPayload(defaultMockAgentCard());
-        }
-        if etag.length() > 0 {
-            res.setHeader("ETag", etag);
         }
         check caller->respond(res);
     }
