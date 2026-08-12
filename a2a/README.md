@@ -99,8 +99,9 @@ into `supportedInterfaces`, and `Client` picks the JSON-RPC one.
 
 **Hardening features**, each opt-in/backward-compatible with pre-existing
 callers:
-- **`A2A-Extensions` header** — advertise/request extensions, capture what
-  the server actually granted (JSON-RPC/REST header and gRPC metadata both).
+- **`A2A-Extensions` header** — advertise/request extensions via
+  `requestedExtensions`. Reading back what the server granted was removed
+  before release for lack of spec/SDK precedent; see issue #33.
 - **Automatic SSE reconnection** — `maxReconnectAttempts` on
   `sendStreamingMessage`/`subscribeToTask`; opt-in, default `0` preserves the
   original manual-reconnect behavior.

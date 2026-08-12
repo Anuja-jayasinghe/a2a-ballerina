@@ -33,7 +33,6 @@ type GrpcMockScript record {|
 
 isolated GrpcMockScript grpcScript = {};
 isolated map<string|string[]> lastGrpcMetadata = {};
-isolated map<string|string[]> nextGrpcResponseMetadata = {};
 
 # Scripts the next gRPC rpc call to succeed with the given response value.
 # The mock service ensureType()s this against whatever concrete grpcstub
@@ -52,26 +51,6 @@ public isolated function setNextGrpcResponse(anydata value) {
 public isolated function setNextGrpcError(grpc:Error err) {
     lock {
         grpcScript = {response: (), err};
-    }
-}
-
-# Scripts response metadata (e.g. a lowercase "a2a-extensions" key, matching
-# real HTTP/2 wire casing per RFC 7540 §8.1.2) for the mock service to send
-# back on the next rpc call whose remote function supports it. Cleared after
-# being consumed so it doesn't leak into subsequent tests.
-#
-# + headers - the response metadata to send on the next rpc call
-public isolated function setNextGrpcResponseMetadata(map<string|string[]> headers) {
-    lock {
-        nextGrpcResponseMetadata = headers.clone();
-    }
-}
-
-isolated function takeNextGrpcResponseMetadata() returns map<string|string[]> {
-    lock {
-        map<string|string[]> headers = nextGrpcResponseMetadata.clone();
-        nextGrpcResponseMetadata = {};
-        return headers.clone();
     }
 }
 

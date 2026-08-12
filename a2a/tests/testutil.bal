@@ -44,7 +44,6 @@ type MockRpcScript record {|
     http:SseEvent[] sseEvents = [];
     boolean isSse = false;
     decimal delaySeconds = 0;
-    string? extensionsHeader = ();
     // When true, the SSE response ends the scripted events with a genuine
     // stream error instead of a clean end-of-stream — simulating a dropped
     // connection (as opposed to sseEvents simply running out, which the
@@ -176,20 +175,18 @@ public isolated function getLastRequestHeaders() returns map<string> {
 #
 # + body - the JSON body to respond with
 # + statusCode - the HTTP status code to respond with
-# + extensionsHeader - optional A2A-Extensions header value to set on the response
-public isolated function setNextJsonResponse(json body, int statusCode = 200, string? extensionsHeader = ()) {
+public isolated function setNextJsonResponse(json body, int statusCode = 200) {
     lock {
-        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0, extensionsHeader};
+        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0};
     }
 }
 
 # Scripts the next JSON-RPC request to receive an SSE stream response.
 #
 # + events - the canned SSE events to stream back
-# + extensionsHeader - optional A2A-Extensions header value to set on the response
-public isolated function setNextSseResponse(http:SseEvent[] events, string? extensionsHeader = ()) {
+public isolated function setNextSseResponse(http:SseEvent[] events) {
     lock {
-        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0, extensionsHeader};
+        rpcScript = {sseEvents: events.clone(), isSse: true, delaySeconds: 0};
     }
 }
 
@@ -442,10 +439,6 @@ service / on mockListener {
             // to 201; the Client checks for exactly 200, so set it explicitly.
             http:Response res = new;
             res.statusCode = 200;
-            string? extHeader = script.extensionsHeader;
-            if extHeader is string {
-                res.setHeader("A2A-Extensions", extHeader);
-            }
             if script.simulateDropError {
                 stream<http:SseEvent, error?> dropStream = new (new DropAfterEventsGenerator(script.sseEvents));
                 res.setPayload(dropStream);
@@ -456,10 +449,6 @@ service / on mockListener {
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;
-            string? extHeader = script.extensionsHeader;
-            if extHeader is string {
-                res.setHeader("A2A-Extensions", extHeader);
-            }
             res.setJsonPayload(script.jsonBody);
             respondIgnoringClientGoneAway(caller, res);
         }

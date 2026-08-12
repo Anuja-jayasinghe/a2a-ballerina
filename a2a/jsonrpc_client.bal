@@ -35,13 +35,12 @@ public isolated client class JsonRpcClient {
     private final string? tenant;
     private final ProtocolMode mode;
     private final string[] & readonly requestedExtensions;
-    private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
     # The most recent AgentCard this client knows about: the one resolved
     # during construction, replaced by the extended card once
-    # getExtendedAgentCard fetches one. Mutable (hence lock-guarded, like
-    # grantedExtensions) precisely so that fetching an extended card
-    # updates what later calls reason about.
+    # getExtendedAgentCard fetches one. Mutable (hence lock-guarded)
+    # precisely so that fetching an extended card updates what later calls
+    # reason about.
     private AgentCard? agentCard;
 
     # Creates a JSON-RPC client pointed at a remote A2A agent.
@@ -120,38 +119,6 @@ public isolated client class JsonRpcClient {
         return headers;
     }
 
-    public isolated function lastGrantedExtensions() returns string[] {
-        lock {
-            return self.grantedExtensions.clone();
-        }
-    }
-
-    # Captures the response's A2A-Extensions header, if present.
-    #
-    # Per spec section 14.2.2 the request and response directions use the
-    # exact same header name (`A2A-Extensions`, not the deprecated
-    # `X-`-prefixed convention) — this reads that name first, falling back
-    # to the legacy spelling only for non-conformant servers.
-    #
-    # + resp - the response just received from the remote agent
-    private isolated function captureGrantedExtensions(http:Response resp) {
-        string|error extHeader = resp.getHeader("A2A-Extensions");
-        if extHeader is error {
-            extHeader = resp.getHeader("X-A2A-Extensions");
-        }
-        if extHeader is string {
-            string[] granted = [];
-            if extHeader.length() > 0 {
-                foreach string entry in re `,`.split(extHeader) {
-                    granted.push(entry.trim());
-                }
-            }
-            lock {
-                self.grantedExtensions = granted.clone();
-            }
-        }
-    }
-
     # Performs a unary JSON-RPC call and returns the unwrapped result.
     #
     # + method - the v1.0 method name; translated for v0.3 when needed
@@ -167,7 +134,6 @@ public isolated client class JsonRpcClient {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), self.buildHeaders()
         );
-        self.captureGrantedExtensions(resp);
         json body = check resp.getJsonPayload();
         transport:JsonRpcResponse rpcResp =
             check body.cloneWithType(transport:JsonRpcResponse);
@@ -202,7 +168,6 @@ public isolated client class JsonRpcClient {
         http:Response resp = check self.httpClient->post(
             "", req.toJson(), headers
         );
-        self.captureGrantedExtensions(resp);
         if resp.statusCode != 200 {
             return error A2AInternalError(
                 string `Stream request failed with HTTP ${resp.statusCode}`,

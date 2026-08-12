@@ -42,7 +42,6 @@ public isolated client class GrpcClient {
     # no gRPC equivalent.
     private final ProtocolMode mode;
     private final string[] & readonly requestedExtensions;
-    private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
     # The most recent AgentCard this client knows about; replaced by the
     # extended card once getExtendedAgentCard fetches one.
@@ -121,40 +120,6 @@ public isolated client class GrpcClient {
         return headers;
     }
 
-    public isolated function lastGrantedExtensions() returns string[] {
-        lock {
-            return self.grantedExtensions.clone();
-        }
-    }
-
-    # Captures granted extensions from response metadata.
-    #
-    # Unlike the HTTP bindings this reads a metadata map rather than an
-    # http:Response, and a metadata value can legitimately arrive already
-    # split into a string[] rather than as one comma-joined string.
-    #
-    # + headers - the response metadata from a *Context call
-    private isolated function captureGrantedExtensionsFromGrpc(map<string|string[]> headers) {
-        string|string[]? extHeader = ();
-        foreach [string, string|string[]] [k, v] in headers.entries() {
-            if k.toLowerAscii() == "a2a-extensions" {
-                extHeader = v;
-                break;
-            }
-        }
-        string[] granted = [];
-        if extHeader is string && extHeader.length() > 0 {
-            foreach string entry in re `,`.split(extHeader) {
-                granted.push(entry.trim());
-            }
-        } else if extHeader is string[] {
-            granted = extHeader;
-        }
-        lock {
-            self.grantedExtensions = granted.clone();
-        }
-    }
-
     # Performs one gRPC call and returns the unwrapped result.
     #
     # + method - the operation name
@@ -174,10 +139,10 @@ public isolated client class GrpcClient {
     # operation.
     #
     # The *Context variants are used exclusively, never the plain ones, so
-    # that response metadata — specifically A2A-Extensions — is reachable.
-    # Every generated *Context remote function takes a single parameter: a
-    # union of the plain request type or the corresponding
-    # `grpcstub:Context{Operation}Request` wrapper record
+    # that outbound call metadata (A2A-Version, auth, requested extensions)
+    # is reachable at all. Every generated *Context remote function takes a
+    # single parameter: a union of the plain request type or the
+    # corresponding `grpcstub:Context{Operation}Request` wrapper record
     # (`{content, headers}`), not a separate trailing headers parameter.
     # Outbound metadata is therefore sent by constructing that wrapper
     # record here. Confirmed against the real generated
@@ -197,7 +162,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "GetTask" => {
@@ -205,7 +169,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "CancelTask" => {
@@ -213,7 +176,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "ListTasks" => {
@@ -221,7 +183,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "CreateTaskPushNotificationConfig" => {
@@ -229,7 +190,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "GetTaskPushNotificationConfig" => {
@@ -237,7 +197,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "ListTaskPushNotificationConfigs" => {
@@ -245,7 +204,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             "DeleteTaskPushNotificationConfig" => {
@@ -253,7 +211,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 // google.protobuf.Empty (empty:ContextNil) carries no
                 // `content` field at all — decodeGrpcResponse's
                 // "DeleteTaskPushNotificationConfig" branch ignores its
@@ -266,7 +223,6 @@ public isolated client class GrpcClient {
                 if result is grpc:Error {
                     return result;
                 }
-                self.captureGrantedExtensionsFromGrpc(result.headers);
                 return result.content;
             }
             _ => {
@@ -290,7 +246,6 @@ public isolated client class GrpcClient {
             if result is grpc:Error {
                 return toA2AErrorFromGrpc(result);
             }
-            self.captureGrantedExtensionsFromGrpc(result.headers);
             stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
             return wrapped;
         }
@@ -299,7 +254,6 @@ public isolated client class GrpcClient {
         if result is grpc:Error {
             return toA2AErrorFromGrpc(result);
         }
-        self.captureGrantedExtensionsFromGrpc(result.headers);
         stream<StreamResponse, error?> wrapped = new (new GrpcStreamAdapter(result.content));
         return wrapped;
     }

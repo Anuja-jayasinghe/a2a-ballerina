@@ -572,10 +572,6 @@ public isolated client class Client {
                 requestedExtensions, maxReconnectAttempts);
     }
 
-    public isolated function lastGrantedExtensions() returns string[] {
-        return self.delegate.lastGrantedExtensions();
-    }
-
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),

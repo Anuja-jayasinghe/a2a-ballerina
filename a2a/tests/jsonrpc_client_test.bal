@@ -125,19 +125,14 @@ function testJsonRpcClientStreams() returns error? {
     test:assertEquals(count, 2, "both scripted events should be delivered");
 }
 
-# The A2A-Extensions round trip is per-client state, so it has to work on
-# this class rather than only on Client.
 @test:Config {}
-function testJsonRpcClientCapturesGrantedExtensions() returns error? {
+function testJsonRpcClientAdvertisesRequestedExtensions() returns error? {
     JsonRpcClient c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
-    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}},
-            extensionsHeader = "urn:example:ext-a");
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
 
     test:assertEquals(getLastRequestHeaders()["a2a-extensions"], "urn:example:ext-a",
             "requested extensions must be advertised on the request");
-    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a"],
-            "the granted-extensions header must be captured off the response");
 }
 
 # A v0.3 card must still work over JSON-RPC — this is the one binding with

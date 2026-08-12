@@ -165,19 +165,6 @@ function testClientDelegationPassesArgumentsThrough() returns error? {
     test:assertEquals(check params.pageToken, "cursor-abc");
 }
 
-# lastGrantedExtensions is state living on the delegate, so Client has to
-# read through rather than keep its own copy.
-@test:Config {}
-function testClientReadsGrantedExtensionsThroughTheDelegate() returns error? {
-    Client c = check new (cardForBinding("JSONRPC"), requestedExtensions = ["urn:example:ext-a"]);
-    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}},
-            extensionsHeader = "urn:example:ext-a");
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
-
-    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a"],
-            "Client must surface what the delegate captured, not an empty list of its own");
-}
-
 # The card handed to Client is passed straight to the delegate, so a
 # construction from an already-resolved card must not fetch it again.
 @test:Config {}
