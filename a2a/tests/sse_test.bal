@@ -90,6 +90,50 @@ function testA2AStreamGeneratorClosesOnTerminalStatus() returns error? {
     test:assertTrue(fourth is (), "stream should be closed after the terminal event, regardless of remaining source events");
 }
 
+# isTerminalEvent is a four-way OR, but only TASK_STATE_COMPLETED was ever
+# exercised as a stream terminator — dropping any of the other three arms
+# left the suite green. Each terminal state is checked here against a
+# generator whose next event must never be delivered, and each interrupted
+# state against one whose next event must be.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testA2AStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns error? {
+    string[] terminal = [
+        "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"
+    ];
+    foreach string state in terminal {
+        A2AStreamGenerator generator = newGenerator([
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
+        ]);
+        StreamResponse first = check expectValue(generator.next());
+        test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, <TaskState>state);
+
+        record {| StreamResponse value; |}|error? second = generator.next();
+        test:assertTrue(second is (),
+                string `${state} is a terminal state and must close the stream, leaving the following event undelivered`);
+    }
+
+    // The states a task can rest in mid-conversation must NOT close it —
+    // otherwise a stream that pauses for input can never be resumed.
+    string[] nonTerminal = [
+        "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING",
+        "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"
+    ];
+    foreach string state in nonTerminal {
+        A2AStreamGenerator generator = newGenerator([
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+        ]);
+        _ = check expectValue(generator.next());
+        StreamResponse second = check expectValue(generator.next());
+        test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED,
+                string `${state} is not terminal and must leave the stream open`);
+    }
+}
+
 @test:Config {}
 function testA2AStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
     A2AStreamGenerator generator = newGenerator([
