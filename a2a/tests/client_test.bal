@@ -203,6 +203,13 @@ function testPrimaryUrlDefaultsToJsonRpc() returns error? {
     test:assertEquals(url, "http://jsonrpc.example", "primaryUrl with no argument must keep resolving JSONRPC, unchanged from today");
 }
 
+# The legacy top-level `url` field predates every binding but JSON-RPC, so
+# only a JSON-RPC caller may fall back to it. Asserted against primaryUrl
+# itself, not selectInterface: selectInterface has no fallback logic to
+# restrict, so asserting there leaves primaryUrl's own guard untested and a
+# mutation widening it to other bindings survives the suite.
+#
+# + return - an error if any step other than the assertions themselves fails
 @test:Config {}
 function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
     AgentCard card = {
@@ -213,8 +220,34 @@ function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
     };
     AgentInterface|error restResult = selectInterface(card, "HTTP+JSON");
     test:assertTrue(restResult is error, "a pre-v1.0 card's legacy url field predates HTTP+JSON entirely and must not be treated as a REST endpoint");
+
+    string|error restUrl = primaryUrl(card, "HTTP+JSON");
+    test:assertTrue(restUrl is error, "primaryUrl must not hand a REST client the legacy url — it addresses a JSON-RPC endpoint, so a REST client would POST REST-shaped requests at it");
+    string|error grpcUrl = primaryUrl(card, "GRPC");
+    test:assertTrue(grpcUrl is error, "primaryUrl must not hand a gRPC client the legacy url either");
+
     string jsonRpcUrl = check primaryUrl(card);
     test:assertEquals(jsonRpcUrl, "http://legacy.example");
+}
+
+# Same guard, but on a card that also declares a JSON-RPC interface — so a
+# widened fallback cannot be masked by the card having no interfaces at all.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testPrimaryUrlLegacyFallbackStaysJsonRpcOnlyAlongsideInterfaces() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        url: "http://legacy.example",
+        supportedInterfaces: [
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+        ],
+        skills: []
+    };
+    string|error restUrl = primaryUrl(card, "HTTP+JSON");
+    test:assertTrue(restUrl is error, "a card declaring only a JSON-RPC interface offers no REST endpoint, and the legacy url is not one");
+    test:assertEquals(check primaryUrl(card, "JSONRPC"), "http://jsonrpc.example",
+            "the declared interface still wins over the legacy field for JSON-RPC");
 }
 
 @test:Config {groups: ["grpc"]}

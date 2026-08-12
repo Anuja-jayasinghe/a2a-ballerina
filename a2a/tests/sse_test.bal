@@ -90,6 +90,50 @@ function testA2AStreamGeneratorClosesOnTerminalStatus() returns error? {
     test:assertTrue(fourth is (), "stream should be closed after the terminal event, regardless of remaining source events");
 }
 
+# isTerminalEvent is a four-way OR, but only TASK_STATE_COMPLETED was ever
+# exercised as a stream terminator — dropping any of the other three arms
+# left the suite green. Each terminal state is checked here against a
+# generator whose next event must never be delivered, and each interrupted
+# state against one whose next event must be.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testA2AStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns error? {
+    string[] terminal = [
+        "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"
+    ];
+    foreach string state in terminal {
+        A2AStreamGenerator generator = newGenerator([
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
+        ]);
+        StreamResponse first = check expectValue(generator.next());
+        test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, <TaskState>state);
+
+        record {| StreamResponse value; |}|error? second = generator.next();
+        test:assertTrue(second is (),
+                string `${state} is a terminal state and must close the stream, leaving the following event undelivered`);
+    }
+
+    // The states a task can rest in mid-conversation must NOT close it —
+    // otherwise a stream that pauses for input can never be resumed.
+    string[] nonTerminal = [
+        "TASK_STATE_SUBMITTED", "TASK_STATE_WORKING",
+        "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"
+    ];
+    foreach string state in nonTerminal {
+        A2AStreamGenerator generator = newGenerator([
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
+            {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
+        ]);
+        _ = check expectValue(generator.next());
+        StreamResponse second = check expectValue(generator.next());
+        test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED,
+                string `${state} is not terminal and must leave the stream open`);
+    }
+}
+
 @test:Config {}
 function testA2AStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
     A2AStreamGenerator generator = newGenerator([
@@ -103,6 +147,127 @@ function testA2AStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
     // If INPUT_REQUIRED had closed the stream, this would fail instead of returning the next event.
     StreamResponse second = check expectValue(generator.next());
     test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_WORKING);
+}
+
+// ---- reconnection policy, tested without a server ---------------------
+
+// A StreamResponse source, the StreamResponse-level analogue of
+// TestSseSource — needed to hand wrapReconnecting/ReconnectingStreamGenerator
+// a stream whose behaviour a test controls exactly.
+class TestStreamResponseSource {
+    private (StreamResponse|error)[] events;
+    private int idx = 0;
+
+    isolated function init((StreamResponse|error)[] events) {
+        self.events = events;
+    }
+
+    public isolated function next() returns record {| StreamResponse value; |}|error? {
+        if self.idx >= self.events.length() {
+            return ();
+        }
+        StreamResponse|error event = self.events[self.idx];
+        self.idx += 1;
+        if event is error {
+            return event;
+        }
+        return {value: event};
+    }
+}
+
+isolated function responseStream((StreamResponse|error)[] events) returns stream<StreamResponse, error?> {
+    return new (new TestStreamResponseSource(events));
+}
+
+# A stand-in for the owning client, counting resubscribe calls.
+#
+# Hands back a stream that immediately errors — the case that actually
+# drives reconnection — but refuses to do so more than `allowed` times.
+# That cap is what makes the attempt-budget assertion terminate: without
+# it, a client that never consumes its budget resubscribes forever and the
+# test hangs instead of failing, which is exactly what happened when the
+# budget accounting was mutated.
+isolated class CountingReconnectable {
+    private final int allowed;
+    private int calls = 0;
+    private boolean exceeded = false;
+
+    isolated function init(int allowed) {
+        self.allowed = allowed;
+    }
+
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant)
+            returns stream<StreamResponse, error?>|error {
+        lock {
+            self.calls += 1;
+            if self.calls > self.allowed {
+                self.exceeded = true;
+                return error("resubscribe cap reached");
+            }
+        }
+        return responseStream([error("dropped again")]);
+    }
+
+    isolated function callCount() returns int {
+        lock {
+            return self.calls;
+        }
+    }
+
+    isolated function capExceeded() returns boolean {
+        lock {
+            return self.exceeded;
+        }
+    }
+}
+
+# The reconnect budget must be consumed once per attempt and shared across
+# the whole chain. The suite previously asserted this only through the mock
+# server, where a budget that never decremented produced an infinite
+# resubscribe loop — the suite hung rather than failing. Here the stub caps
+# resubscribes one above the budget, so the same bug fails an assertion in
+# bounded time.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testReconnectBudgetIsConsumedOncePerAttemptAndSharedAcrossTheChain() returns error? {
+    CountingReconnectable owner = new (3);
+    stream<StreamResponse, error?> initial = responseStream([error("first drop")]);
+    stream<StreamResponse, error?> s =
+        new (new ReconnectingStreamGenerator(initial, owner, "task-1", 2));
+
+    record {| StreamResponse value; |}|error? result = s.next();
+
+    test:assertTrue(result is error, "with every reconnect failing, the error must surface once the budget is spent");
+    test:assertFalse(owner.capExceeded(),
+            "reconnection must stop at the configured budget; exceeding the stub's cap means the attempt count is not being consumed and a real client would resubscribe without bound");
+    test:assertEquals(owner.callCount(), 2,
+            "a budget of 2 must produce exactly 2 resubscribe attempts — not fewer, and not a fresh budget per reconnect");
+
+    record {| StreamResponse value; |}|error? after = s.next();
+    test:assertTrue(after is (), "the generator must be done after surfacing the drop error");
+}
+
+# A zero budget must hand the stream straight back rather than wrapping it.
+# Observable because wrapping peeks the first event: on a stream that opens
+# with an error, a peeking implementation surfaces that error from
+# wrapReconnecting itself instead of from the caller's first next().
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testWrapReconnectingHandsBackRawStreamWhenBudgetIsZero() returns error? {
+    CountingReconnectable owner = new (0);
+    stream<StreamResponse, error?> raw = responseStream([error("opens with an error")]);
+
+    stream<StreamResponse, error?>|error wrapped = wrapReconnecting(raw, owner, 0, ());
+
+    test:assertTrue(wrapped is stream<StreamResponse, error?>,
+            "a zero budget must return the raw stream untouched — peeking it would surface the first event's error at call time instead of at next(), changing when a default-configured caller sees a failure");
+    if wrapped is stream<StreamResponse, error?> {
+        record {| StreamResponse value; |}|error? first = wrapped.next();
+        test:assertTrue(first is error, "the error must still arrive, just at next() rather than at construction");
+    }
+    test:assertEquals(owner.callCount(), 0, "a zero budget must never resubscribe");
 }
 
 @test:Config {}
