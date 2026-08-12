@@ -38,7 +38,8 @@ function testRestClientRejectsCardWithoutRestInterface() {
             "a card declaring no HTTP+JSON interface must fail construction");
 }
 
-# A2A v0.3 predates the REST binding entirely, so this must fail fast at
+# v0.3 defines a REST binding, but this library does not implement it —
+# v0.3 method names have no meaning as REST paths — so this must fail at
 # construction rather than sending v0.3 method names down REST paths.
 @test:Config {}
 function testRestClientRejectsV03Card() {
@@ -51,7 +52,7 @@ function testRestClientRejectsV03Card() {
     };
     RestClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
-            "a card resolving to v0.3 must be rejected with a typed error, since v0.3 has no REST binding");
+            "a card resolving to v0.3 must be rejected with a typed error, since this library implements v0.3 over JSON-RPC only");
 }
 
 # The defining behaviour of this binding: each operation maps onto an HTTP

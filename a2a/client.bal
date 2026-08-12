@@ -8,6 +8,95 @@
 import ballerina/http;
 import ballerina/url;
 
+# Rewrites a pre-v1.0 card's transport declarations into the v1.0
+# `supportedInterfaces` shape, in place on the raw card map.
+#
+# A2A v0.3 declares transports with `preferredTransport` (defaulting to
+# "JSONRPC", naming what is served at the top-level `url`) plus an
+# `additionalInterfaces` array of `{url, transport}` objects. v1.0 replaced
+# both with `supportedInterfaces`, an ordered array of
+# `{url, protocolBinding, protocolVersion}`.
+#
+# Without this, a v0.3 card's transports are invisible: AgentCard is an open
+# record, so both fields land in the rest field and are never read,
+# `supportedInterfaces` stays empty, and selection falls through to the
+# legacy-url branch and answers "JSONRPC" — even for a card whose `url` is a
+# gRPC endpoint. That produced a JSON-RPC client aimed at a gRPC address
+# which constructed fine and failed at the first call.
+#
+# Contrary to what this module's comments claimed until now, v0.3 does
+# define all three transports; it is this library that implements v0.3 over
+# JSON-RPC only. Normalizing here does not change that. It makes the card
+# legible so the existing selection rules can act on it correctly: a v0.3
+# gRPC interface becomes a declared-but-unserviceable entry that selection
+# skips, landing on the card's real JSON-RPC endpoint instead of pointing
+# JSON-RPC at the gRPC one.
+#
+# + cardMap - the raw card map, mutated in place
+isolated function normalizeLegacyInterfaces(map<json> cardMap) {
+    // Only pre-v1.0 cards carry these two fields; v1.0 removed them. Their
+    // absence means there is nothing here to translate, and a card already
+    // declaring supportedInterfaces is v1.0-native and left untouched.
+    boolean hasLegacyTransportFields =
+        cardMap.hasKey("preferredTransport") || cardMap.hasKey("additionalInterfaces");
+    if !hasLegacyTransportFields {
+        return;
+    }
+    json? existing = cardMap["supportedInterfaces"];
+    if existing is json[] && existing.length() > 0 {
+        return;
+    }
+
+    // Their presence also dates the card: both were dropped in v1.0, so a
+    // card carrying them and no explicit protocolVersion is pre-1.0. Saying
+    // so explicitly matters because detectProtocolModeForBinding reads the
+    // version off the matched interface first, and an interface with no
+    // version at all would resolve V1_0 — silently upgrading a v0.3 agent.
+    json? versionJson = cardMap["protocolVersion"];
+    string protocolVersion = versionJson is string ? versionJson : "0.3";
+
+    json[] interfaces = [];
+    string[] seen = [];
+
+    // The preferred interface goes first: selection takes the earliest
+    // serviceable entry, and specification section 5.6.4 says a client
+    // SHOULD use the main url when it can speak preferredTransport.
+    json? preferredJson = cardMap["preferredTransport"];
+    string preferred = preferredJson is string ? preferredJson : "JSONRPC";
+    json? urlJson = cardMap["url"];
+    if urlJson is string {
+        interfaces.push({url: urlJson, protocolBinding: preferred, protocolVersion});
+        seen.push(string `${preferred}|${urlJson}`);
+    }
+
+    // additionalInterfaces SHOULD repeat the main url's transport "for
+    // completeness" per the v0.3 schema, so entries already added above are
+    // dropped rather than duplicated into the ordered list.
+    json? additional = cardMap["additionalInterfaces"];
+    if additional is json[] {
+        foreach json entry in additional {
+            if entry !is map<json> {
+                continue;
+            }
+            json? entryUrl = entry["url"];
+            json? entryTransport = entry["transport"];
+            if entryUrl !is string || entryTransport !is string {
+                continue;
+            }
+            string key = string `${entryTransport}|${entryUrl}`;
+            if seen.indexOf(key) is int {
+                continue;
+            }
+            interfaces.push({url: entryUrl, protocolBinding: entryTransport, protocolVersion});
+            seen.push(key);
+        }
+    }
+
+    if interfaces.length() > 0 {
+        cardMap["supportedInterfaces"] = interfaces;
+    }
+}
+
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
 # v0.3 security field-name rename and the tolerant parsing of
 # securitySchemes, securityRequirements, signatures, and each skill's
@@ -22,6 +111,7 @@ import ballerina/url;
 isolated function parseAgentCardBody(json body) returns AgentCard|error {
     json renamed = renameV03SecurityField(body);
     map<json> cardMap = check renamed.ensureType();
+    normalizeLegacyInterfaces(cardMap);
 
     boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
     json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
@@ -338,9 +428,10 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
         }
         TransportBinding binding = <TransportBinding>declared;
         // "First *supported* transport" has to mean supported in practice,
-        // not merely a binding name this library recognises. A2A v0.3
-        // exists only over JSON-RPC, so a v0.3 REST or gRPC interface is
-        // something the matching client would reject at construction.
+        // not merely a binding name this library recognises. v0.3 defines
+        // all three bindings, but this library implements v0.3 over
+        // JSON-RPC only, so a v0.3 REST or gRPC interface is something the
+        // matching client would reject at construction.
         // Skipping it here lets a card that lists one ahead of a
         // serviceable interface still connect, instead of failing outright
         // on an entry no client could ever have used.
@@ -353,9 +444,16 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
             return binding;
         }
     }
-    // A pre-1.0 card declares no supportedInterfaces at all, only a
-    // top-level url, which predates every binding but JSON-RPC.
-    if card?.url is string {
+    // A pre-1.0 card may declare no interfaces at all, only a top-level
+    // url, which predates every binding but JSON-RPC.
+    //
+    // Guarded on the list being empty, which is what the fallback was always
+    // described as covering. Unguarded, it also fired when the card DID
+    // declare interfaces and none of them were serviceable — answering
+    // "JSONRPC" for a card whose url is a gRPC or REST endpoint. That was
+    // unreachable while v0.3 cards parsed with an empty list; normalizing
+    // their transports makes it reachable, and wrong.
+    if card.supportedInterfaces.length() == 0 && card?.url is string {
         return "JSONRPC";
     }
     return error(

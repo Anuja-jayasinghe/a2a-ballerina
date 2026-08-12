@@ -22,9 +22,11 @@ import ballerina/a2a.grpcstub;
 # a2a:Task|a2a:Message reply = check agent->sendMessage(msg);
 # ```
 #
-# A2A v0.3 has no gRPC binding, so a card resolving to that protocol
-# version is rejected at construction. Use `JsonRpcClient` for a v0.3
-# agent.
+# A2A v0.3 does define a gRPC binding, but this library does not implement
+# it: `compat_v03.bal` is entirely a JSON-shape translator, none of which
+# has meaning over protobuf, and `modules/grpcstub` is generated from v1.0's
+# proto. A card resolving to v0.3 is therefore rejected at construction. Use
+# `JsonRpcClient` for a v0.3 agent. See issue #31.
 #
 # Auth is configured through `clientConfig.auth` as with the other
 # bindings; HTTP Basic and Bearer configurations are projected onto their
@@ -89,8 +91,8 @@ public isolated client class GrpcClient {
         ProtocolMode detected = detectProtocolModeForBinding(card, "GRPC");
         if detected == "V0_3" {
             return error VersionNotSupportedError(
-                "A2A protocol v0.3 has no gRPC binding equivalent",
-                message = "A2A protocol v0.3 has no gRPC binding equivalent"
+                "this library does not implement A2A v0.3 over the gRPC binding; use JsonRpcClient for a v0.3 agent",
+                message = "this library does not implement A2A v0.3 over the gRPC binding; use JsonRpcClient for a v0.3 agent"
             );
         }
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
