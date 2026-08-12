@@ -94,25 +94,14 @@ function testGrpcClientMapsStatusCodeToTypedError() returns error? {
             "a gRPC NOT_FOUND status must map onto TaskNotFoundError");
 }
 
-# Metadata, not HTTP headers: this binding reads granted extensions off the
-# call's response metadata.
-#
-# Uses sendMessage rather than getTask because only the mock's SendMessage
-# returns a Context-wrapped response; the other rpcs return a plain value
-# and so have no way to carry response metadata back. The key is scripted
-# lowercase to match real HTTP/2 wire casing (RFC 7540 section 8.1.2),
-# which is what the client's case-insensitive lookup has to cope with.
+# Metadata, not HTTP headers: this binding advertises requested extensions
+# via call metadata rather than an HTTP header.
 @test:Config {groups: ["grpc"]}
-function testGrpcClientCapturesGrantedExtensionsFromMetadata() returns error? {
+function testGrpcClientAdvertisesRequestedExtensionsAsOutboundMetadata() returns error? {
     GrpcClient c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
-    setNextGrpcResponseMetadata({"a2a-extensions": "urn:example:ext-a"});
-    setNextGrpcResponse(<grpcstub:SendMessageResponse>{
-        task: {id: "t1", status: {state: grpcstub:TASK_STATE_COMPLETED}}
-    });
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    setNextGrpcResponse(grpcTaskResponse("task-1"));
+    Task _ = check c->getTask("task-1");
 
-    test:assertEquals(c.lastGrantedExtensions(), ["urn:example:ext-a"],
-            "granted extensions must be read from gRPC response metadata");
     map<string|string[]> sent = getLastGrpcMetadata();
     test:assertTrue(sent.hasKey("a2a-extensions"),
             "requested extensions must be advertised as outbound metadata (lowercased on the wire)");

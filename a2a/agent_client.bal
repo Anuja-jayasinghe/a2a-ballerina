@@ -137,10 +137,4 @@ public type AgentClient isolated client object {
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or an error
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error;
-
-    # Returns the extensions the remote agent granted on the most recent
-    # call that reported them, per the response's A2A-Extensions header.
-    #
-    # + return - the granted extension URIs
-    public isolated function lastGrantedExtensions() returns string[];
 };

@@ -32,7 +32,6 @@ public isolated client class RestClient {
     # shared operation helpers are called with what was actually detected.
     private final ProtocolMode mode;
     private final string[] & readonly requestedExtensions;
-    private string[] grantedExtensions = [];
     private final int maxReconnectAttempts;
     # The most recent AgentCard this client knows about; replaced by the
     # extended card once getExtendedAgentCard fetches one.
@@ -104,35 +103,6 @@ public isolated client class RestClient {
         return headers;
     }
 
-    public isolated function lastGrantedExtensions() returns string[] {
-        lock {
-            return self.grantedExtensions.clone();
-        }
-    }
-
-    # Captures the response's A2A-Extensions header, if present. Per spec
-    # section 14.2.2 both directions use the same header name; the legacy
-    # `X-` spelling is read only as a fallback for non-conformant servers.
-    #
-    # + resp - the response just received from the remote agent
-    private isolated function captureGrantedExtensions(http:Response resp) {
-        string|error extHeader = resp.getHeader("A2A-Extensions");
-        if extHeader is error {
-            extHeader = resp.getHeader("X-A2A-Extensions");
-        }
-        if extHeader is string {
-            string[] granted = [];
-            if extHeader.length() > 0 {
-                foreach string entry in re `,`.split(extHeader) {
-                    granted.push(entry.trim());
-                }
-            }
-            lock {
-                self.grantedExtensions = granted.clone();
-            }
-        }
-    }
-
     # Performs one REST call and returns the unwrapped result.
     #
     # DeleteTaskPushNotificationConfig returns google.protobuf.Empty over
@@ -156,7 +126,6 @@ public isolated client class RestClient {
         } else {
             resp = check self.httpClient->post(path, body ?: {}, headers);
         }
-        self.captureGrantedExtensions(resp);
         if resp.statusCode >= 200 && resp.statusCode < 300 {
             json|error payload = resp.getJsonPayload();
             if payload is json {
@@ -193,7 +162,6 @@ public isolated client class RestClient {
         } else {
             resp = check self.httpClient->post(path, body ?: {}, headers);
         }
-        self.captureGrantedExtensions(resp);
         if !resp.getContentType().startsWith("text/event-stream") {
             json|error errBody = resp.getJsonPayload();
             return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());

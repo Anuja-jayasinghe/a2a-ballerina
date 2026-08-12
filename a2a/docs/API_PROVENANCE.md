@@ -27,8 +27,8 @@ breaking callers.
 |---|---|
 | Spec-mandated | 49 |
 | Reference-SDK convention (not in spec) | 3 |
-| Invented here | 5 |
-| **Total public symbols** | **57** |
+| Invented here | 4 |
+| **Total public symbols** | **56** |
 
 ---
 
@@ -171,24 +171,6 @@ SDK, and a caller reading their docs will not find them. If per-transport
 types prove to be surface nobody wants, they are the most likely candidate
 for withdrawal — which is precisely why the decision is recorded here.
 
-### `lastGrantedExtensions()`
-
-The `A2A-Extensions` header is spec (§14.2.2), in both directions. Reading
-what the agent *granted* back to the caller is not.
-
-Verified: **neither reference SDK exposes an accessor for this.** Java
-defines the header constant (`A2AHeaders.A2A_EXTENSIONS`) and sends it;
-Python takes an `extensions` argument described as *"List of extensions to
-be activated"*. Both treat it as request-side only.
-
-**Why here:** requesting an extension is negotiation, and a negotiation the
-caller cannot observe the result of is not much of one. Without this, a
-caller that requested an extension has no way to know whether the agent
-honoured it short of inferring from response shape.
-
-**Caveat worth knowing:** it reflects the most recent call that *reported*
-the header. A response omitting the header does not clear a previous grant.
-
 ### `maxReconnectAttempts` (automatic SSE/stream reconnection)
 
 **Neither reference SDK does this.** Verified by search: Java's "reconnect"
@@ -232,6 +214,7 @@ justify bringing it back.
 | `verifyAgentCardSignature` | [#12](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/12) | §8.4.3 mandates a *procedure*, defines no API; no reference SDK implements one; the implementation lacked RFC 8785 canonicalization and so would have failed against any conformant signer |
 | `buildAuthFromCard` / `ResolvedAuth` / `credentials` | [#13](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/13) | spec models security schemes as card *data*, not a client auth-wiring API; both SDKs take auth on the builder; the implementation covered only 2 of 5 scheme kinds by design |
 | `resolveAgentCardCached` / `CachedAgentCard` | [#14](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/14) | ETag conditional GET: not spec, no SDK precedent, and no caller inside the library |
+| `lastGrantedExtensions()` | [#33](https://github.com/Anuja-jayasinghe/a2a-ballerina/issues/33) | reading back granted extensions has no spec definition and no SDK precedent — both reference SDKs treat `A2A-Extensions` as request-side only; flagged as the likeliest withdrawal candidate when it was added, which is exactly what happened |
 
 Also removed, without issues, because nothing was lost: `newClient` (folded
 into `init`), the `serviceUrl` escape hatch (a caller could dial a URL the
