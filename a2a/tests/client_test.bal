@@ -2711,3 +2711,144 @@ function testGetExtendedAgentCardStoresFetchedCard() returns error? {
     test:assertEquals(check getLastRequestBody().method, "GetTask",
             "the stored card declares extendedAgentCard=false, so the second call must short-circuit");
 }
+
+// ---- v0.3 multi-transport card normalization -------------------------
+
+# A2A v0.3 declares transports via preferredTransport + additionalInterfaces;
+# supportedInterfaces is the v1.0 field that replaced them. Parsing must
+# translate the former into the latter, or every transport a v0.3 card
+# declares is invisible.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03CardTransportsNormalizeIntoSupportedInterfaces() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/grpc",
+        "preferredTransport": "GRPC",
+        "additionalInterfaces": [
+            {"url": "http://agent.example/grpc", "transport": "GRPC"},
+            {"url": "http://agent.example/rest", "transport": "HTTP+JSON"},
+            {"url": "http://agent.example/rpc", "transport": "JSONRPC"}
+        ],
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertEquals(card.supportedInterfaces.length(), 3,
+            "the preferred transport plus the two non-duplicate additionalInterfaces entries, with the entry repeating the main url collapsed");
+    test:assertEquals(card.supportedInterfaces[0].protocolBinding, "GRPC",
+            "preferredTransport names what is served at the main url and must come first, since selection takes the earliest serviceable entry");
+    test:assertEquals(card.supportedInterfaces[0].url, "http://agent.example/grpc");
+    test:assertEquals(card.supportedInterfaces[1].protocolBinding, "HTTP+JSON");
+    test:assertEquals(card.supportedInterfaces[2].protocolBinding, "JSONRPC");
+    test:assertEquals(card.supportedInterfaces[2].url, "http://agent.example/rpc");
+
+    foreach AgentInterface iface in card.supportedInterfaces {
+        test:assertEquals(iface?.protocolVersion, "0.3.0",
+                "every synthesized interface must carry the card's protocol version, or detectProtocolModeForBinding resolves V1_0 and silently upgrades a v0.3 agent");
+    }
+}
+
+# The bug this fixes: selection answered JSONRPC for a gRPC-preferred card
+# by falling through to the legacy url branch — and that url is the gRPC
+# endpoint, so Client built a JsonRpcClient aimed at a gRPC address.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testV03GrpcPreferredCardSelectsItsRealJsonRpcEndpoint() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/grpc",
+        "preferredTransport": "GRPC",
+        "additionalInterfaces": [
+            {"url": "http://agent.example/rpc", "transport": "JSONRPC"}
+        ],
+        "capabilities": {}, "skills": []
+    });
+
+    TransportBinding binding = check selectBindingFromCard(card);
+    test:assertEquals(binding, "JSONRPC",
+            "this library speaks v0.3 over JSON-RPC only, so the v0.3 GRPC entry is skipped as unserviceable");
+    test:assertEquals(check primaryUrl(card, "JSONRPC"), "http://agent.example/rpc",
+            "and the URL must be the card's actual JSON-RPC endpoint, not the gRPC one the legacy url field holds");
+}
+
+# A card declaring only transports this library cannot serve must fail
+# outright rather than fall back to the legacy url under the wrong protocol.
+@test:Config {}
+function testV03CardWithNoServiceableTransportIsRejected() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/grpc",
+        "preferredTransport": "GRPC",
+        "additionalInterfaces": [
+            {"url": "http://agent.example/rest", "transport": "HTTP+JSON"}
+        ],
+        "capabilities": {}, "skills": []
+    });
+
+    TransportBinding|error binding = selectBindingFromCard(card);
+    test:assertTrue(binding is error,
+            "a v0.3 card offering only gRPC and REST has nothing this library can speak, and must not silently fall back to the legacy url as JSON-RPC");
+}
+
+# preferredTransport defaults to JSONRPC per the v0.3 schema.
+@test:Config {}
+function testV03CardWithoutPreferredTransportDefaultsToJsonRpc() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "additionalInterfaces": [
+            {"url": "http://agent.example/grpc", "transport": "GRPC"}
+        ],
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertEquals(card.supportedInterfaces[0].protocolBinding, "JSONRPC",
+            "an absent preferredTransport means JSONRPC is served at the main url");
+    test:assertEquals(card.supportedInterfaces[0].url, "http://agent.example/rpc");
+}
+
+# A v1.0 card already declares supportedInterfaces and must pass through
+# untouched, even on the vanishingly unlikely chance it also carries a
+# legacy field.
+@test:Config {}
+function testV10CardSupportedInterfacesAreNeverRewritten() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "modern", "description": "d", "version": "1.0",
+        "url": "http://agent.example/legacy",
+        "preferredTransport": "GRPC",
+        "supportedInterfaces": [
+            {"url": "http://agent.example/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
+        ],
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertEquals(card.supportedInterfaces.length(), 1,
+            "a card that already declares supportedInterfaces is v1.0-native; the legacy fields must not be merged in");
+    test:assertEquals(card.supportedInterfaces[0].protocolBinding, "JSONRPC");
+}
+
+# A bare legacy card carrying neither legacy transport field keeps its
+# existing behaviour exactly: nothing is synthesized, and the legacy-url
+# fallback in primaryUrl still answers for JSON-RPC.
+@test:Config {}
+function testBareLegacyUrlCardIsLeftAlone() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertEquals(card.supportedInterfaces.length(), 0,
+            "with no preferredTransport and no additionalInterfaces there is nothing to translate");
+    test:assertEquals(check primaryUrl(card), "http://agent.example/rpc",
+            "and the pre-existing legacy-url fallback still resolves it");
+    test:assertEquals(detectProtocolModeForBinding(card), "V0_3",
+            "dialect detection for such a card must be unchanged");
+}
