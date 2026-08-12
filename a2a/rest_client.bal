@@ -18,9 +18,12 @@ import ballerina/http;
 # a2a:Task|a2a:Message reply = check agent->sendMessage(msg);
 # ```
 #
-# A2A v0.3 has no REST binding, so a card resolving to that protocol
-# version is rejected at construction rather than at the first call. Use
-# `JsonRpcClient` for a v0.3 agent.
+# A2A v0.3 does define a REST binding, but this library does not implement
+# it: `compat_v03.bal` is a JSON-RPC dialect translator (v0.3 method names
+# like `tasks/get` have no meaning as a REST path), and the operation-to-path
+# table here is v1.0's. A card resolving to v0.3 is therefore rejected at
+# construction rather than at the first call. Use `JsonRpcClient` for a v0.3
+# agent. See issue #31.
 public isolated client class RestClient {
     *AgentClient;
 
@@ -75,8 +78,8 @@ public isolated client class RestClient {
         ProtocolMode detected = detectProtocolModeForBinding(card, "HTTP+JSON");
         if detected == "V0_3" {
             return error VersionNotSupportedError(
-                "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent",
-                message = "A2A protocol v0.3 has no REST/HTTP+JSON binding equivalent"
+                "this library does not implement A2A v0.3 over the REST/HTTP+JSON binding; use JsonRpcClient for a v0.3 agent",
+                message = "this library does not implement A2A v0.3 over the REST/HTTP+JSON binding; use JsonRpcClient for a v0.3 agent"
             );
         }
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};

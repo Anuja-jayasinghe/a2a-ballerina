@@ -428,9 +428,10 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
         }
         TransportBinding binding = <TransportBinding>declared;
         // "First *supported* transport" has to mean supported in practice,
-        // not merely a binding name this library recognises. A2A v0.3
-        // exists only over JSON-RPC, so a v0.3 REST or gRPC interface is
-        // something the matching client would reject at construction.
+        // not merely a binding name this library recognises. v0.3 defines
+        // all three bindings, but this library implements v0.3 over
+        // JSON-RPC only, so a v0.3 REST or gRPC interface is something the
+        // matching client would reject at construction.
         // Skipping it here lets a card that lists one ahead of a
         // serviceable interface still connect, instead of failing outright
         // on an entry no client could ever have used.

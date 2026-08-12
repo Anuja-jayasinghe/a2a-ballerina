@@ -24,7 +24,9 @@ import ballerina/a2a.transport;
 #
 # This binding serves both wire dialects: an Agent Card resolving to A2A
 # v0.3 is translated transparently, the same as before the client types
-# were split. REST and gRPC have no v0.3 equivalent and reject such a card.
+# were split. It is the only one that does — v0.3 defines all three
+# bindings, but `compat_v03.bal` translates the JSON-RPC dialect alone, so
+# `RestClient` and `GrpcClient` reject a v0.3 card. See issue #31.
 public isolated client class JsonRpcClient {
     *AgentClient;
 

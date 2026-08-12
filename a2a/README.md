@@ -90,6 +90,13 @@ a2a:AgentClient c = check new a2a:Client(url);
 JSON-RPC method names, enum casing, response wrapping) — detected from the
 resolved `AgentCard`, translated transparently, zero caller-visible branching.
 
+v0.3 is supported **over JSON-RPC only**. v0.3 does define all three
+bindings, but the compatibility layer translates the JSON-RPC dialect
+alone, so `RestClient` and `GrpcClient` reject a v0.3 card at construction
+(issue #31). A v0.3 card declaring several transports is still read
+correctly: its `preferredTransport`/`additionalInterfaces` are normalized
+into `supportedInterfaces`, and `Client` picks the JSON-RPC one.
+
 **Hardening features**, each opt-in/backward-compatible with pre-existing
 callers:
 - **`A2A-Extensions` header** — advertise/request extensions, capture what

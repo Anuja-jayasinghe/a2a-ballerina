@@ -211,12 +211,12 @@ function testAgentClientInterfaceAcceptsEveryImplementation() returns error? {
 
 // ---- selection skips interfaces no client could serve ----------------
 
-# A2A v0.3 exists only over JSON-RPC, so a v0.3 HTTP+JSON entry is one the
+# This library implements v0.3 over JSON-RPC only, so a v0.3 HTTP+JSON entry is one the
 # matching client rejects at construction. Listing it first must not sink
 # the whole card when a serviceable interface follows.
 #
 # Before this was handled, such a card failed outright with "A2A protocol
-# v0.3 has no REST/HTTP+JSON binding equivalent" even though its JSON-RPC
+# does not implement v0.3 over REST/HTTP+JSON" even though its JSON-RPC
 # interface was perfectly usable.
 @test:Config {}
 function testClientSkipsV03RestInterfaceAndFallsToJsonRpc() returns error? {

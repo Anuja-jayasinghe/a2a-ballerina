@@ -53,8 +53,9 @@ function testGrpcClientRejectsCardWithoutGrpcInterface() {
             "a card declaring no GRPC interface must fail construction");
 }
 
-# A2A v0.3 predates the gRPC binding, so this must fail fast rather than
-# marshalling v0.3 shapes into protobuf types that have no v0.3 form.
+# v0.3 defines a gRPC binding, but this library translates the JSON-RPC
+# dialect only, so this must fail fast rather than marshalling v0.3 JSON
+# shapes through a stub generated from v1.0's proto. See issue #31.
 @test:Config {groups: ["grpc"]}
 function testGrpcClientRejectsV03Card() {
     AgentCard card = {
@@ -66,7 +67,7 @@ function testGrpcClientRejectsV03Card() {
     };
     GrpcClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
-            "a card resolving to v0.3 must be rejected with a typed error, since v0.3 has no gRPC binding");
+            "a card resolving to v0.3 must be rejected with a typed error, since this library implements v0.3 over JSON-RPC only");
 }
 
 @test:Config {groups: ["grpc"]}

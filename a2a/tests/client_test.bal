@@ -418,7 +418,7 @@ function testClientInitRejectsV03PlusGrpc() returns error? {
     };
     GrpcClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
-            "constructing a GRPC client against a card that resolves to V0_3 must fail fast with a typed error, since A2A v0.3 has no gRPC binding equivalent");
+            "constructing a GRPC client against a card that resolves to V0_3 must fail fast with a typed error, since this library implements v0.3 over JSON-RPC only");
 }
 
 @test:Config {groups: ["grpc"]}
