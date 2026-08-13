@@ -1,12 +1,10 @@
-// Agent Card resolution, interface selection, the REST request table, and
-// the common Client that delegates to whichever transport-specific client
-// the card prefers.
+// Agent Card resolution, interface selection, and the common Client that
+// delegates to whichever transport-specific client the card prefers.
 //
 // The transport marshaling that used to live here now sits with the client
 // that owns it: jsonrpc_client.bal, rest_client.bal, grpc_client.bal.
 
 import ballerina/http;
-import ballerina/url;
 
 # Rewrites a pre-v1.0 card's transport declarations into the v1.0
 # `supportedInterfaces` shape, in place on the raw card map.
@@ -277,11 +275,18 @@ isolated function primaryUrl(
 
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
 # on some AgentCards) to the http://\https:// form grpc:Client actually
-# accepts. A conformant card's GRPC interface url is already http(s), in
-# which case this is a no-op.
+# accepts, and likewise a bare "host:port" with no scheme at all -- gRPC's
+# own convention (e.g. `grpc.Dial("host:port")`) omits the scheme
+# entirely, unlike HTTP. Confirmed against a real agent card (dice_agent,
+# from a2a-samples' Java multi-transport reference): its GRPC interface
+# publishes exactly this schemeless shape, which ballerina/grpc's client
+# construction rejects outright ("Malformed URL") without this. A
+# conformant card's GRPC interface url is already http(s), in which case
+# this is a no-op.
 #
 # + url - the GRPC interface's url, as published on the AgentCard
-# + return - the url with any grpc/grpcs scheme rewritten to http/https
+# + return - the url with any grpc/grpcs scheme, or no scheme at all,
+#            rewritten to http/https
 isolated function normalizeGrpcSchemeUrl(string url) returns string {
     if url.startsWith("grpcs://") {
         return "https://" + url.substring(8);
@@ -289,118 +294,13 @@ isolated function normalizeGrpcSchemeUrl(string url) returns string {
     if url.startsWith("grpc://") {
         return "http://" + url.substring(7);
     }
-    return url;
-}
-
-# How one operation maps onto the REST binding.
-type RestOperation record {|
-    string httpMethod;
-    string pathTemplate;
-    string[] pathParams;
-    boolean hasBody;
-    boolean streaming;
-|};
-
-final readonly & map<RestOperation> REST_OPERATIONS = {
-    "SendMessage": {httpMethod: "POST", pathTemplate: "/message:send", pathParams: [], hasBody: true, streaming: false},
-    "SendStreamingMessage": {httpMethod: "POST", pathTemplate: "/message:stream", pathParams: [], hasBody: true, streaming: true},
-    "GetTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}", pathParams: ["id"], hasBody: false, streaming: false},
-    "ListTasks": {httpMethod: "GET", pathTemplate: "/tasks", pathParams: [], hasBody: false, streaming: false},
-    "CancelTask": {httpMethod: "POST", pathTemplate: "/tasks/{id}:cancel", pathParams: ["id"], hasBody: true, streaming: false},
-    "SubscribeToTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}:subscribe", pathParams: ["id"], hasBody: false, streaming: true},
-    "CreateTaskPushNotificationConfig": {httpMethod: "POST", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: true, streaming: false},
-    "GetTaskPushNotificationConfig": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false},
-    "ListTaskPushNotificationConfigs": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: false, streaming: false},
-    "GetExtendedAgentCard": {httpMethod: "GET", pathTemplate: "/extendedAgentCard", pathParams: [], hasBody: false, streaming: false},
-    "DeleteTaskPushNotificationConfig": {httpMethod: "DELETE", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false}
-};
-
-# Builds the path (with tenant prefix and path-param substitution) and
-# body for one REST request, per the descriptor table above.
-#
-# Path params and tenant are substituted from `params`. Per the design
-# spec's M3/M4 findings (matching the reference a2a-python SDK exactly,
-# not "cleaning up" the duplication): for hasBody operations, tenant and
-# path params stay in the body as well as the path; for bodiless
-# operations, they are removed from the working param set so they don't
-# leak into the query string. Bodiless operations serialize every
-# remaining param as a URL-encoded query parameter; TaskState enum values
-# serialize as their symbolic name (already what a bare enum value is in
-# Ballerina — no conversion needed), and any value containing characters
-# needing escaping (e.g. an RFC 3339 timestamp's `:`/`+`) goes through
-# url:encode.
-#
-# + method - the JSON-RPC-style method name already used to key
-#            REST_OPERATIONS (e.g. "GetTask") — the same string every
-#            remote function already passes to rpcCall/openEventStream
-# + params - the same params map the JSON-RPC binding would have sent
-# + return - the full request path (including query string for bodiless
-#            operations) and the JSON body to send (nil for bodiless
-#            operations), or an error if method has no REST mapping
-isolated function buildRestRequest(string method, map<json> params) returns [string, json?]|error {
-    RestOperation? maybeOp = REST_OPERATIONS[method];
-    if maybeOp is () {
-        return error A2AInternalError(string `REST binding has no operation mapping for "${method}"`);
+    if url.startsWith("http://") || url.startsWith("https://") {
+        return url;
     }
-    RestOperation op = maybeOp;
-    map<json> workingParams = params.clone();
-
-    string? tenant = ();
-    json? tenantJson = workingParams["tenant"];
-    if tenantJson is string {
-        tenant = tenantJson;
-        if !op.hasBody {
-            _ = workingParams.remove("tenant");
-        }
-    }
-
-    string path = op.pathTemplate;
-    foreach string pName in op.pathParams {
-        json? pValue = workingParams[pName];
-        if pValue !is string {
-            return error A2AInternalError(string `REST binding for "${method}" requires path parameter "${pName}", but it was missing or not a string`);
-        }
-        // Plain string substitution, not regex: pathTemplate never
-        // contains a literal "{"/"}" outside of exactly these
-        // placeholder markers, so there's no need for regex escaping
-        // here. lang.string has no plain literal-replace function
-        // (only regex-based replaceAll/replaceFirst), so the
-        // placeholder is substituted manually via indexOf/substring.
-        // The substituted value itself is percent-encoded so a value
-        // containing "/", "?", "#", or "%" can't restructure the path
-        // (e.g. break out into the query string, or shape a
-        // path-traversal-looking segment) — only the literal template
-        // text (e.g. ":cancel"/":subscribe") is left unencoded.
-        string encodedValue = check url:encode(pValue, "UTF-8");
-        string placeholder = string `{${pName}}`;
-        int? idx = path.indexOf(placeholder);
-        if idx is int {
-            path = path.substring(0, idx) + encodedValue + path.substring(idx + placeholder.length());
-        }
-        if !op.hasBody {
-            _ = workingParams.remove(pName);
-        }
-    }
-
-    if tenant is string {
-        string encodedTenant = check url:encode(tenant, "UTF-8");
-        path = string `/${encodedTenant}${path}`;
-    }
-
-    if op.hasBody {
-        return [path, workingParams];
-    }
-
-    string[] queryParts = [];
-    foreach [string, json] [k, v] in workingParams.entries() {
-        string stringValue = v is string ? v : v.toString();
-        string encoded = check url:encode(stringValue, "UTF-8");
-        queryParts.push(string `${k}=${encoded}`);
-    }
-    if queryParts.length() > 0 {
-        path = path + "?" + string:'join("&", ...queryParts);
-    }
-    return [path, ()];
+    // Absence of a scheme carries no TLS signal either way, so this
+    // defaults to http (unencrypted) - the same default "grpc://" above
+    // already uses.
+    return "http://" + url;
 }
 
 # Chooses which transport binding to speak, from the Agent Card alone.

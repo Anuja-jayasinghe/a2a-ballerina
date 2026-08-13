@@ -2,10 +2,122 @@
 //
 // Same shape as JsonRpcClient: one binding, no branch. What differs is the
 // marshaling — an operation becomes an HTTP method, a templated path, and
-// optionally a body (REST_OPERATIONS/buildRestRequest in client.bal),
-// rather than a JSON-RPC envelope posted to a single endpoint.
+// optionally a body (REST_OPERATIONS/buildRestRequest, below), rather
+// than a JSON-RPC envelope posted to a single endpoint.
 
 import ballerina/http;
+import ballerina/url;
+
+# How one operation maps onto the REST binding.
+type RestOperation record {|
+    string httpMethod;
+    string pathTemplate;
+    string[] pathParams;
+    boolean hasBody;
+    boolean streaming;
+|};
+
+final readonly & map<RestOperation> REST_OPERATIONS = {
+    "SendMessage": {httpMethod: "POST", pathTemplate: "/message:send", pathParams: [], hasBody: true, streaming: false},
+    "SendStreamingMessage": {httpMethod: "POST", pathTemplate: "/message:stream", pathParams: [], hasBody: true, streaming: true},
+    "GetTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}", pathParams: ["id"], hasBody: false, streaming: false},
+    "ListTasks": {httpMethod: "GET", pathTemplate: "/tasks", pathParams: [], hasBody: false, streaming: false},
+    "CancelTask": {httpMethod: "POST", pathTemplate: "/tasks/{id}:cancel", pathParams: ["id"], hasBody: true, streaming: false},
+    "SubscribeToTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}:subscribe", pathParams: ["id"], hasBody: false, streaming: true},
+    "CreateTaskPushNotificationConfig": {httpMethod: "POST", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: true, streaming: false},
+    "GetTaskPushNotificationConfig": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false},
+    "ListTaskPushNotificationConfigs": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: false, streaming: false},
+    "GetExtendedAgentCard": {httpMethod: "GET", pathTemplate: "/extendedAgentCard", pathParams: [], hasBody: false, streaming: false},
+    "DeleteTaskPushNotificationConfig": {httpMethod: "DELETE", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false}
+};
+
+# Builds the path (with tenant prefix and path-param substitution) and
+# body for one REST request, per the descriptor table above.
+#
+# Path params and tenant are substituted from `params`. Per the design
+# spec's M3/M4 findings (matching the reference a2a-python SDK exactly,
+# not "cleaning up" the duplication): for hasBody operations, tenant and
+# path params stay in the body as well as the path; for bodiless
+# operations, they are removed from the working param set so they don't
+# leak into the query string. Bodiless operations serialize every
+# remaining param as a URL-encoded query parameter; TaskState enum values
+# serialize as their symbolic name (already what a bare enum value is in
+# Ballerina — no conversion needed), and any value containing characters
+# needing escaping (e.g. an RFC 3339 timestamp's `:`/`+`) goes through
+# url:encode.
+#
+# + method - the JSON-RPC-style method name already used to key
+#            REST_OPERATIONS (e.g. "GetTask") — the same string every
+#            remote function already passes to rpcCall/openEventStream
+# + params - the same params map the JSON-RPC binding would have sent
+# + return - the full request path (including query string for bodiless
+#            operations) and the JSON body to send (nil for bodiless
+#            operations), or an error if method has no REST mapping
+isolated function buildRestRequest(string method, map<json> params) returns [string, json?]|error {
+    RestOperation? maybeOp = REST_OPERATIONS[method];
+    if maybeOp is () {
+        return error A2AInternalError(string `REST binding has no operation mapping for "${method}"`);
+    }
+    RestOperation op = maybeOp;
+    map<json> workingParams = params.clone();
+
+    string? tenant = ();
+    json? tenantJson = workingParams["tenant"];
+    if tenantJson is string {
+        tenant = tenantJson;
+        if !op.hasBody {
+            _ = workingParams.remove("tenant");
+        }
+    }
+
+    string path = op.pathTemplate;
+    foreach string pName in op.pathParams {
+        json? pValue = workingParams[pName];
+        if pValue !is string {
+            return error A2AInternalError(string `REST binding for "${method}" requires path parameter "${pName}", but it was missing or not a string`);
+        }
+        // Plain string substitution, not regex: pathTemplate never
+        // contains a literal "{"/"}" outside of exactly these
+        // placeholder markers, so there's no need for regex escaping
+        // here. lang.string has no plain literal-replace function
+        // (only regex-based replaceAll/replaceFirst), so the
+        // placeholder is substituted manually via indexOf/substring.
+        // The substituted value itself is percent-encoded so a value
+        // containing "/", "?", "#", or "%" can't restructure the path
+        // (e.g. break out into the query string, or shape a
+        // path-traversal-looking segment) — only the literal template
+        // text (e.g. ":cancel"/":subscribe") is left unencoded.
+        string encodedValue = check url:encode(pValue, "UTF-8");
+        string placeholder = string `{${pName}}`;
+        int? idx = path.indexOf(placeholder);
+        if idx is int {
+            path = path.substring(0, idx) + encodedValue + path.substring(idx + placeholder.length());
+        }
+        if !op.hasBody {
+            _ = workingParams.remove(pName);
+        }
+    }
+
+    if tenant is string {
+        string encodedTenant = check url:encode(tenant, "UTF-8");
+        path = string `/${encodedTenant}${path}`;
+    }
+
+    if op.hasBody {
+        return [path, workingParams];
+    }
+
+    string[] queryParts = [];
+    foreach [string, json] [k, v] in workingParams.entries() {
+        string stringValue = v is string ? v : v.toString();
+        string encoded = check url:encode(stringValue, "UTF-8");
+        queryParts.push(string `${k}=${encoded}`);
+    }
+    if queryParts.length() > 0 {
+        path = path + "?" + string:'join("&", ...queryParts);
+    }
+    return [path, ()];
+}
 
 # An A2A client that speaks the REST (HTTP+JSON) binding.
 #
@@ -184,15 +296,32 @@ public isolated client class RestClient {
         return self.openRestSseStream("SubscribeToTask", params);
     }
 
+    # The unary sendMessage body, factored out so sendStreamingMessage's
+    # capability-gated fallback (issue #11) can call it without going
+    # through a remote method on self.
+    #
+    # + message - the message to send
+    # + config - optional send configuration
+    # + tenant - optional per-call tenant override
+    # + metadata - optional additional context
+    # + return - the finished Task or a plain Message reply
+    private isolated function sendMessageUnary(
+            Message message,
+            SendMessageConfiguration? config,
+            string? tenant,
+            map<json>? metadata) returns Task|Message|error {
+        map<json> params = check buildSendMessageParams(
+                message, config, metadata, tenant ?: self.tenant, self.mode);
+        json result = check self.restCall("SendMessage", params);
+        return decodeSendMessageResult(result, self.mode);
+    }
+
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        map<json> params = check buildSendMessageParams(
-                message, config, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("SendMessage", params);
-        return decodeSendMessageResult(result, self.mode);
+        return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
     isolated remote function sendStreamingMessage(
@@ -200,6 +329,17 @@ public isolated client class RestClient {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesStreaming(self.agentCard);
+        }
+        if denied {
+            // Falls back to a single unary call instead of opening (and
+            // having the server reject) a streaming connection - see
+            // singleEventStream and issue #11.
+            Task|Message result = check self.sendMessageUnary(message, config, tenant, metadata);
+            return singleEventStream(result);
+        }
         string? effectiveTenant = tenant ?: self.tenant;
         map<json> params = check buildSendMessageParams(
                 message, config, metadata, effectiveTenant, self.mode);
@@ -228,6 +368,16 @@ public isolated client class RestClient {
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesStreaming(self.agentCard);
+        }
+        if denied {
+            // Unlike sendStreamingMessage, subscribing to a task already
+            // in flight has no unary equivalent to fall back to - see
+            // issue #11.
+            return streamingUnsupportedError("subscribeToTask");
+        }
         stream<StreamResponse, error?> rawStream = check self.openTaskSubscriptionStream(taskId, tenant);
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
@@ -249,6 +399,13 @@ public isolated client class RestClient {
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("createTaskPushNotificationConfig");
+        }
         map<json> params = check buildCreateTaskPushNotificationConfigParams(
                 config, tenant ?: self.tenant, self.mode);
         json result = check self.restCall("CreateTaskPushNotificationConfig", params);
@@ -259,6 +416,13 @@ public isolated client class RestClient {
             string taskId,
             string id,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("getTaskPushNotificationConfig");
+        }
         map<json> params = buildPushNotificationConfigRefParams(
                 taskId, id, tenant ?: self.tenant, self.mode);
         json result = check self.restCall("GetTaskPushNotificationConfig", params);
@@ -270,12 +434,24 @@ public isolated client class RestClient {
             int? pageSize = (),
             string? pageToken = (),
             string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("listTaskPushNotificationConfigs");
+        }
         map<json> params = buildListTaskPushNotificationConfigsParams(
                 taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
         json result = check self.restCall("ListTaskPushNotificationConfigs", params);
         return decodeListTaskPushNotificationConfigsResult(result, self.mode);
     }
 
+    # deleteTaskPushNotificationConfig is deliberately NOT gated on
+    # capabilities.pushNotifications - deletion is idempotent per
+    # specification section 3.1.10, so a card that (perhaps stale-ly)
+    # denies the capability shouldn't block a call that's a legitimate
+    # no-op either way. See issue #11.
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,

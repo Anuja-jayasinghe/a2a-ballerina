@@ -438,6 +438,11 @@ function testGrpcSchemeNormalization() {
     test:assertEquals(normalizeGrpcSchemeUrl("grpcs://localhost:9090"), "https://localhost:9090");
     test:assertEquals(normalizeGrpcSchemeUrl("http://localhost:9090"), "http://localhost:9090");
     test:assertEquals(normalizeGrpcSchemeUrl("https://localhost:9090"), "https://localhost:9090");
+    // A bare "host:port" with no scheme at all - gRPC's own convention,
+    // and the exact shape a2a-samples' Java dice_agent reference server
+    // publishes for its GRPC interface. Found via a live interop run,
+    // not a mock: every mock fixture happened to always include a scheme.
+    test:assertEquals(normalizeGrpcSchemeUrl("localhost:11000"), "http://localhost:11000");
 }
 
 @test:Config {groups: ["grpc"]}
@@ -1277,7 +1282,7 @@ function testV03CancelTaskDecodesUnwrappedTask() returns error? {
 
 @test:Config {}
 function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error? {
-    Client c = check v03Client();
+    Client c = check v03Client({streaming: true});
     setNextSseResponse([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"artifact-update","taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"kind":"text","text":"100 USD is equal to 87.80 EUR."}]}}}`},
@@ -1458,7 +1463,7 @@ function testCreateTaskPushNotificationConfigNotSupportedErrorMapping() returns 
 
 @test:Config {}
 function testV03CreateTaskPushNotificationConfigTranslatesMethodAndBody() returns error? {
-    Client c = check v03Client();
+    Client c = check v03Client({pushNotifications: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
@@ -1487,7 +1492,7 @@ function testV03CreateTaskPushNotificationConfigTranslatesMethodAndBody() return
 
 @test:Config {}
 function testV03GetTaskPushNotificationConfigTranslatesMethod() returns error? {
-    Client c = check v03Client();
+    Client c = check v03Client({pushNotifications: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {
@@ -1566,7 +1571,7 @@ function testDeleteTaskPushNotificationConfigHappyPathReturnsNil() returns error
 
 @test:Config {}
 function testV03ListTaskPushNotificationConfigsTranslatesMethodAndDecodesUnwrappedResult() returns error? {
-    Client c = check v03Client();
+    Client c = check v03Client({pushNotifications: true});
     // v0.3's ListTaskPushNotificationConfigSuccessResponse.result is a BARE
     // array, not a {configs, nextPageToken} wrapper.
     setNextJsonResponse({
@@ -1602,7 +1607,7 @@ function testV03ListTaskPushNotificationConfigsTranslatesMethodAndDecodesUnwrapp
 # + return - an error if any step other than the assertions themselves fails
 @test:Config {}
 function testV03ListTaskPushNotificationConfigsOmitsPaginationFields() returns error? {
-    Client c = check v03Client();
+    Client c = check v03Client({pushNotifications: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: []
@@ -2700,6 +2705,170 @@ function testGetExtendedAgentCardStoresFetchedCard() returns error? {
     test:assertEquals(second.name, "Extended Card", "the second call should return the stored extended card");
     test:assertEquals(check getLastRequestBody().method, "GetTask",
             "the stored card declares extendedAgentCard=false, so the second call must short-circuit");
+}
+
+// ---- issue #11: client-side capability gating -------------------------
+//
+// streaming and pushNotifications follow the same "denied only when a card
+// exists and explicitly says false" gate as extendedAgentCard above
+// (cardDeniesStreaming/cardDeniesPushNotifications in operations.bal),
+// with two differences in what "denied" does: sendStreamingMessage falls
+// back to a single-event unary call rather than erroring, and
+// deleteTaskPushNotificationConfig is deliberately never gated at all
+// (deletion is idempotent per specification section 3.1.10).
+
+isolated function cardWithStreamingSupport(boolean supported) returns AgentCard => {
+    name: "n", description: "d", version: "1.0.0",
+    capabilities: {streaming: supported},
+    supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+    skills: []
+};
+
+isolated function cardWithPushNotificationsSupport(boolean supported) returns AgentCard => {
+    name: "n", description: "d", version: "1.0.0",
+    capabilities: {pushNotifications: supported},
+    supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+    skills: []
+};
+
+@test:Config {}
+function testSendStreamingMessageFallsBackToUnaryWhenStreamingDenied() returns error? {
+    Client c = check new (cardWithStreamingSupport(false));
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
+
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
+
+    test:assertEquals(check getLastRequestBody().method, "SendMessage",
+            "a card declaring streaming=false must fall back to a unary call, not open a streaming one");
+
+    StreamResponse first = check expectValue(events.next());
+    assertValidTask(<Task>first?.task);
+
+    record {| StreamResponse value; |}|error? second = events.next();
+    test:assertTrue(second is (), "the fallback stream must yield exactly one event, then close");
+}
+
+@test:Config {}
+function testSendStreamingMessageFallbackWrapsMessageReply() returns error? {
+    // The fallback's unary call can come back as a Message just as easily
+    // as a Task - both SendMessageResult variants per specification
+    // section 3.1.1 must wrap correctly.
+    Client c = check new (cardWithStreamingSupport(false));
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {message: {messageId: "reply-1", role: "ROLE_AGENT", parts: [{text: "a direct reply"}]}}
+    });
+
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
+
+    StreamResponse first = check expectValue(events.next());
+    Message? reply = first?.message;
+    test:assertTrue(reply is Message, "the wrapped fallback event should carry the Message reply");
+    test:assertEquals((<Message>reply).messageId, "reply-1");
+}
+
+@test:Config {}
+function testSendStreamingMessageOpensRealStreamWhenStreamingSupported() returns error? {
+    // Regression guard: a card that supports streaming must be unaffected.
+    Client c = check new (cardWithStreamingSupport(true));
+    setNextSseResponse([{data: taskJson("task-1", "TASK_STATE_COMPLETED")}]);
+
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> _ = check c->sendStreamingMessage(msg);
+
+    test:assertEquals(check getLastRequestBody().method, "SendStreamingMessage",
+            "a card declaring streaming=true must open the real streaming call, not fall back");
+}
+
+@test:Config {}
+function testSubscribeToTaskRejectsClientSideWhenStreamingDenied() returns error? {
+    // Unlike sendStreamingMessage, subscribing has no unary equivalent to
+    // fall back to, so this must hard-error - and without ever reaching
+    // the wire, per the issue's "no wasted round trips" requirement.
+    Client c = check new (cardWithStreamingSupport(false));
+    string primedMethod = check primeLastRequest(c);
+    test:assertEquals(primedMethod, "GetTask");
+
+    stream<StreamResponse, error?>|error result = c->subscribeToTask("task-1");
+
+    test:assertTrue(result is UnsupportedOperationError,
+            "a card declaring streaming=false must reject subscribeToTask client-side");
+    test:assertEquals(check getLastRequestBody().method, "GetTask",
+            "subscribeToTask must not reach the wire when the card denies streaming");
+}
+
+@test:Config {}
+function testCreateTaskPushNotificationConfigRejectsClientSideWhenDenied() returns error? {
+    Client c = check new (cardWithPushNotificationsSupport(false));
+    string primedMethod = check primeLastRequest(c);
+
+    TaskPushNotificationConfig|error result = c->createTaskPushNotificationConfig(
+            {url: "https://client.example.com/webhooks/a2a", taskId: "task-1"});
+
+    test:assertTrue(result is PushNotificationNotSupportedError,
+            "a card declaring pushNotifications=false must reject createTaskPushNotificationConfig client-side");
+    test:assertEquals(check getLastRequestBody().method, primedMethod,
+            "createTaskPushNotificationConfig must not reach the wire when the card denies the capability");
+}
+
+@test:Config {}
+function testGetTaskPushNotificationConfigRejectsClientSideWhenDenied() returns error? {
+    Client c = check new (cardWithPushNotificationsSupport(false));
+    string primedMethod = check primeLastRequest(c);
+
+    TaskPushNotificationConfig|error result = c->getTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertTrue(result is PushNotificationNotSupportedError,
+            "a card declaring pushNotifications=false must reject getTaskPushNotificationConfig client-side");
+    test:assertEquals(check getLastRequestBody().method, primedMethod,
+            "getTaskPushNotificationConfig must not reach the wire when the card denies the capability");
+}
+
+@test:Config {}
+function testListTaskPushNotificationConfigsRejectsClientSideWhenDenied() returns error? {
+    Client c = check new (cardWithPushNotificationsSupport(false));
+    string primedMethod = check primeLastRequest(c);
+
+    ListTaskPushNotificationConfigsResult|error result = c->listTaskPushNotificationConfigs("task-1");
+
+    test:assertTrue(result is PushNotificationNotSupportedError,
+            "a card declaring pushNotifications=false must reject listTaskPushNotificationConfigs client-side");
+    test:assertEquals(check getLastRequestBody().method, primedMethod,
+            "listTaskPushNotificationConfigs must not reach the wire when the card denies the capability");
+}
+
+@test:Config {}
+function testDeleteTaskPushNotificationConfigStillSendsWhenDenied() returns error? {
+    // The one deliberate exception: deletion is idempotent per
+    // specification section 3.1.10, so a card denying pushNotifications
+    // must not block what's a legitimate no-op either way.
+    Client c = check new (cardWithPushNotificationsSupport(false));
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {}});
+
+    error? result = c->deleteTaskPushNotificationConfig("task-1", "webhook-1");
+
+    test:assertTrue(result is (), "deleteTaskPushNotificationConfig must succeed even when the card denies pushNotifications");
+    test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig",
+            "deleteTaskPushNotificationConfig must still reach the wire - it is deliberately not gated");
+}
+
+@test:Config {}
+function testV03SendStreamingMessageFallsBackWhenStreamingDenied() returns error? {
+    // The gate is dialect-independent: a v0.3 card denying streaming must
+    // fall back the same way a v1.0 card does, and the wire method used
+    // is the v0.3-translated unary one.
+    Client c = check v03Client({streaming: false});
+    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {id: "task-1", kind: "task", status: {state: "completed"}}});
+
+    Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
+
+    test:assertEquals(check getLastRequestBody().method, "message/send",
+            "a v0.3 card declaring streaming=false must fall back to the translated unary method");
+    StreamResponse first = check expectValue(events.next());
+    assertValidTask(<Task>first?.task);
 }
 
 // ---- v0.3 multi-transport card normalization -------------------------

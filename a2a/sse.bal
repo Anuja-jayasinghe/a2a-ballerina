@@ -1,13 +1,24 @@
-// SSE stream decoding for the A2A client.
+// Stream decoding for the A2A client, across all three bindings.
 //
-// Lives in the root module, not modules/transport/, because it constructs
-// StreamResponse/A2AError values directly and modules/transport/ cannot
-// import the root a2a module without creating a cyclic module dependency
-// (the root module already needs to import modules/transport/ for the
-// JSON-RPC envelope types). See LEARNING_LOG.md.
+// Lives in the root module, not modules/transport/ or modules/grpcstub/,
+// because it constructs StreamResponse/A2AError values directly and
+// neither module can import the root a2a module without creating a
+// cyclic module dependency (the root module already needs to import
+// both for their respective wire types). See LEARNING_LOG.md.
+//
+// A2AStreamGenerator (JSON-RPC/REST, which share an SSE wire shape) and
+// GrpcStreamAdapter (gRPC's per-element analogue - simpler at this layer
+// since gRPC has no envelope or mid-stream "error" frame to special-case)
+// are each one binding's raw decoder; ReconnectingStreamGenerator and
+// SingleEventStreamGenerator wrap either one with binding-agnostic
+// policy (reconnect-on-drop, single-event fallback) that has nothing to
+// say about how the underlying values arrived.
 
 import ballerina/a2a.transport;
 import ballerina/http;
+
+import ballerina/a2a.grpcstub;
+import ballerina/grpc;
 
 # Wraps the standard library SSE event stream, decoding each event's
 # JSON-RPC envelope into a StreamResponse and closing the stream once a
@@ -119,6 +130,51 @@ class A2AStreamGenerator {
     public isolated function close() returns error? {
         self.closed = true;
         return self.sseStream.close();
+    }
+}
+
+# Wraps a unary sendMessage reply as a one-event StreamResponse stream, for
+# sendStreamingMessage's capability-gated fallback per issue #11: when the
+# held AgentCard says streaming is unsupported, the call degrades to a
+# single unary request instead of opening (and having the server reject) an
+# SSE connection. sendMessage already blocks until the task reaches a
+# terminal state (or returns a Message with no task at all), so the lone
+# event this yields is already the finished result - nothing further would
+# ever arrive on a real stream either.
+#
+# + result - the unary sendMessage reply to wrap
+# + return - a stream yielding exactly that one event, then closing
+isolated function singleEventStream(Task|Message result) returns stream<StreamResponse, error?> {
+    // Task and Message are both open records (explicit `json...;` rest
+    // field, per repo convention), so the compiler can't prove `is Task`
+    // narrows `result` in the corresponding else branch - hence the
+    // explicit casts rather than relying on flow-sensitive narrowing.
+    StreamResponse response;
+    if result is Task {
+        response = {task: <Task>result};
+    } else {
+        response = {message: <Message>result};
+    }
+    return new (new SingleEventStreamGenerator(response));
+}
+
+# Yields one pre-built StreamResponse, then ends the stream cleanly. See
+# singleEventStream.
+class SingleEventStreamGenerator {
+    private record {| StreamResponse value; |}? pending;
+
+    isolated function init(StreamResponse value) {
+        self.pending = {value};
+    }
+
+    public isolated function next() returns record {| StreamResponse value; |}|error? {
+        record {| StreamResponse value; |}? p = self.pending;
+        self.pending = ();
+        return p;
+    }
+
+    public isolated function close() returns error? {
+        self.pending = ();
     }
 }
 
@@ -303,4 +359,52 @@ isolated function isTerminalEvent(StreamResponse event) returns boolean {
         || state == TASK_STATE_FAILED
         || state == TASK_STATE_CANCELED
         || state == TASK_STATE_REJECTED;
+}
+
+# The gRPC binding's streaming adapter - the per-element analogue of
+# A2AStreamGenerator above for the JSON-RPC/REST bindings. Simpler at the
+# stream layer than either (gRPC has no envelope and no mid-stream
+# "error"-named frame to special-case - a transport error surfaces
+# directly as a grpc:Error from upstream.next()) and more involved at the
+# type layer (every element needs decodeGrpcStreamResponse). See design
+# spec Design decision 4.
+class GrpcStreamAdapter {
+    private stream<grpcstub:StreamResponse, error?> upstream;
+    private boolean closed = false;
+
+    isolated function init(stream<grpcstub:StreamResponse, error?> upstream) {
+        self.upstream = upstream;
+    }
+
+    public isolated function next() returns record {|StreamResponse value;|}|error? {
+        if self.closed {
+            return ();
+        }
+        record {|grpcstub:StreamResponse value;|}|error? chunk = self.upstream.next();
+        if chunk is () {
+            self.closed = true;
+            return ();
+        }
+        if chunk is error {
+            self.closed = true;
+            if chunk is grpc:Error {
+                return toA2AErrorFromGrpc(chunk);
+            }
+            return chunk;
+        }
+        StreamResponse|error decoded = decodeGrpcStreamResponse(chunk.value);
+        if decoded is error {
+            self.closed = true;
+            return decoded;
+        }
+        if isTerminalEvent(decoded) {
+            self.closed = true;
+        }
+        return {value: decoded};
+    }
+
+    public isolated function close() returns error? {
+        self.closed = true;
+        return self.upstream.close();
+    }
 }
