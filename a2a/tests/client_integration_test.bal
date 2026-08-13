@@ -18,7 +18,7 @@ import ballerina/a2a.grpcstub;
 # + return - a minimal card offering only that binding
 isolated function cardForBinding(TransportBinding binding) returns AgentCard => {
     name: "n", description: "d", version: "1.0.0",
-    capabilities: {streaming: true, extendedAgentCard: true},
+    capabilities: {streaming: true, pushNotifications: true, extendedAgentCard: true},
     supportedInterfaces: [
         {
             url: binding == "GRPC" ? getGrpcMockUrl() : getServerBaseUrl(),

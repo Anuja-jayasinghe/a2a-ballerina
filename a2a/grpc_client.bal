@@ -270,15 +270,32 @@ public isolated client class GrpcClient {
         return self.openGrpcStream("SubscribeToTask", params);
     }
 
+    # The unary sendMessage body, factored out so sendStreamingMessage's
+    # capability-gated fallback (issue #11) can call it without going
+    # through a remote method on self.
+    #
+    # + message - the message to send
+    # + config - optional send configuration
+    # + tenant - optional per-call tenant override
+    # + metadata - optional additional context
+    # + return - the finished Task or a plain Message reply
+    private isolated function sendMessageUnary(
+            Message message,
+            SendMessageConfiguration? config,
+            string? tenant,
+            map<json>? metadata) returns Task|Message|error {
+        map<json> params = check buildSendMessageParams(
+                message, config, metadata, tenant ?: self.tenant, self.mode);
+        json result = check self.grpcCall("SendMessage", params);
+        return decodeSendMessageResult(result, self.mode);
+    }
+
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns Task|Message|error {
-        map<json> params = check buildSendMessageParams(
-                message, config, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.grpcCall("SendMessage", params);
-        return decodeSendMessageResult(result, self.mode);
+        return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
     isolated remote function sendStreamingMessage(
@@ -286,6 +303,17 @@ public isolated client class GrpcClient {
             SendMessageConfiguration? config = (),
             string? tenant = (),
             map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesStreaming(self.agentCard);
+        }
+        if denied {
+            // Falls back to a single unary call instead of opening (and
+            // having the server reject) a streaming connection - see
+            // singleEventStream and issue #11.
+            Task|Message result = check self.sendMessageUnary(message, config, tenant, metadata);
+            return singleEventStream(result);
+        }
         string? effectiveTenant = tenant ?: self.tenant;
         map<json> params = check buildSendMessageParams(
                 message, config, metadata, effectiveTenant, self.mode);
@@ -314,6 +342,16 @@ public isolated client class GrpcClient {
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesStreaming(self.agentCard);
+        }
+        if denied {
+            // Unlike sendStreamingMessage, subscribing to a task already
+            // in flight has no unary equivalent to fall back to - see
+            // issue #11.
+            return streamingUnsupportedError("subscribeToTask");
+        }
         stream<StreamResponse, error?> rawStream = check self.openTaskSubscriptionStream(taskId, tenant);
         if self.maxReconnectAttempts <= 0 {
             return rawStream;
@@ -335,6 +373,13 @@ public isolated client class GrpcClient {
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("createTaskPushNotificationConfig");
+        }
         map<json> params = check buildCreateTaskPushNotificationConfigParams(
                 config, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("CreateTaskPushNotificationConfig", params);
@@ -345,6 +390,13 @@ public isolated client class GrpcClient {
             string taskId,
             string id,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("getTaskPushNotificationConfig");
+        }
         map<json> params = buildPushNotificationConfigRefParams(
                 taskId, id, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("GetTaskPushNotificationConfig", params);
@@ -356,12 +408,24 @@ public isolated client class GrpcClient {
             int? pageSize = (),
             string? pageToken = (),
             string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("listTaskPushNotificationConfigs");
+        }
         map<json> params = buildListTaskPushNotificationConfigsParams(
                 taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("ListTaskPushNotificationConfigs", params);
         return decodeListTaskPushNotificationConfigsResult(result, self.mode);
     }
 
+    # deleteTaskPushNotificationConfig is deliberately NOT gated on
+    # capabilities.pushNotifications - deletion is idempotent per
+    # specification section 3.1.10, so a card that (perhaps stale-ly)
+    # denies the capability shouldn't block a call that's a legitimate
+    # no-op either way. See issue #11.
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,

@@ -122,6 +122,51 @@ class A2AStreamGenerator {
     }
 }
 
+# Wraps a unary sendMessage reply as a one-event StreamResponse stream, for
+# sendStreamingMessage's capability-gated fallback per issue #11: when the
+# held AgentCard says streaming is unsupported, the call degrades to a
+# single unary request instead of opening (and having the server reject) an
+# SSE connection. sendMessage already blocks until the task reaches a
+# terminal state (or returns a Message with no task at all), so the lone
+# event this yields is already the finished result - nothing further would
+# ever arrive on a real stream either.
+#
+# + result - the unary sendMessage reply to wrap
+# + return - a stream yielding exactly that one event, then closing
+isolated function singleEventStream(Task|Message result) returns stream<StreamResponse, error?> {
+    // Task and Message are both open records (explicit `json...;` rest
+    // field, per repo convention), so the compiler can't prove `is Task`
+    // narrows `result` in the corresponding else branch - hence the
+    // explicit casts rather than relying on flow-sensitive narrowing.
+    StreamResponse response;
+    if result is Task {
+        response = {task: <Task>result};
+    } else {
+        response = {message: <Message>result};
+    }
+    return new (new SingleEventStreamGenerator(response));
+}
+
+# Yields one pre-built StreamResponse, then ends the stream cleanly. See
+# singleEventStream.
+class SingleEventStreamGenerator {
+    private record {| StreamResponse value; |}? pending;
+
+    isolated function init(StreamResponse value) {
+        self.pending = {value};
+    }
+
+    public isolated function next() returns record {| StreamResponse value; |}|error? {
+        record {| StreamResponse value; |}? p = self.pending;
+        self.pending = ();
+        return p;
+    }
+
+    public isolated function close() returns error? {
+        self.pending = ();
+    }
+}
+
 # Wraps an existing StreamResponse stream, transparently reconnecting via
 # subscribeToTask when the underlying stream ends with an error instead of
 # a clean terminal-state close — up to a caller-configured attempt limit.

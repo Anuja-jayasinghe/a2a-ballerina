@@ -165,6 +165,64 @@ isolated function guardListTasksSupported(ProtocolMode mode) returns error? {
     }
 }
 
+# Whether the held Agent Card rules out streaming, per issue #11.
+#
+# "Denied" rather than "allowed" is the load-bearing framing: this answers
+# true only when a card exists AND explicitly says streaming is
+# unsupported. Every transport-specific client always holds the card it
+# was constructed or resolved with, so `card` is never actually `()` in
+# practice; the `AgentCard?` parameter exists so this reads the same way
+# as the `extendedAgentCard` check it's modeled on, and stays correct if
+# that ever changes. `AgentCapabilities.streaming` defaults to `false`
+# (types.bal), so a card that omits the field is treated as not
+# supporting streaming - the same staleness trade-off `extendedAgentCard`
+# already makes.
+#
+# + card - the client's held AgentCard, or () if it has none
+# + return - true if streaming should be short-circuited client-side
+isolated function cardDeniesStreaming(AgentCard? card) returns boolean {
+    return card is AgentCard && !card.capabilities.streaming;
+}
+
+# Whether the held Agent Card rules out push notifications, per issue #11.
+# Same "denied" framing as cardDeniesStreaming.
+#
+# Deliberately not consulted by deleteTaskPushNotificationConfig:
+# deletion is idempotent per specification section 3.1.10, so gating it
+# would turn a legitimate no-op into a client-side failure instead of
+# letting it reach the server (which is where correctness lives anyway).
+#
+# + card - the client's held AgentCard, or () if it has none
+# + return - true if the push-notification-config operations should be
+#            short-circuited client-side
+isolated function cardDeniesPushNotifications(AgentCard? card) returns boolean {
+    return card is AgentCard && !card.capabilities.pushNotifications;
+}
+
+# Builds the client-side rejection for a streaming call the held card says
+# is unsupported. Carries the same UnsupportedOperationError type and JSON-RPC
+# code (-32004) the server's own rejection would per errors.bal, so callers
+# matching on `detail().code` see one case either way; the message says
+# explicitly that this never reached the network, so a caller inspecting the
+# error text (e.g. in logs) can still tell the two apart.
+#
+# + operation - the operation name, for the error text (e.g. "subscribeToTask")
+# + return - a typed, client-side UnsupportedOperationError
+isolated function streamingUnsupportedError(string operation) returns error {
+    string message = string `${operation}: AgentCard.capabilities.streaming is false - rejected client-side, no request sent`;
+    return error UnsupportedOperationError(message, message = message, code = -32004);
+}
+
+# Builds the client-side rejection for a push-notification-config call the
+# held card says is unsupported. Same rationale as streamingUnsupportedError.
+#
+# + operation - the operation name, for the error text
+# + return - a typed, client-side PushNotificationNotSupportedError
+isolated function pushNotificationsUnsupportedError(string operation) returns error {
+    string message = string `${operation}: AgentCard.capabilities.pushNotifications is false - rejected client-side, no request sent`;
+    return error PushNotificationNotSupportedError(message, message = message, code = -32003);
+}
+
 # + filter - optional filter/pagination parameters
 # + effectiveTenant - the per-call override, or the client's default
 # + mode - the wire dialect this client speaks

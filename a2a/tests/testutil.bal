@@ -324,8 +324,12 @@ isolated function defaultMockAgentCard() returns json {
         // capability. This matters now that every Client holds a card:
         // getExtendedAgentCard short-circuits on a card declaring
         // extendedAgentCard=false, so a neutral fixture would silently stop
-        // every extended-card test from ever reaching the wire.
-        capabilities: {streaming: true, extendedAgentCard: true},
+        // every extended-card test from ever reaching the wire. Same
+        // reasoning extends pushNotifications=true (issue #11): every
+        // client-side capability gate short-circuits on a card declaring
+        // the capability false, so a neutral fixture would silently stop
+        // every push-notification-config test from ever reaching the wire.
+        capabilities: {streaming: true, pushNotifications: true, extendedAgentCard: true},
         // All three bindings are declared so a test can construct any
         // binding's client from getServerBaseUrl() alone. The client
         // resolves this card over HTTP from the 19199 mock, then dials
