@@ -438,6 +438,11 @@ function testGrpcSchemeNormalization() {
     test:assertEquals(normalizeGrpcSchemeUrl("grpcs://localhost:9090"), "https://localhost:9090");
     test:assertEquals(normalizeGrpcSchemeUrl("http://localhost:9090"), "http://localhost:9090");
     test:assertEquals(normalizeGrpcSchemeUrl("https://localhost:9090"), "https://localhost:9090");
+    // A bare "host:port" with no scheme at all - gRPC's own convention,
+    // and the exact shape a2a-samples' Java dice_agent reference server
+    // publishes for its GRPC interface. Found via a live interop run,
+    // not a mock: every mock fixture happened to always include a scheme.
+    test:assertEquals(normalizeGrpcSchemeUrl("localhost:11000"), "http://localhost:11000");
 }
 
 @test:Config {groups: ["grpc"]}

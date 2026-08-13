@@ -275,11 +275,18 @@ isolated function primaryUrl(
 
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
 # on some AgentCards) to the http://\https:// form grpc:Client actually
-# accepts. A conformant card's GRPC interface url is already http(s), in
-# which case this is a no-op.
+# accepts, and likewise a bare "host:port" with no scheme at all -- gRPC's
+# own convention (e.g. `grpc.Dial("host:port")`) omits the scheme
+# entirely, unlike HTTP. Confirmed against a real agent card (dice_agent,
+# from a2a-samples' Java multi-transport reference): its GRPC interface
+# publishes exactly this schemeless shape, which ballerina/grpc's client
+# construction rejects outright ("Malformed URL") without this. A
+# conformant card's GRPC interface url is already http(s), in which case
+# this is a no-op.
 #
 # + url - the GRPC interface's url, as published on the AgentCard
-# + return - the url with any grpc/grpcs scheme rewritten to http/https
+# + return - the url with any grpc/grpcs scheme, or no scheme at all,
+#            rewritten to http/https
 isolated function normalizeGrpcSchemeUrl(string url) returns string {
     if url.startsWith("grpcs://") {
         return "https://" + url.substring(8);
@@ -287,7 +294,13 @@ isolated function normalizeGrpcSchemeUrl(string url) returns string {
     if url.startsWith("grpc://") {
         return "http://" + url.substring(7);
     }
-    return url;
+    if url.startsWith("http://") || url.startsWith("https://") {
+        return url;
+    }
+    // Absence of a scheme carries no TLS signal either way, so this
+    // defaults to http (unencrypted) - the same default "grpc://" above
+    // already uses.
+    return "http://" + url;
 }
 
 # Chooses which transport binding to speak, from the Agent Card alone.
