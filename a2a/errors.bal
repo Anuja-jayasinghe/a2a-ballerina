@@ -259,5 +259,10 @@ isolated function toA2AErrorFromGrpc(grpc:Error err) returns A2AError {
             || err is grpc:UnKnownError || err is grpc:AbortedError {
         return error A2AInternalError(message, message = message, code = -32603);
     }
-    return error A2AInternalError(message, message = message);
+    // Transport-only statuses with no A2A error counterpart (e.g.
+    // UNAVAILABLE, DEADLINE_EXCEEDED) - still A2AInternalError, and now
+    // carrying the same -32603 code the "Internal" bucket above uses, so
+    // detail().code is reliably populated on every arm of this function
+    // rather than only most of them.
+    return error A2AInternalError(message, message = message, code = -32603);
 }
