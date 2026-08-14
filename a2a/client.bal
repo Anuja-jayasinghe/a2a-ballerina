@@ -136,11 +136,16 @@ isolated function normalizeLegacyExtendedCardSupport(map<json> cardMap) {
 # v0.3-dialect card nor a card carrying one malformed entry in any of
 # those four fields fails to parse entirely.
 #
+# Public so a caller who separately fetched the raw body via
+# fetchAgentCardBody (typically to verify its signature first, via
+# signature.bal) can still get the typed AgentCard afterward without a
+# second network round trip.
+#
 # + body - the raw JSON AgentCard body, straight off the wire
 # + return - the parsed AgentCard, or an error if the remainder of the
 #            card (everything but the four tolerantly-parsed fields)
 #            doesn't match the AgentCard shape
-isolated function parseAgentCardBody(json body) returns AgentCard|error {
+public isolated function parseAgentCardBody(json body) returns AgentCard|error {
     json renamed = renameV03SecurityField(body);
     map<json> cardMap = check renamed.ensureType();
     normalizeLegacyInterfaces(cardMap);
@@ -198,8 +203,8 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
     return card;
 }
 
-# Fetches and parses a remote agent's Agent Card from its well-known
-# endpoint.
+# Fetches a remote agent's Agent Card as raw, unparsed JSON from its
+# well-known endpoint.
 #
 # Per spec 8.2 the canonical discovery path is
 # /.well-known/agent-card.json relative to the agent's base URL. That
@@ -209,19 +214,28 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
 # This always fetches fresh. An earlier ETag-aware conditional-GET variant
 # was removed before release - see issue #14.
 #
+# Exists as its own function, separate from resolveAgentCard, because
+# verifyAgentCardSignature (signature.bal) needs the response exactly as
+# received: canonicalizing a parsed AgentCard record instead would inject
+# every field's Ballerina-side default (e.g. requestedExtensions = [],
+# securitySchemes = {}) whether or not the signer actually included it,
+# guaranteeing signature verification failure against a spec-conformant
+# signer. Most callers still want resolveAgentCard's typed result;
+# reach for this only when the raw body itself is needed.
+#
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers
-# + return - The parsed AgentCard, or an error. Note this is a bare
-#            `error` rather than a narrowed A2A error union: raw
-#            un-wrapped http/JSON errors (connection failures, malformed
-#            JSON) propagate via `check` alongside the typed
+# + return - The raw JSON AgentCard body exactly as received, or an
+#            error. Note this is a bare `error` rather than a narrowed
+#            A2A error union: raw un-wrapped http errors (connection
+#            failures) propagate via `check` alongside the typed
 #            A2AInternalError constructed here, so a caller needing to
 #            tell them apart must pattern-match on the concrete type.
-public isolated function resolveAgentCard(
+public isolated function fetchAgentCardBody(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
-        map<string> headers = {}) returns AgentCard|error {
+        map<string> headers = {}) returns json|error {
     http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
     map<string> reqHeaders = {"A2A-Version": "1.0"};
     foreach [string, string] [k, v] in headers.entries() {
@@ -236,7 +250,26 @@ public isolated function resolveAgentCard(
             code = resp.statusCode
         );
     }
-    json body = check resp.getJsonPayload();
+    return resp.getJsonPayload();
+}
+
+# Fetches and parses a remote agent's Agent Card from its well-known
+# endpoint.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers
+# + return - The parsed AgentCard, or an error. Note this is a bare
+#            `error` rather than a narrowed A2A error union: raw
+#            un-wrapped http/JSON errors (connection failures, malformed
+#            JSON) propagate via `check` alongside the typed
+#            A2AInternalError constructed here, so a caller needing to
+#            tell them apart must pattern-match on the concrete type.
+public isolated function resolveAgentCard(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {}) returns AgentCard|error {
+    json body = check fetchAgentCardBody(agentBaseUrl, clientConfig, headers);
     return parseAgentCardBody(body);
 }
 
