@@ -397,6 +397,20 @@ service / on mockListener {
         check caller->respond(res);
     }
 
+    # A minimal OAuth2 client_credentials token endpoint (RFC 6749 §4.4.3
+    # shape), so tests exercising a real OAuth2ClientCredentialsGrantConfig
+    # (e.g. testGrpcClientConstructsWithOAuth2ClientCredentialsAuth) have
+    # somewhere genuine to fetch a token from — ballerina/oauth2's
+    # ClientOAuth2Provider fetches eagerly at construction, not lazily, so
+    # a fake/unreachable tokenUrl breaks client construction outright
+    # rather than only a later call.
+    resource function post oauth2\-token(http:Caller caller, http:Request req) returns error? {
+        http:Response res = new;
+        res.statusCode = 200;
+        res.setJsonPayload({access_token: "mock-access-token", token_type: "Bearer", expires_in: 3600});
+        check caller->respond(res);
+    }
+
     resource function post .(http:Caller caller, http:Request req) returns error? {
         json body = check req.getJsonPayload();
         lock {

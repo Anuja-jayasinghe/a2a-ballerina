@@ -108,6 +108,32 @@ function testGrpcClientAdvertisesRequestedExtensionsAsOutboundMetadata() returns
             "requested extensions must be advertised as outbound metadata (lowercased on the wire)");
 }
 
+# Before the gRPC auth parity fix (auth.bal), an OAuth2 clientConfig.auth
+# failed GrpcClient construction itself with AuthResolutionError - the
+# projection was rejected before any network activity. Confirms
+# construction AND a real call now succeed end to end through the real
+# GrpcClient.init path, not just that projectToGrpcClientConfig in
+# isolation returns a value (see auth_test.bal for that direct,
+# network-free unit coverage).
+#
+# tokenUrl points at testutil.bal's mock oauth2-token resource, not a
+# fake domain: ballerina/oauth2's ClientOAuth2Provider fetches a token
+# eagerly at construction (confirmed empirically - a first attempt at
+# this test with an unreachable tokenUrl failed inside
+# GrpcClient.init -> resolveAgentCard, since the http:Client built for
+# card resolution is constructed with the same clientConfig.auth and
+# authenticates just as eagerly), so a fake tokenUrl breaks construction
+# itself, not just a later call.
+@test:Config {groups: ["grpc"]}
+function testGrpcClientConstructsWithOAuth2ClientCredentialsAuth() returns error? {
+    setNextGrpcResponse(grpcTaskResponse("task-1"));
+    GrpcClient c = check new (getServerBaseUrl(), clientConfig = {
+        auth: {tokenUrl: string `${getServerBaseUrl()}/oauth2-token`, clientId: "id", clientSecret: "secret"}
+    });
+    Task t = check c->getTask("task-1");
+    test:assertEquals(t.id, "task-1");
+}
+
 @test:Config {groups: ["grpc"]}
 function testGrpcClientSatisfiesAgentClient() returns error? {
     setNextGrpcResponse(grpcTaskResponse("task-1"));

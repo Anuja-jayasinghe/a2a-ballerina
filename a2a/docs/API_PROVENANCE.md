@@ -12,8 +12,9 @@ breaking callers.
 
 **Sources checked directly, not from memory:**
 
-- A2A specification §8.3.2 (client protocol selection), §8.4.3 (signature
-  verification), §9.4 (client operations), §14.2.2 (extension headers).
+- A2A specification §7.3 (client authentication process), §8.3.2 (client
+  protocol selection), §8.4.3 (signature verification), §9.4 (client
+  operations), §14.2.2 (extension headers).
 - Java SDK — `a2aproject/sdk`: `ClientBuilder`, `Client`, `ClientTransport`
   (SPI), `A2A.getAgentCard`, `A2AHeaders`.
 - Python `a2a-sdk` — `a2a.client`: `client_factory.py`, `client.py`,
@@ -26,9 +27,9 @@ breaking callers.
 | Category | Count |
 |---|---|
 | Spec-mandated | 49 |
-| Reference-SDK convention (not in spec) | 3 |
+| Reference-SDK convention (not in spec) | 2 |
 | Invented here | 4 |
-| **Total public symbols** | **56** |
+| **Total public symbols** | **55** |
 
 ---
 
@@ -71,7 +72,7 @@ the idiomatic equivalent.
 
 ---
 
-## 2. Reference-SDK convention, not in the spec (3)
+## 2. Reference-SDK convention, not in the spec (2)
 
 The spec is silent on these. Both reference SDKs do them, so a Ballerina
 user coming from either finds what they expect.
@@ -107,18 +108,6 @@ This library draws the same distinction, but through the type system rather
 than a boolean: `Client` honours the card's ordering, and constructing
 `JsonRpcClient`/`RestClient`/`GrpcClient` directly expresses a client
 preference. The *semantics* are borrowed; the *mechanism* is ours (see §3).
-
-### `AuthResolutionError`
-
-Not a spec error code — it never crosses the wire. It reports that a
-caller-supplied `http:ClientConfiguration.auth` has no gRPC equivalent
-(OAuth2/JWT configs cannot be projected onto `grpc:ClientConfiguration`).
-
-Kept because the alternative is silently dropping auth on the gRPC binding,
-which fails later as an opaque authentication error from the server. Both
-reference SDKs surface transport-configuration problems at construction
-too, though neither has this exact error because neither projects auth
-across two transport stacks the way `ballerina/grpc` forces here.
 
 ---
 

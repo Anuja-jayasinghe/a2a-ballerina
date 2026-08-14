@@ -95,7 +95,7 @@ public isolated client class GrpcClient {
             );
         }
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
-        grpc:ClientConfiguration grpcConfig = check projectToGrpcClientConfig(effectiveClientConfig);
+        grpc:ClientConfiguration grpcConfig = projectToGrpcClientConfig(effectiveClientConfig);
         self.grpcStub = check new (normalizeGrpcSchemeUrl(serviceUrl), grpcConfig);
         self.defaultHeaders = headers.clone().cloneReadOnly();
         self.tenant = effectiveTenant;
@@ -108,9 +108,24 @@ public isolated client class GrpcClient {
     # Builds the outbound call metadata. No Content-Type: gRPC sets its
     # own, and supplying one here would be meaningless at best.
     #
+    # Declared and constructed as `map<string|string[]>`, not `map<string>`,
+    # even though every value put in here is a plain string: a Ballerina
+    # map's *inherent* type is fixed at construction and is enforced at
+    # runtime independent of whatever wider static type a caller later
+    # references it through. ballerina/grpc's own
+    # ClientOAuth2Handler.enrich (auth_client_oauth2_handler.bal) inserts
+    # the bearer token as a `string[]` (`headers[AUTH_HEADER] = [token]`)
+    # when OAuth2 auth is configured - confirmed empirically: constructing
+    # this map as `map<string>` throws `InherentTypeViolation` ("expected
+    # value of type 'string', found 'string[]'") the first time an
+    # OAuth2-authenticated call reaches that handler, even though every
+    # call site here already declares its own local as
+    # `map<string|string[]>`. Widening the inherent type here, at the one
+    # place this map is built, fixes every caller at once.
+    #
     # + return - the metadata to send with the call
-    private isolated function buildHeaders() returns map<string> {
-        map<string> headers = {"A2A-Version": "1.0"};
+    private isolated function buildHeaders() returns map<string|string[]> {
+        map<string|string[]> headers = {"A2A-Version": "1.0"};
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
