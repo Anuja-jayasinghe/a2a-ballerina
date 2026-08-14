@@ -95,6 +95,40 @@ isolated function normalizeLegacyInterfaces(map<json> cardMap) {
     }
 }
 
+# Maps a pre-v1.0 card's top-level `supportsAuthenticatedExtendedCard`
+# field onto v1.0's `capabilities.extendedAgentCard`, in place on the raw
+# card map.
+#
+# v0.3 declares this capability as a sibling of `url`/`capabilities`, not
+# nested inside `capabilities` itself (confirmed against the Java SDK's
+# v0.3 compat test fixtures - the reference a2a-python SDK performs the
+# same mapping in its own card parser). Left untranslated, it lands in
+# the open record's rest field and is never read:
+# `capabilities.extendedAgentCard` stays at its default `false`, so
+# `getExtendedAgentCard` on every one of the three transport clients
+# short-circuits and returns the held card instead of ever fetching the
+# real extended one - a v0.3 agent that genuinely supports extended
+# cards would have that support permanently invisible to this client.
+#
+# Only ever sets the flag to `true`: an absent or `false` legacy field
+# means nothing to say, since `extendedAgentCard`'s own default is
+# already `false`. A v1.0-native card has no `supportsAuthenticatedExtendedCard`
+# field at all, so this is a no-op for it.
+#
+# + cardMap - the raw card map, mutated in place
+isolated function normalizeLegacyExtendedCardSupport(map<json> cardMap) {
+    json? legacyJson = cardMap["supportsAuthenticatedExtendedCard"];
+    if legacyJson != true {
+        return;
+    }
+    json? capabilitiesJson = cardMap["capabilities"];
+    if capabilitiesJson is map<json> {
+        capabilitiesJson["extendedAgentCard"] = true;
+    } else {
+        cardMap["capabilities"] = {extendedAgentCard: true};
+    }
+}
+
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
 # v0.3 security field-name rename and the tolerant parsing of
 # securitySchemes, securityRequirements, signatures, and each skill's
@@ -110,6 +144,7 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
     json renamed = renameV03SecurityField(body);
     map<json> cardMap = check renamed.ensureType();
     normalizeLegacyInterfaces(cardMap);
+    normalizeLegacyExtendedCardSupport(cardMap);
 
     boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
     json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};

@@ -2909,6 +2909,76 @@ function testV03CardTransportsNormalizeIntoSupportedInterfaces() returns error? 
     }
 }
 
+// ---- v0.3 extended-card-support normalization -------------------------
+
+# A2A v0.3 declares extended-card support via a top-level
+# `supportsAuthenticatedExtendedCard` field, a sibling of `capabilities`
+# rather than nested inside it. Left untranslated it lands in the open
+# record's rest field, capabilities.extendedAgentCard stays at its
+# default false, and getExtendedAgentCard permanently short-circuits
+# instead of ever fetching the real extended card from an agent that
+# genuinely supports one.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardMapsToCapabilitiesExtendedAgentCard() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "supportsAuthenticatedExtendedCard": true,
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertTrue(card.capabilities.extendedAgentCard,
+            "a v0.3 card's top-level supportsAuthenticatedExtendedCard=true must map onto capabilities.extendedAgentCard");
+}
+
+# A false or absent legacy field must not set the flag - extendedAgentCard
+# already defaults to false, so this is a no-op either way, not an
+# explicit false write that could ever mask a genuine v1.0-native value.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardFalseLeavesCapabilityUnset() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "supportsAuthenticatedExtendedCard": false,
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertFalse(card.capabilities.extendedAgentCard);
+}
+
+# The end-to-end proof: without this mapping, getExtendedAgentCard would
+# short-circuit on a v0.3 card that genuinely supports the capability,
+# per the extendedAgentCard gate (see the "issue #11: client-side
+# capability gating" tests above) - the call would never reach the wire.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardReachesTheWireThroughClient() returns error? {
+    setWellKnownOverride({
+        name: "legacy", description: "d", version: "1.0.0",
+        url: getServerBaseUrl(),
+        protocolVersion: "0.3.0",
+        supportsAuthenticatedExtendedCard: true,
+        capabilities: {}, skills: []
+    });
+    Client c = check new (getServerBaseUrl());
+    setWellKnownOverride(()); // restore the default card for later tests
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: []}
+    });
+    AgentCard extended = check c->getExtendedAgentCard();
+
+    test:assertEquals(extended.name, "Extended");
+    // Wire method is v0.3-translated (compat_v03.bal: v03MethodName), since
+    // this card's top-level protocolVersion resolves the client to V0_3
+    // mode - the translated name landing on the wire at all is itself the
+    // proof the call wasn't short-circuited.
+    test:assertEquals(check getLastRequestBody().method, "agent/getAuthenticatedExtendedCard",
+            "a v0.3 card declaring supportsAuthenticatedExtendedCard=true must not short-circuit - the real fetch must reach the wire");
+}
+
 # The bug this fixes: selection answered JSONRPC for a gRPC-preferred card
 # by falling through to the legacy url branch — and that url is the gRPC
 # endpoint, so Client built a JsonRpcClient aimed at a gRPC address.
