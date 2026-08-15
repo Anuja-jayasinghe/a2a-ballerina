@@ -211,8 +211,10 @@ public isolated function parseAgentCardBody(json body) returns AgentCard|error {
 # endpoint is public and unauthenticated by design (spec 14.3), so the
 # headers parameter is for proxy or tracing use rather than credentials.
 #
-# This always fetches fresh. An earlier ETag-aware conditional-GET variant
-# was removed before release - see issue #14.
+# This always fetches fresh. For conditional-GET reuse of a previous
+# fetch, see resolveAgentCardCached - kept separate rather than folded in
+# here since caching needs the response's ETag header and 304 handling,
+# neither of which the json-only return type below can express.
 #
 # Exists as its own function, separate from resolveAgentCard, because
 # verifyAgentCardSignature (signature.bal) needs the response exactly as
@@ -271,6 +273,69 @@ public isolated function resolveAgentCard(
         map<string> headers = {}) returns AgentCard|error {
     json body = check fetchAgentCardBody(agentBaseUrl, clientConfig, headers);
     return parseAgentCardBody(body);
+}
+
+# An AgentCard together with the HTTP caching metadata needed to make a
+# conditional follow-up request.
+public type CachedAgentCard record {|
+    # The parsed AgentCard
+    AgentCard card;
+    # The ETag header value from the response, if any, for use in conditional requests
+    string? etag;
+|};
+
+# Fetches an agent's Agent Card, reusing a previous fetch's body when the
+# server confirms nothing changed (HTTP 304), per standard HTTP caching.
+#
+# Spec 8.6.2 says clients "SHOULD cache Agent Cards locally to reduce
+# network requests" but does not mandate a mechanism; ETag/If-None-Match
+# is this library's own choice of standard HTTP caching to satisfy that
+# SHOULD, opt-in and additive - resolveAgentCard's own behavior
+# (always fetch fresh) is unchanged, and unaffected by whether a caller
+# ever reaches for this function at all.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers
+# + previous - A card previously returned by this function, to enable a
+#              conditional (If-None-Match) request
+# + return - The parsed AgentCard plus its caching metadata, or an error.
+#            Note: like resolveAgentCard, this is a bare `error` rather
+#            than a narrowed A2A error union - raw un-wrapped http/JSON
+#            errors (connection failures, malformed JSON) propagate via
+#            `check` alongside the typed A2AInternalError constructed
+#            here, so a caller needing to tell them apart must
+#            pattern-match on the concrete type.
+public isolated function resolveAgentCardCached(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        CachedAgentCard? previous = ()) returns CachedAgentCard|error {
+    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    map<string> reqHeaders = {"A2A-Version": "1.0"};
+    foreach [string, string] [k, v] in headers.entries() {
+        reqHeaders[k] = v;
+    }
+    string? conditionalEtag = previous?.etag;
+    if conditionalEtag is string {
+        reqHeaders["If-None-Match"] = conditionalEtag;
+    }
+    http:Response resp = check discoveryClient->get(
+        "/.well-known/agent-card.json", reqHeaders
+    );
+    if resp.statusCode == 304 && previous is CachedAgentCard {
+        return previous;
+    }
+    if resp.statusCode != 200 {
+        return error A2AInternalError(
+            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
+            code = resp.statusCode
+        );
+    }
+    json body = check resp.getJsonPayload();
+    AgentCard card = check parseAgentCardBody(body);
+    string|http:HeaderNotFoundError etagHeader = resp.getHeader("ETag");
+    return {card, etag: etagHeader is string ? etagHeader : ()};
 }
 
 # The A2A transport bindings this library can speak.
