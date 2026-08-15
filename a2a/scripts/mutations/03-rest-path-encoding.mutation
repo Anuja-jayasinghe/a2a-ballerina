@@ -1,0 +1,4 @@
+FILE="rest_client.bal"
+DESC="buildRestRequest stops percent-encoding path parameter values before substituting them into the REST path template"
+SEARCH='string encodedValue = check url:encode(pValue, "UTF-8");'
+REPLACE='string encodedValue = pValue;'

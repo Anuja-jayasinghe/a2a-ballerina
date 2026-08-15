@@ -1,0 +1,4 @@
+FILE="operations.bal"
+DESC="cardDeniesStreaming always reports streaming as allowed, so the client-side short-circuit for capabilities.streaming=false never fires"
+SEARCH='    return card is AgentCard && !card.capabilities.streaming;'
+REPLACE='    return false;'

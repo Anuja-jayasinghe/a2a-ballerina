@@ -1,0 +1,4 @@
+FILE="client.bal"
+DESC="selectInterface matches the first supportedInterfaces entry regardless of protocolBinding, instead of the first one whose protocolBinding matches the requested transport"
+SEARCH='iface.protocolBinding == preferredBinding'
+REPLACE='true'

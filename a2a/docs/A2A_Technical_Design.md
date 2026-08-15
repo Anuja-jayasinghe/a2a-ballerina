@@ -597,6 +597,27 @@ The Java reference server is a deliberate secondary target because it emits a ri
 
 Phase 1 is complete when every scenario in the interoperability table passes against live reference servers, the SSE parser passes every edge case in section 12.2, and the full unit test suite passes. At that point the data model and wire format are proven correct against third-party implementations, and Phase 2 server work can proceed on a validated foundation.
 
+## **11.5 Mutation testing**
+
+No mutation-testing tool exists for Ballerina, so `scripts/mutation-test.sh` stands in for one: it applies one hand-picked, one-line-or-so mutation at a time to a specific risk surface, rebuilds, runs the full test suite, and reports whether the suite caught it (KILLED) or not (SURVIVED — a real coverage gap), then reverts the file via `git checkout` regardless of outcome. This makes "the suite catches regressions here" a reproducible, on-demand claim rather than a historical one — an earlier claim of 24/24 mutations killed was made in a past session and never committed, so it couldn't be re-run or cited.
+
+Run it with `bash scripts/mutation-test.sh` (all mutations) or `bash scripts/mutation-test.sh 01 06` (only the named ones). Each mutation is documented inline in its own file under `scripts/mutations/`, one per risk surface:
+
+| ID | Risk surface | Mutation |
+| :---- | :---- | :---- |
+| 01 | Transport binding selection | `selectInterface` matches any `supportedInterfaces` entry, not just one whose `protocolBinding` matches what was requested |
+| 02 | v0.3 compatibility | `normalizeLegacyInterfaces` skips synthesizing `supportedInterfaces` for legacy cards that actually need it |
+| 03 | REST path construction | Path parameters are substituted into the REST path template without percent-encoding |
+| 04 | Stream lifecycle | `isTerminalEvent` never reports a terminal task state, so stream reconnect never recognizes genuine completion |
+| 05 | AgentCard legacy fields | `normalizeLegacyExtendedCardSupport` stops mapping `supportsAuthenticatedExtendedCard` correctly |
+| 06 | Capability gating | `cardDeniesStreaming` always reports streaming as allowed |
+| 07 | gRPC auth parity | `projectToGrpcClientConfig` stops projecting OAuth2 grant configs onto the gRPC binding |
+| 08 | JCS canonicalization | `stripJcsDefaults` stops treating empty strings as proto3 defaults |
+| 09 | gRPC error mapping | `toA2AErrorFromGrpc`'s fallback arm stops populating `detail().code` |
+| 10 | AgentCard caching | `resolveAgentCardCached` reuses a cached card on any response, not only a genuine 304 |
+
+All ten are currently killed by the existing suite. The driver also treats a mutation that fails to compile as needing attention (labeled INVALID) rather than silently skipping it, since a mutation that can't even be expressed as a reachable code path isn't exercising the test suite at all.
+
 # ---
 
 # **12\. Open questions and known gaps**

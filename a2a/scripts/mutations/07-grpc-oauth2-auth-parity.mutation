@@ -1,0 +1,14 @@
+FILE="auth.bal"
+DESC="projectToGrpcClientConfig stops projecting OAuth2 grant configs onto the gRPC binding, reintroducing the pre-A3 gRPC-only auth limitation"
+SEARCH='    } else if auth is http:OAuth2ClientCredentialsGrantConfig
+            || auth is http:OAuth2PasswordGrantConfig
+            || auth is http:OAuth2RefreshTokenGrantConfig
+            || auth is http:OAuth2JwtBearerGrantConfig {
+        result.auth = auth;
+    }'
+REPLACE='    } else if auth is http:OAuth2ClientCredentialsGrantConfig
+            || auth is http:OAuth2PasswordGrantConfig
+            || auth is http:OAuth2RefreshTokenGrantConfig
+            || auth is http:OAuth2JwtBearerGrantConfig {
+        // mutation: intentionally not projecting auth
+    }'

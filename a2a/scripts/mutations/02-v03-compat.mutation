@@ -1,0 +1,4 @@
+FILE="client.bal"
+DESC="normalizeLegacyInterfaces becomes a no-op, so pre-v1.0 preferredTransport/additionalInterfaces cards never get supportedInterfaces synthesized"
+SEARCH='    if !hasLegacyTransportFields {'
+REPLACE='    if hasLegacyTransportFields {'

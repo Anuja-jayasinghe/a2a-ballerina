@@ -1,0 +1,4 @@
+FILE="client.bal"
+DESC="resolveAgentCardCached reuses the previous card whenever one was supplied, regardless of the response's actual status code, instead of only on a genuine 304"
+SEARCH='    if resp.statusCode == 304 && previous is CachedAgentCard {'
+REPLACE='    if previous is CachedAgentCard {'
