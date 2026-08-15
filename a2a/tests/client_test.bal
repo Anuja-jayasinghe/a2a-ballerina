@@ -1849,6 +1849,44 @@ function testResolveAgentCardHonors304() returns error? {
     setWellKnownOverride(());
 }
 
+# The inverse of testResolveAgentCardHonors304: a real, uncached 200
+# response - not a conditional-GET 304 - must always surface the fresh
+# body, even when a `previous` CachedAgentCard is passed in. Mutation
+# testing found this wasn't actually covered: gating the cache-reuse
+# branch on `previous is CachedAgentCard` alone (dropping the
+# `resp.statusCode == 304` half of the condition) let every existing
+# test keep passing, since none of them called resolveAgentCardCached a
+# second time against a server that answered with a genuine 200.
+#
+# The updated body is scripted with a DIFFERENT ETag, not a reused one -
+# ballerina/http's listener auto-converts an outgoing response to 304
+# whenever its ETag matches the request's If-None-Match, regardless of
+# the resource's own status code, so a real content change must carry a
+# new ETag or the mock (correctly, per RFC 7232) never reaches a 200 at
+# all. That auto-negotiation was confirmed directly against the mock
+# during debugging of this test.
+@test:Config {}
+function testResolveAgentCardCachedFetchesFreshOn200EvenWithPrevious() returns error? {
+    setWellKnownOverride(defaultMockAgentCard(), 200);
+    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
+    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
+
+    // No setWellKnownConditionalOverride here - this is a genuine,
+    // unconditional 200 with different content, not a scripted 304.
+    json differentCard = defaultMockAgentCard();
+    map<json> differentCardMap = <map<json>>differentCard;
+    differentCardMap["name"] = "A Genuinely Updated Mock Agent";
+    setWellKnownETag("\"default-card-v2\"");
+    setWellKnownOverride(differentCardMap, 200);
+
+    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
+    test:assertEquals(second.card.name, "A Genuinely Updated Mock Agent",
+            "a real 200 response must surface the fresh body, not silently reuse `previous` just because one was supplied");
+    test:assertNotEquals(second.card, first.card);
+
+    setWellKnownOverride(());
+}
+
 @test:Config {}
 function testResolveAgentCardReturnsErrorOn304() returns error? {
     // Regression test: resolveAgentCard (non-cached) should never panic on 304.
