@@ -173,6 +173,18 @@ a2a:AgentClient agent = check new a2a:Client(url);
 that unifies the four. Without it, every function taking a client would
 have to name a concrete class and lose the ability to accept another.
 
+**Stability decision:** documented on the type itself as implemented by
+this library only, not a stable extension point for external
+implementors — the one real forward-compatibility trap identified while
+surveying what other A2A SDKs expose that this one doesn't (per-call
+context/timeout, an interceptor seam - see the design plan). None of
+those are spec-backed or TCK-tested, so none were added speculatively;
+but `AgentClient` being public and syntactically implementable means
+adding a parameter to its 11 methods later would break anyone who *did*
+implement it. Stating the boundary explicitly, rather than adding an
+unproven parameter now, keeps that door open without adding surface
+nobody has asked for yet.
+
 ### `JsonRpcClient`, `RestClient`, `GrpcClient` (public per-transport types)
 
 **This is the significant divergence from both reference SDKs.** Neither
