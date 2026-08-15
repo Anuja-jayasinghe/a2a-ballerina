@@ -1,0 +1,4 @@
+FILE="signature.bal"
+DESC="stripJcsDefaults stops treating empty strings as proto3 defaults to strip, so JCS canonicalization diverges from the reference signer's byte output"
+SEARCH='    if value == "" || value is () {'
+REPLACE='    if value is () {'

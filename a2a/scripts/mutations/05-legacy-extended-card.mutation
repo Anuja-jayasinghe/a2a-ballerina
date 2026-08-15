@@ -1,0 +1,4 @@
+FILE="client.bal"
+DESC="normalizeLegacyExtendedCardSupport becomes a no-op, so a v0.3 card's supportsAuthenticatedExtendedCard=true never sets capabilities.extendedAgentCard"
+SEARCH='    if legacyJson != true {'
+REPLACE='    if legacyJson == true {'

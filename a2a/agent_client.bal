@@ -16,6 +16,22 @@
 # a2a:AgentClient agent = check new a2a:Client(url);   // card decides
 # a2a:AgentClient agent = check new a2a:GrpcClient(url); // caller decides
 # ```
+#
+# **Stability note: implemented by this library only, not a stable
+# extension point for external implementors.** It is a public, syntactically
+# implementable object type — nothing stops a caller writing their own
+# `AgentClient`, and holding one behind this type (as above) is exactly
+# the supported way to accept any of this library's four client types
+# interchangeably. What is *not* promised is that this method set stays
+# fixed forever: a genuinely useful per-call addition (timeout, extra
+# headers, tracing context — none of which the A2A specification defines,
+# and none of which this library currently has a way to plumb through)
+# would need a new parameter on some or all of these eleven methods, and
+# adding one to a client object type is a breaking change for anyone who
+# implemented it themselves. Held open deliberately rather than closed
+# off with a speculative parameter nobody has asked for yet — see the
+# design plan's discussion of per-call context for the tradeoff this
+# balances.
 public type AgentClient isolated client object {
 
     # Sends a message to the remote agent.

@@ -214,4 +214,6 @@ function testToA2AErrorFromGrpcTransportOnlyStatusesFallThrough() {
     A2AError mapped = toA2AErrorFromGrpc(error grpc:UnavailableError("connection refused"));
     test:assertTrue(mapped is A2AInternalError);
     test:assertEquals(mapped.message(), "connection refused");
+    test:assertEquals(mapped.detail()?.code, -32603,
+            "the fallback arm must populate code like every other arm of toA2AErrorFromGrpc, not leave it unset");
 }

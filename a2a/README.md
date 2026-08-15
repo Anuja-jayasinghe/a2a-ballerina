@@ -105,18 +105,38 @@ callers:
 - **Automatic SSE reconnection** — `maxReconnectAttempts` on
   `sendStreamingMessage`/`subscribeToTask`; opt-in, default `0` preserves the
   original manual-reconnect behavior.
+- **AgentCard signature verification** (spec §8.4.3) — `verifyAgentCardSignature`,
+  RS256/ES256, RFC 8785 (JCS) canonicalization. Doesn't fetch a card's `jku`
+  itself; takes a caller-supplied key-resolution callback, matching both
+  reference SDKs' own verifiers.
+- **AgentCard caching** (spec §8.6.2) — `resolveAgentCardCached`, standard
+  HTTP ETag/If-None-Match conditional GET. Opt-in; `resolveAgentCard` is
+  unaffected and always fetches fresh.
 
-Authentication is configured through `clientConfig.auth` and `headers`, the
-same way as any other Ballerina client.
+### Authentication
 
-**Deliberately not included.** Three capabilities were built and then removed
-before release, each because it is neither mandated by the spec nor
-precedented in the reference SDKs — and because removing public surface after
-release is a breaking change, while adding it back is not. Each has a tracking
-issue: AgentCard JWS signature verification (spec §8.4.3 mandates the
-procedure but defines no API, and the implementation lacked RFC 8785
-canonicalization), automatic auth wiring from a card's security schemes, and
-ETag-aware AgentCard caching.
+Configured through `clientConfig.auth` and `headers`, the same way as any
+other Ballerina client — this library does not wire auth from a card's
+`securitySchemes` automatically (spec §7.3 puts credential *acquisition*
+explicitly out-of-band; only *transmission*, which `clientConfig.auth`
+already does, is in scope). What `clientConfig.auth` accepts per scheme
+type, and what a card's `securitySchemes` entry looks like for each:
+
+| Card scheme (`type`) | `clientConfig.auth` |
+|---|---|
+| `http` (`scheme: "basic"`) | `{username, password}` (`http:CredentialsConfig`) |
+| `http` (`scheme: "bearer"`) | `{token}` (`http:BearerTokenConfig`) |
+| `oauth2` | an `http:OAuth2GrantConfig` variant matching the card's declared flow (client credentials, password, refresh token, or JWT bearer) — token fetch and refresh are automatic (`ballerina/oauth2`'s own token cache), not something this library needs to manage |
+| `apiKey`, `in: "header"` | not `clientConfig.auth` — set the named header directly via the `headers` constructor parameter |
+| `apiKey`, `in: "query"` or `"cookie"` | no direct equivalent; `clientConfig`/`headers` cover headers only, so this needs caller-side request shaping this library doesn't provide |
+| `openIdConnect`, `mutualTLS` | no `http:ClientConfiguration.auth` equivalent; OIDC typically resolves to a bearer token obtained out-of-band (use the `http`/bearer row above once you have one), mTLS is configured via `clientConfig.secureSocket`, not `.auth` |
+
+All of the above work identically across `JsonRpcClient` and `RestClient`.
+`GrpcClient` supports the full same set (`CredentialsConfig`,
+`BearerTokenConfig`, and every `OAuth2GrantConfig`/`JwtIssuerConfig`
+variant) — `grpc:ClientAuthConfig` and `http:ClientAuthConfig` are the
+same union over structurally identical types, so whatever you configure
+for the HTTP bindings projects onto gRPC unchanged.
 
 ## Why each public symbol exists
 
@@ -126,7 +146,7 @@ invented here — with the justification, and the cost, for everything in the
 last two categories. Worth reading before relying on anything that isn't
 straight from the specification.
 
-The short version: 49 of 57 public symbols are spec-mandated. The main
+The short version: 52 of 63 public symbols are spec-mandated. The main
 divergence from the Python and Java SDKs is that this library exposes
 per-transport client types (`JsonRpcClient`, `RestClient`, `GrpcClient`)
 where they keep the equivalent internal — which is what lets client
@@ -170,7 +190,7 @@ haven't all been updated to match).
 
 ## Testing
 
-376 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
+436 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
 pinning in `Ballerina.toml` for why `--sticky` matters here) — this
 package's own fast, deterministic, mock-based suite. Real-server proof
 against independently-built agents lives in the companion

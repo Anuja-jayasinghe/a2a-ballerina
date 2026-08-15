@@ -1,0 +1,8 @@
+FILE="errors.bal"
+DESC="toA2AErrorFromGrpc's final fallback arm (UNAVAILABLE, DEADLINE_EXCEEDED, etc.) stops setting detail().code, leaving it unpopulated unlike every other arm"
+SEARCH='    // rather than only most of them.
+    return error A2AInternalError(message, message = message, code = -32603);
+}'
+REPLACE='    // rather than only most of them.
+    return error A2AInternalError(message, message = message);
+}'

@@ -41,13 +41,6 @@ public type ExtensionSupportRequiredError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
 
-# Returned when a caller-supplied auth configuration cannot be adapted to
-# the transport in use — currently only by projectToGrpcClientConfig
-# (auth.bal), when clientConfig.auth holds a shape the gRPC stack has no
-# structural equivalent for (an OAuth2 or JWT auth config, as opposed to
-# HTTP Basic or Bearer).
-public type AuthResolutionError distinct A2AError;
-
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
 # table in design doc §4.1. Unrecognised codes map to A2AInternalError
 # with the original code preserved in A2AErrorDetail.code.
@@ -266,5 +259,10 @@ isolated function toA2AErrorFromGrpc(grpc:Error err) returns A2AError {
             || err is grpc:UnKnownError || err is grpc:AbortedError {
         return error A2AInternalError(message, message = message, code = -32603);
     }
-    return error A2AInternalError(message, message = message);
+    // Transport-only statuses with no A2A error counterpart (e.g.
+    // UNAVAILABLE, DEADLINE_EXCEEDED) - still A2AInternalError, and now
+    // carrying the same -32603 code the "Internal" bucket above uses, so
+    // detail().code is reliably populated on every arm of this function
+    // rather than only most of them.
+    return error A2AInternalError(message, message = message, code = -32603);
 }

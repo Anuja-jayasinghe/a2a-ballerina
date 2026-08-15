@@ -1,0 +1,7 @@
+FILE="sse.bal"
+DESC="isTerminalEvent never reports a terminal task state, so the reconnect loop never recognizes a stream has genuinely finished"
+SEARCH='    return state == TASK_STATE_COMPLETED
+        || state == TASK_STATE_FAILED
+        || state == TASK_STATE_CANCELED
+        || state == TASK_STATE_REJECTED;'
+REPLACE='    return false;'

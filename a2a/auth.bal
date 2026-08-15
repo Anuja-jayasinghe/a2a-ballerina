@@ -26,29 +26,46 @@ import ballerina/http;
 # caller already set and restates it in the gRPC stack's types.
 #
 # Confirmed against the real `ballerina/grpc:1.14.6` and `ballerina/http`
-# distributions: grpc:CredentialsConfig has `username`/`password` fields
-# (via `*auth:CredentialsConfig`) and grpc:BearerTokenConfig has a
-# `token` field, both matching http:CredentialsConfig/http:BearerTokenConfig
-# exactly. Those two shapes are therefore the ones projected; anything
-# else (OAuth2/JWT auth configs) has no structural equivalent here.
+# distributions: grpc:ClientAuthConfig and http:ClientAuthConfig are the
+# *same* union - CredentialsConfig|BearerTokenConfig|JwtIssuerConfig|
+# OAuth2GrantConfig - and every member on the grpc side is defined as a
+# bare `record {| *http_or_shared_base; |}` wrapping the identical
+# `auth:CredentialsConfig`/`jwt:IssuerConfig`/`oauth2:*GrantConfig` base
+# type the http side wraps, with no additional fields either side. All
+# four shapes therefore project directly, OAuth2 and JWT included -
+# per spec section 7.3, credential transmission applies "for every A2A
+# request", not just HTTP-bound ones. This closes what was previously an
+# artificial gRPC-only limitation (see design spec, gRPC auth parity).
+#
+# OAuth2's automatic token refresh (ballerina/oauth2's TokenCache,
+# regenerated per request) and JWT issuance both keep working unchanged
+# here, since projection is structural, not a one-time credential
+# extraction - the grpc:Client re-invokes the same provider machinery
+# http:Client would.
+#
+# Every branch of http:ClientAuthConfig now has a grpc:ClientAuthConfig
+# equivalent (see doc comment above), so this can no longer fail —
+# unlike its predecessor, which returned AuthResolutionError for
+# OAuth2/JWT. That type had no other caller and was removed with it.
 #
 # + clientConfig - the effective http:ClientConfiguration the client was
 #                  constructed with
-# + return - the equivalent grpc:ClientConfiguration, or an error if
-#            clientConfig.auth is set to a shape this adapter doesn't
-#            recognize
-isolated function projectToGrpcClientConfig(http:ClientConfiguration clientConfig) returns grpc:ClientConfiguration|error {
+# + return - the equivalent grpc:ClientConfiguration
+isolated function projectToGrpcClientConfig(http:ClientConfiguration clientConfig) returns grpc:ClientConfiguration {
     grpc:ClientConfiguration result = {};
     http:ClientAuthConfig? auth = clientConfig?.auth;
     if auth is http:CredentialsConfig {
         result.auth = {username: auth.username, password: auth.password};
     } else if auth is http:BearerTokenConfig {
         result.auth = {token: auth.token};
-    } else if auth is () {
-        // no auth configured — nothing to project
-    } else {
-        return error AuthResolutionError(
-            "grpc binding only supports HTTP Basic/Bearer auth projected from http:ClientConfiguration.auth; the configured auth type is not automated for gRPC");
+    } else if auth is http:JwtIssuerConfig {
+        result.auth = auth;
+    } else if auth is http:OAuth2ClientCredentialsGrantConfig
+            || auth is http:OAuth2PasswordGrantConfig
+            || auth is http:OAuth2RefreshTokenGrantConfig
+            || auth is http:OAuth2JwtBearerGrantConfig {
+        result.auth = auth;
     }
+    // else: auth is () — no auth configured, nothing to project.
     return result;
 }

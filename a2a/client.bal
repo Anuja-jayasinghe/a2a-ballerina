@@ -95,6 +95,40 @@ isolated function normalizeLegacyInterfaces(map<json> cardMap) {
     }
 }
 
+# Maps a pre-v1.0 card's top-level `supportsAuthenticatedExtendedCard`
+# field onto v1.0's `capabilities.extendedAgentCard`, in place on the raw
+# card map.
+#
+# v0.3 declares this capability as a sibling of `url`/`capabilities`, not
+# nested inside `capabilities` itself (confirmed against the Java SDK's
+# v0.3 compat test fixtures - the reference a2a-python SDK performs the
+# same mapping in its own card parser). Left untranslated, it lands in
+# the open record's rest field and is never read:
+# `capabilities.extendedAgentCard` stays at its default `false`, so
+# `getExtendedAgentCard` on every one of the three transport clients
+# short-circuits and returns the held card instead of ever fetching the
+# real extended one - a v0.3 agent that genuinely supports extended
+# cards would have that support permanently invisible to this client.
+#
+# Only ever sets the flag to `true`: an absent or `false` legacy field
+# means nothing to say, since `extendedAgentCard`'s own default is
+# already `false`. A v1.0-native card has no `supportsAuthenticatedExtendedCard`
+# field at all, so this is a no-op for it.
+#
+# + cardMap - the raw card map, mutated in place
+isolated function normalizeLegacyExtendedCardSupport(map<json> cardMap) {
+    json? legacyJson = cardMap["supportsAuthenticatedExtendedCard"];
+    if legacyJson != true {
+        return;
+    }
+    json? capabilitiesJson = cardMap["capabilities"];
+    if capabilitiesJson is map<json> {
+        capabilitiesJson["extendedAgentCard"] = true;
+    } else {
+        cardMap["capabilities"] = {extendedAgentCard: true};
+    }
+}
+
 # Parses a raw AgentCard JSON body into a typed AgentCard, applying the
 # v0.3 security field-name rename and the tolerant parsing of
 # securitySchemes, securityRequirements, signatures, and each skill's
@@ -102,14 +136,20 @@ isolated function normalizeLegacyInterfaces(map<json> cardMap) {
 # v0.3-dialect card nor a card carrying one malformed entry in any of
 # those four fields fails to parse entirely.
 #
+# Public so a caller who separately fetched the raw body via
+# fetchAgentCardBody (typically to verify its signature first, via
+# signature.bal) can still get the typed AgentCard afterward without a
+# second network round trip.
+#
 # + body - the raw JSON AgentCard body, straight off the wire
 # + return - the parsed AgentCard, or an error if the remainder of the
 #            card (everything but the four tolerantly-parsed fields)
 #            doesn't match the AgentCard shape
-isolated function parseAgentCardBody(json body) returns AgentCard|error {
+public isolated function parseAgentCardBody(json body) returns AgentCard|error {
     json renamed = renameV03SecurityField(body);
     map<json> cardMap = check renamed.ensureType();
     normalizeLegacyInterfaces(cardMap);
+    normalizeLegacyExtendedCardSupport(cardMap);
 
     boolean hasSecuritySchemes = cardMap.hasKey("securitySchemes");
     json securitySchemesJson = hasSecuritySchemes ? cardMap.remove("securitySchemes") : {};
@@ -163,30 +203,41 @@ isolated function parseAgentCardBody(json body) returns AgentCard|error {
     return card;
 }
 
-# Fetches and parses a remote agent's Agent Card from its well-known
-# endpoint.
+# Fetches a remote agent's Agent Card as raw, unparsed JSON from its
+# well-known endpoint.
 #
 # Per spec 8.2 the canonical discovery path is
 # /.well-known/agent-card.json relative to the agent's base URL. That
 # endpoint is public and unauthenticated by design (spec 14.3), so the
 # headers parameter is for proxy or tracing use rather than credentials.
 #
-# This always fetches fresh. An earlier ETag-aware conditional-GET variant
-# was removed before release - see issue #14.
+# This always fetches fresh. For conditional-GET reuse of a previous
+# fetch, see resolveAgentCardCached - kept separate rather than folded in
+# here since caching needs the response's ETag header and 304 handling,
+# neither of which the json-only return type below can express.
+#
+# Exists as its own function, separate from resolveAgentCard, because
+# verifyAgentCardSignature (signature.bal) needs the response exactly as
+# received: canonicalizing a parsed AgentCard record instead would inject
+# every field's Ballerina-side default (e.g. requestedExtensions = [],
+# securitySchemes = {}) whether or not the signer actually included it,
+# guaranteeing signature verification failure against a spec-conformant
+# signer. Most callers still want resolveAgentCard's typed result;
+# reach for this only when the raw body itself is needed.
 #
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers
-# + return - The parsed AgentCard, or an error. Note this is a bare
-#            `error` rather than a narrowed A2A error union: raw
-#            un-wrapped http/JSON errors (connection failures, malformed
-#            JSON) propagate via `check` alongside the typed
+# + return - The raw JSON AgentCard body exactly as received, or an
+#            error. Note this is a bare `error` rather than a narrowed
+#            A2A error union: raw un-wrapped http errors (connection
+#            failures) propagate via `check` alongside the typed
 #            A2AInternalError constructed here, so a caller needing to
 #            tell them apart must pattern-match on the concrete type.
-public isolated function resolveAgentCard(
+public isolated function fetchAgentCardBody(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
-        map<string> headers = {}) returns AgentCard|error {
+        map<string> headers = {}) returns json|error {
     http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
     map<string> reqHeaders = {"A2A-Version": "1.0"};
     foreach [string, string] [k, v] in headers.entries() {
@@ -201,8 +252,90 @@ public isolated function resolveAgentCard(
             code = resp.statusCode
         );
     }
-    json body = check resp.getJsonPayload();
+    return resp.getJsonPayload();
+}
+
+# Fetches and parses a remote agent's Agent Card from its well-known
+# endpoint.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers
+# + return - The parsed AgentCard, or an error. Note this is a bare
+#            `error` rather than a narrowed A2A error union: raw
+#            un-wrapped http/JSON errors (connection failures, malformed
+#            JSON) propagate via `check` alongside the typed
+#            A2AInternalError constructed here, so a caller needing to
+#            tell them apart must pattern-match on the concrete type.
+public isolated function resolveAgentCard(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {}) returns AgentCard|error {
+    json body = check fetchAgentCardBody(agentBaseUrl, clientConfig, headers);
     return parseAgentCardBody(body);
+}
+
+# An AgentCard together with the HTTP caching metadata needed to make a
+# conditional follow-up request.
+public type CachedAgentCard record {|
+    # The parsed AgentCard
+    AgentCard card;
+    # The ETag header value from the response, if any, for use in conditional requests
+    string? etag;
+|};
+
+# Fetches an agent's Agent Card, reusing a previous fetch's body when the
+# server confirms nothing changed (HTTP 304), per standard HTTP caching.
+#
+# Spec 8.6.2 says clients "SHOULD cache Agent Cards locally to reduce
+# network requests" but does not mandate a mechanism; ETag/If-None-Match
+# is this library's own choice of standard HTTP caching to satisfy that
+# SHOULD, opt-in and additive - resolveAgentCard's own behavior
+# (always fetch fresh) is unchanged, and unaffected by whether a caller
+# ever reaches for this function at all.
+#
+# + agentBaseUrl - Root URL of the agent with no path component
+# + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
+# + headers - Optional default headers
+# + previous - A card previously returned by this function, to enable a
+#              conditional (If-None-Match) request
+# + return - The parsed AgentCard plus its caching metadata, or an error.
+#            Note: like resolveAgentCard, this is a bare `error` rather
+#            than a narrowed A2A error union - raw un-wrapped http/JSON
+#            errors (connection failures, malformed JSON) propagate via
+#            `check` alongside the typed A2AInternalError constructed
+#            here, so a caller needing to tell them apart must
+#            pattern-match on the concrete type.
+public isolated function resolveAgentCardCached(
+        string agentBaseUrl,
+        http:ClientConfiguration clientConfig = {},
+        map<string> headers = {},
+        CachedAgentCard? previous = ()) returns CachedAgentCard|error {
+    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    map<string> reqHeaders = {"A2A-Version": "1.0"};
+    foreach [string, string] [k, v] in headers.entries() {
+        reqHeaders[k] = v;
+    }
+    string? conditionalEtag = previous?.etag;
+    if conditionalEtag is string {
+        reqHeaders["If-None-Match"] = conditionalEtag;
+    }
+    http:Response resp = check discoveryClient->get(
+        "/.well-known/agent-card.json", reqHeaders
+    );
+    if resp.statusCode == 304 && previous is CachedAgentCard {
+        return previous;
+    }
+    if resp.statusCode != 200 {
+        return error A2AInternalError(
+            string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
+            code = resp.statusCode
+        );
+    }
+    json body = check resp.getJsonPayload();
+    AgentCard card = check parseAgentCardBody(body);
+    string|http:HeaderNotFoundError etagHeader = resp.getHeader("ETag");
+    return {card, etag: etagHeader is string ? etagHeader : ()};
 }
 
 # The A2A transport bindings this library can speak.

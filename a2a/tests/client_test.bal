@@ -1821,6 +1821,73 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
 }
 
 @test:Config {}
+function testResolveAgentCardHonors304() returns error? {
+    setWellKnownOverride(defaultMockAgentCard(), 200);
+    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
+    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
+    test:assertTrue(first.etag is string, "first fetch should capture an ETag if the mock sends one");
+
+    setWellKnownConditionalOverride(304);
+    // Deliberately re-script the well-known endpoint to serve a DIFFERENT
+    // card body (a different name) while the conditional-304 logic stays
+    // active (setWellKnownOverride preserves the existing ETag and
+    // conditionalStatus). If the client failed to send If-None-Match — or
+    // if it did but then didn't correctly reuse the cached body — the mock
+    // would serve this different, fresh 200 body instead of a genuine 304,
+    // and `second.card` would end up equal to this different card rather
+    // than the original. Only a real conditional round-trip (If-None-Match
+    // sent, genuine 304 received, cached body reused) makes this test pass.
+    json differentCard = defaultMockAgentCard();
+    map<json> differentCardMap = <map<json>>differentCard;
+    differentCardMap["name"] = "A Completely Different Mock Agent";
+    setWellKnownOverride(differentCardMap, 200);
+
+    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
+    test:assertEquals(second.card, first.card, "a 304 response should return the previously cached (original) card unchanged, not the newly-scripted different body");
+    test:assertNotEquals(second.card.name, differentCardMap["name"], "a genuine 304 must never surface the newly-scripted different card body");
+
+    setWellKnownOverride(());
+}
+
+# The inverse of testResolveAgentCardHonors304: a real, uncached 200
+# response - not a conditional-GET 304 - must always surface the fresh
+# body, even when a `previous` CachedAgentCard is passed in. Mutation
+# testing found this wasn't actually covered: gating the cache-reuse
+# branch on `previous is CachedAgentCard` alone (dropping the
+# `resp.statusCode == 304` half of the condition) let every existing
+# test keep passing, since none of them called resolveAgentCardCached a
+# second time against a server that answered with a genuine 200.
+#
+# The updated body is scripted with a DIFFERENT ETag, not a reused one -
+# ballerina/http's listener auto-converts an outgoing response to 304
+# whenever its ETag matches the request's If-None-Match, regardless of
+# the resource's own status code, so a real content change must carry a
+# new ETag or the mock (correctly, per RFC 7232) never reaches a 200 at
+# all. That auto-negotiation was confirmed directly against the mock
+# during debugging of this test.
+@test:Config {}
+function testResolveAgentCardCachedFetchesFreshOn200EvenWithPrevious() returns error? {
+    setWellKnownOverride(defaultMockAgentCard(), 200);
+    setWellKnownETag(DEFAULT_MOCK_CARD_ETAG);
+    CachedAgentCard first = check resolveAgentCardCached(getServerBaseUrl());
+
+    // No setWellKnownConditionalOverride here - this is a genuine,
+    // unconditional 200 with different content, not a scripted 304.
+    json differentCard = defaultMockAgentCard();
+    map<json> differentCardMap = <map<json>>differentCard;
+    differentCardMap["name"] = "A Genuinely Updated Mock Agent";
+    setWellKnownETag("\"default-card-v2\"");
+    setWellKnownOverride(differentCardMap, 200);
+
+    CachedAgentCard second = check resolveAgentCardCached(getServerBaseUrl(), previous = first);
+    test:assertEquals(second.card.name, "A Genuinely Updated Mock Agent",
+            "a real 200 response must surface the fresh body, not silently reuse `previous` just because one was supplied");
+    test:assertNotEquals(second.card, first.card);
+
+    setWellKnownOverride(());
+}
+
+@test:Config {}
 function testResolveAgentCardReturnsErrorOn304() returns error? {
     // Regression test: resolveAgentCard (non-cached) should never panic on 304.
     // If a non-compliant server sends 304 to an unconditional GET, it should
@@ -2907,6 +2974,76 @@ function testV03CardTransportsNormalizeIntoSupportedInterfaces() returns error? 
         test:assertEquals(iface?.protocolVersion, "0.3.0",
                 "every synthesized interface must carry the card's protocol version, or detectProtocolModeForBinding resolves V1_0 and silently upgrades a v0.3 agent");
     }
+}
+
+// ---- v0.3 extended-card-support normalization -------------------------
+
+# A2A v0.3 declares extended-card support via a top-level
+# `supportsAuthenticatedExtendedCard` field, a sibling of `capabilities`
+# rather than nested inside it. Left untranslated it lands in the open
+# record's rest field, capabilities.extendedAgentCard stays at its
+# default false, and getExtendedAgentCard permanently short-circuits
+# instead of ever fetching the real extended card from an agent that
+# genuinely supports one.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardMapsToCapabilitiesExtendedAgentCard() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "supportsAuthenticatedExtendedCard": true,
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertTrue(card.capabilities.extendedAgentCard,
+            "a v0.3 card's top-level supportsAuthenticatedExtendedCard=true must map onto capabilities.extendedAgentCard");
+}
+
+# A false or absent legacy field must not set the flag - extendedAgentCard
+# already defaults to false, so this is a no-op either way, not an
+# explicit false write that could ever mask a genuine v1.0-native value.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardFalseLeavesCapabilityUnset() returns error? {
+    AgentCard card = check parseAgentCardBody({
+        "name": "legacy", "description": "d", "version": "1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://agent.example/rpc",
+        "supportsAuthenticatedExtendedCard": false,
+        "capabilities": {}, "skills": []
+    });
+
+    test:assertFalse(card.capabilities.extendedAgentCard);
+}
+
+# The end-to-end proof: without this mapping, getExtendedAgentCard would
+# short-circuit on a v0.3 card that genuinely supports the capability,
+# per the extendedAgentCard gate (see the "issue #11: client-side
+# capability gating" tests above) - the call would never reach the wire.
+@test:Config {}
+function testV03SupportsAuthenticatedExtendedCardReachesTheWireThroughClient() returns error? {
+    setWellKnownOverride({
+        name: "legacy", description: "d", version: "1.0.0",
+        url: getServerBaseUrl(),
+        protocolVersion: "0.3.0",
+        supportsAuthenticatedExtendedCard: true,
+        capabilities: {}, skills: []
+    });
+    Client c = check new (getServerBaseUrl());
+    setWellKnownOverride(()); // restore the default card for later tests
+
+    setNextJsonResponse({
+        jsonrpc: "2.0", id: "1",
+        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: []}
+    });
+    AgentCard extended = check c->getExtendedAgentCard();
+
+    test:assertEquals(extended.name, "Extended");
+    // Wire method is v0.3-translated (compat_v03.bal: v03MethodName), since
+    // this card's top-level protocolVersion resolves the client to V0_3
+    // mode - the translated name landing on the wire at all is itself the
+    // proof the call wasn't short-circuited.
+    test:assertEquals(check getLastRequestBody().method, "agent/getAuthenticatedExtendedCard",
+            "a v0.3 card declaring supportsAuthenticatedExtendedCard=true must not short-circuit - the real fetch must reach the wire");
 }
 
 # The bug this fixes: selection answered JSONRPC for a gRPC-preferred card
