@@ -41,6 +41,22 @@ public type ExtensionSupportRequiredError distinct A2AError;
 
 public type A2AInternalError distinct A2AError;
 
+# Builds a client-side InvalidAgentResponseError with the same JSON-RPC
+# code (-32006) toA2AError/toA2AErrorFromRest/toA2AErrorFromGrpc already
+# use for this case. Every "the agent's response doesn't parse into what
+# this call expects" site in this library goes through this, rather than
+# letting the underlying `cloneWithType`/`ensureType` failure propagate as
+# a bare, untyped error — the same treatment `rpcCall`'s own
+# "neither result nor error" case (jsonrpc_client.bal) and
+# grpcStructToJson's narrowing failure (grpc_binding.bal) already give
+# their own malformed-response cases.
+#
+# + message - what specifically failed to parse
+# + return - a typed InvalidAgentResponseError
+isolated function invalidAgentResponse(string message) returns error {
+    return error InvalidAgentResponseError(message, message = message, code = -32006);
+}
+
 # Maps a JSON-RPC error code to its typed A2AError, per the error code
 # table in design doc §4.1. Unrecognised codes map to A2AInternalError
 # with the original code preserved in A2AErrorDetail.code.

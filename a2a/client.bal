@@ -142,12 +142,17 @@ isolated function normalizeLegacyExtendedCardSupport(map<json> cardMap) {
 # second network round trip.
 #
 # + body - the raw JSON AgentCard body, straight off the wire
-# + return - the parsed AgentCard, or an error if the remainder of the
-#            card (everything but the four tolerantly-parsed fields)
-#            doesn't match the AgentCard shape
+# + return - the parsed AgentCard, or an InvalidAgentResponseError if
+#            `body` isn't a JSON object or the remainder of the card
+#            (everything but the four tolerantly-parsed fields) doesn't
+#            match the AgentCard shape
 public isolated function parseAgentCardBody(json body) returns AgentCard|error {
     json renamed = renameV03SecurityField(body);
-    map<json> cardMap = check renamed.ensureType();
+    map<json>|error cardMapResult = renamed.ensureType();
+    if cardMapResult is error {
+        return invalidAgentResponse(string `AgentCard body is not a JSON object: ${cardMapResult.message()}`);
+    }
+    map<json> cardMap = cardMapResult;
     normalizeLegacyInterfaces(cardMap);
     normalizeLegacyExtendedCardSupport(cardMap);
 
@@ -183,7 +188,11 @@ public isolated function parseAgentCardBody(json body) returns AgentCard|error {
         cardMap["skills"] = strippedSkills;
     }
 
-    AgentCard card = check cardMap.cloneWithType(AgentCard);
+    AgentCard|error cardResult = cardMap.cloneWithType(AgentCard);
+    if cardResult is error {
+        return invalidAgentResponse(string `AgentCard did not match the expected shape: ${cardResult.message()}`);
+    }
+    AgentCard card = cardResult;
 
     if hasSecuritySchemes {
         card.securitySchemes = check parseSecuritySchemes(securitySchemesJson);
