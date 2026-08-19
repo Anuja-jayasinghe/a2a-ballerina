@@ -190,7 +190,7 @@ haven't all been updated to match).
 
 ## Testing
 
-436 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
+441 tests passing, 0 failing (`bal test --sticky` — see the note on `http`
 pinning in `Ballerina.toml` for why `--sticky` matters here) — this
 package's own fast, deterministic, mock-based suite. Real-server proof
 against independently-built agents lives in the companion
