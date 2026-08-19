@@ -225,6 +225,25 @@ public isolated function parseAgentCardBody(json body) returns AgentCard|error {
 # signer. Most callers still want resolveAgentCard's typed result;
 # reach for this only when the raw body itself is needed.
 #
+# A card's own `url` field commonly carries a trailing slash (nothing in
+# the spec forbids it), and callers are expected to pass that value
+# straight back in as `agentBaseUrl` on a follow-up resolve — see
+# `Client.init`, which does exactly this. Without stripping it here,
+# `http:Client` joins a base ending in `/` with a request path starting
+# in `/.well-known/...` into a double slash, which 404s against every
+# well-known-endpoint server tested (confirmed against a real agent
+# whose card declares `url: "http://host:port/"`). Both discovery
+# entry points share this helper since both hit the same join.
+#
+# + url - a base URL, possibly with a trailing slash
+# + return - the same URL with any single trailing slash removed
+isolated function stripTrailingSlash(string url) returns string {
+    if url.endsWith("/") {
+        return url.substring(0, url.length() - 1);
+    }
+    return url;
+}
+
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers
@@ -238,7 +257,7 @@ public isolated function fetchAgentCardBody(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
         map<string> headers = {}) returns json|error {
-    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    http:Client discoveryClient = check new (stripTrailingSlash(agentBaseUrl), clientConfig);
     map<string> reqHeaders = {"A2A-Version": "1.0"};
     foreach [string, string] [k, v] in headers.entries() {
         reqHeaders[k] = v;
@@ -311,7 +330,7 @@ public isolated function resolveAgentCardCached(
         http:ClientConfiguration clientConfig = {},
         map<string> headers = {},
         CachedAgentCard? previous = ()) returns CachedAgentCard|error {
-    http:Client discoveryClient = check new (agentBaseUrl, clientConfig);
+    http:Client discoveryClient = check new (stripTrailingSlash(agentBaseUrl), clientConfig);
     map<string> reqHeaders = {"A2A-Version": "1.0"};
     foreach [string, string] [k, v] in headers.entries() {
         reqHeaders[k] = v;

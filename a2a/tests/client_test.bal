@@ -15,6 +15,19 @@ function testResolveAgentCardSuccess() returns error? {
 }
 
 @test:Config {}
+function testResolveAgentCardSuccessWithTrailingSlash() returns error? {
+    // A card's own `url` field commonly carries a trailing slash (the spec
+    // doesn't forbid it), and callers are expected to feed that value back
+    // in as agentBaseUrl on a follow-up resolve (Client.init does exactly
+    // this). Regression test for the double-slash join this used to
+    // produce against the well-known endpoint, confirmed against a real
+    // running agent whose card declared url: "http://host:port/".
+    AgentCard card = check resolveAgentCard(getServerBaseUrl() + "/");
+
+    test:assertEquals(card.name, "Mock Weather Agent");
+}
+
+@test:Config {}
 function testResolveAgentCardUnreachableEndpoint() returns error? {
     AgentCard|error result = resolveAgentCard("http://localhost:1");
 
