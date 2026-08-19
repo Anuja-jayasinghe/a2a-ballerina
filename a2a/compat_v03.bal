@@ -4,8 +4,9 @@
 // errors.bal do: a submodule under modules/ cannot import the root a2a
 // module without a cyclic dependency, and this file needs to construct
 // Task/Message/Role/TaskState/StreamResponse values directly. See
-// docs/superpowers/specs/2026-07-28-v03-client-compat-design.md for the
-// full design and the evidence behind every mapping below.
+// docs/a2a-ballerina-design/superpowers/specs/2026-07-28-v03-client-compat-design.md
+// in the companion a2a-interop-tests repo for the full design and the
+// evidence behind every mapping below.
 
 import ballerina/lang.array;
 

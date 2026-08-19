@@ -140,11 +140,13 @@ for the HTTP bindings projects onto gRPC unchanged.
 
 ## Why each public symbol exists
 
-`docs/API_PROVENANCE.md` classifies every public symbol as spec-mandated,
-borrowed from a reference SDK convention the spec doesn't define, or
-invented here — with the justification, and the cost, for everything in the
-last two categories. Worth reading before relying on anything that isn't
-straight from the specification.
+[`API_PROVENANCE.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/API_PROVENANCE.md)
+— kept in the companion [`a2a-interop-tests`](https://github.com/Anuja-jayasinghe/a2a-interop-tests)
+repo alongside this library's other design history — classifies every
+public symbol as spec-mandated, borrowed from a reference SDK convention
+the spec doesn't define, or invented here — with the justification, and
+the cost, for everything in the last two categories. Worth reading before
+relying on anything that isn't straight from the specification.
 
 The short version: 52 of 63 public symbols are spec-mandated. The main
 divergence from the Python and Java SDKs is that this library exposes
@@ -183,10 +185,11 @@ what `http:ClientConfiguration.secureSocket` already offers generically.
 (This library no longer derives any auth from the card, so mTLS is wired the
 same way as every other scheme: by the caller. See issue #13.) Plus the JWS
 canonicalization gap noted above.
-Full, current status: [`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) §12.1
-— though treat that section as a snapshot to re-verify against source, not a
-live source of truth (parts of this design doc predate later features and
-haven't all been updated to match).
+Full, current status: [`A2A_Technical_Design.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/A2A_Technical_Design.md)
+§12.1 (kept in the companion `a2a-interop-tests` repo) — though treat that
+section as a snapshot to re-verify against source, not a live source of
+truth (parts of this design doc predate later features and haven't all
+been updated to match).
 
 ## Testing
 
@@ -204,12 +207,20 @@ Deliberately deferred to a later phase (not started): `a2a:Listener` and a
 service-object contract for exposing a Ballerina program as an A2A agent, a
 `TaskStore` abstraction, an Agent Card/skills authoring guide, and a push
 notification webhook receiver. See
-[`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) §12.2.
+[`A2A_Technical_Design.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/A2A_Technical_Design.md) §12.2.
 
 ## Documentation
 
-- [`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) — full
-  technical design: data model, client methods, transport layer, error
-  mapping, and the current known-gaps list (§12).
-- [`LEARNING_LOG.md`](LEARNING_LOG.md) — accumulated lessons from building
-  this library.
+Design history and rationale for this library — kept out of this
+package's own release surface — lives in the companion
+[`a2a-interop-tests`](https://github.com/Anuja-jayasinghe/a2a-interop-tests)
+repo, under
+[`docs/a2a-ballerina-design/`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/tree/main/docs/a2a-ballerina-design):
+
+- [`A2A_Technical_Design.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/A2A_Technical_Design.md)
+  — full technical design: data model, client methods, transport layer,
+  error mapping, and the current known-gaps list (§12).
+- [`API_PROVENANCE.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/API_PROVENANCE.md)
+  — provenance for every public symbol.
+- [`LEARNING_LOG.md`](https://github.com/Anuja-jayasinghe/a2a-interop-tests/blob/main/docs/a2a-ballerina-design/LEARNING_LOG.md)
+  — accumulated lessons from building this library.

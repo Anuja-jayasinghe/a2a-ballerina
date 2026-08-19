@@ -6,7 +6,8 @@
 // cyclic module dependencies within a package. Error-code-to-A2AError
 // mapping (toA2AError) and SSE decoding live in the root module instead
 // (errors.bal and sse.bal) precisely because they need to construct root
-// a2a types. See LEARNING_LOG.md.
+// a2a types. See LEARNING_LOG.md in the companion a2a-interop-tests repo
+// (docs/a2a-ballerina-design/).
 
 # The outbound JSON-RPC 2.0 request envelope.
 public type JsonRpcRequest record {|
