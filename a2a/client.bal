@@ -565,6 +565,10 @@ isolated function buildDelegate(
 # Since all four types implement `AgentClient`, code that does not care can
 # hold the interface and be handed either.
 #
+# See `AgentClient`'s doc comment for this type's error contract: the
+# A2AError subtype named on each method below is what a protocol-level
+# failure produces, not the only kind of error that can come back.
+#
 # LIFECYCLE: there is deliberately no `close`. Unlike the reference a2a-sdk
 # (Python), whose close() method disposes the `httpx.AsyncClient` it was
 # handed, a Ballerina `http:Client` holds no per-instance connection state to

@@ -32,6 +32,10 @@ import ballerina/a2a.grpcstub;
 # bindings; HTTP Basic and Bearer configurations are projected onto their
 # structurally equivalent gRPC forms. Auth shapes with no gRPC equivalent
 # (OAuth2, JWT) are rejected at construction rather than silently dropped.
+#
+# See `AgentClient`'s doc comment for this type's error contract: the
+# A2AError subtype named on each method below is what a protocol-level
+# failure produces, not the only kind of error that can come back.
 public isolated client class GrpcClient {
     *AgentClient;
 
@@ -139,7 +143,12 @@ public isolated client class GrpcClient {
     #
     # + method - the operation name
     # + params - the same params map every binding builds
-    # + return - the unwrapped result json, or a typed A2AError
+    # + return - the unwrapped result json; a typed A2AError for a gRPC
+    #            status the call returned (via toA2AErrorFromGrpc) or a
+    #            response this binding can't decode (via
+    #            decodeGrpcResponse/InvalidAgentResponseError); or the
+    #            underlying clone/decode error, unwrapped, for a params
+    #            shape encodeGrpcRequest can't marshal
     private isolated function grpcCall(string method, map<json> params) returns json|error {
         anydata req = check encodeGrpcRequest(method, params);
         map<string|string[]> headers = self.buildHeaders();
@@ -250,7 +259,10 @@ public isolated client class GrpcClient {
     #
     # + method - "SendStreamingMessage" or "SubscribeToTask"
     # + params - the same params map every binding builds
-    # + return - a stream of StreamResponse values, or a typed A2AError
+    # + return - a stream of StreamResponse values; a typed A2AError for a
+    #            gRPC status the call returned (via toA2AErrorFromGrpc); or
+    #            the underlying clone/decode error, unwrapped, for a params
+    #            shape encodeGrpcRequest can't marshal
     private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
         grpcstub:A2AServiceClient stub = self.grpcStub;
         anydata req = check encodeGrpcRequest(method, params);

@@ -27,6 +27,10 @@ import ballerina/a2a.transport;
 # were split. It is the only one that does — v0.3 defines all three
 # bindings, but `compat_v03.bal` translates the JSON-RPC dialect alone, so
 # `RestClient` and `GrpcClient` reject a v0.3 card. See issue #31.
+#
+# See `AgentClient`'s doc comment for this type's error contract: the
+# A2AError subtype named on each method below is what a protocol-level
+# failure produces, not the only kind of error that can come back.
 public isolated client class JsonRpcClient {
     *AgentClient;
 
@@ -123,7 +127,11 @@ public isolated client class JsonRpcClient {
     #
     # + method - the v1.0 method name; translated for v0.3 when needed
     # + params - the method parameters
-    # + return - the unwrapped result, or a typed A2AError
+    # + return - the unwrapped result; a typed A2AError for a JSON-RPC-level
+    #            failure (an `error` object in the response, or a response
+    #            with neither `result` nor `error`); or the underlying
+    #            http/mime/clone error, unwrapped, for a connection failure
+    #            or a response that doesn't parse as JSON-RPC at all
     private isolated function rpcCall(string method, map<json> params) returns json|error {
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {

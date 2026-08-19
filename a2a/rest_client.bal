@@ -143,6 +143,10 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 # table here is v1.0's. A card resolving to v0.3 is therefore rejected at
 # construction rather than at the first call. Use `JsonRpcClient` for a v0.3
 # agent. See issue #31.
+#
+# See `AgentClient`'s doc comment for this type's error contract: the
+# A2AError subtype named on each method below is what a protocol-level
+# failure produces, not the only kind of error that can come back.
 public isolated client class RestClient {
     *AgentClient;
 
@@ -235,7 +239,11 @@ public isolated client class RestClient {
     #
     # + method - the operation name (see REST_OPERATIONS)
     # + params - the same params map every binding builds
-    # + return - the unwrapped result json, or a typed A2AError
+    # + return - the unwrapped result json; a typed A2AError for a
+    #            non-2xx response (via toA2AErrorFromRest) or a param this
+    #            binding can't build a request for (via buildRestRequest);
+    #            or the underlying http/mime/encode error, unwrapped, for a
+    #            connection failure or an unencodable param value
     private isolated function restCall(string method, map<json> params) returns json|error {
         [string, json?] [path, body] = check buildRestRequest(method, params);
         RestOperation op = REST_OPERATIONS.get(method);
@@ -263,7 +271,10 @@ public isolated client class RestClient {
     #
     # + method - "SendStreamingMessage" or "SubscribeToTask"
     # + params - the same params map every binding builds
-    # + return - a stream of StreamResponse values, or a typed A2AError
+    # + return - a stream of StreamResponse values; a typed A2AError for a
+    #            non-streaming error response (via toA2AErrorFromRest); or
+    #            the underlying http/mime/encode error, unwrapped, for a
+    #            connection failure
     private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
         [string, json?] [path, body] = check buildRestRequest(method, params);
         RestOperation op = REST_OPERATIONS.get(method);
