@@ -1,7 +1,4 @@
 # ballerina/a2a
-
-[![CI](https://github.com/Anuja-jayasinghe/a2a-ballerina/actions/workflows/ci.yml/badge.svg)](https://github.com/Anuja-jayasinghe/a2a-ballerina/actions/workflows/ci.yml)
-
 A Ballerina client library for the [Agent2Agent (A2A) protocol](https://a2a-protocol.org)
 — the open standard that lets AI agents built by different teams, in different
 languages, discover and call each other over a shared wire protocol.
