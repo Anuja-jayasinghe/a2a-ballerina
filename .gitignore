@@ -10,4 +10,4 @@ target/
 .ballerina/
 
 *.log
-.claude/settings.local.json
+.claude/
