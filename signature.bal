@@ -406,7 +406,7 @@ isolated function stripJcsDefaults(json value) returns json {
 # sorted (Ballerina's default string ordering is by Unicode code point,
 # matching JCS's UTF-16-code-unit ordering for every code point AgentCard
 # field names actually use - all ASCII), arrays in their existing order,
-# no whitespace anywhere, and leaf values delegated to `toJsonString()`
+# no whitespace anywhere, and leaf values delegated to toJsonString()
 # (see the two bounded gaps documented on `canonicalizeAgentCardBody`).
 #
 # + value - the value to serialize, at any depth

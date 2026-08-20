@@ -3,3 +3,11 @@
 
 # Local guidance for Claude Code, not part of tracked content.
 CLAUDE.md
+LEARNING_LOG.md
+
+# Ballerina build artifacts.
+target/
+.ballerina/
+
+*.log
+.claude/
