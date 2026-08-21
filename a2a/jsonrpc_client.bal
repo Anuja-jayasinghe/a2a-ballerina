@@ -135,8 +135,14 @@ public isolated client class JsonRpcClient {
             "", req.toJson(), self.buildHeaders()
         );
         json body = check resp.getJsonPayload();
-        transport:JsonRpcResponse rpcResp =
-            check body.cloneWithType(transport:JsonRpcResponse);
+        transport:JsonRpcResponse|error rpcRespResult =
+            body.cloneWithType(transport:JsonRpcResponse);
+        if rpcRespResult is error {
+            return error InvalidAgentResponseError(
+                "Malformed JSON-RPC response: " + rpcRespResult.message()
+            );
+        }
+        transport:JsonRpcResponse rpcResp = rpcRespResult;
         transport:JsonRpcError? rpcErr = rpcResp?.'error;
         if rpcErr is transport:JsonRpcError {
             return toA2AError(rpcErr);
@@ -183,8 +189,14 @@ public isolated client class JsonRpcClient {
         // first and route it through the same error mapping as a unary call.
         if !resp.getContentType().startsWith("text/event-stream") {
             json body = check resp.getJsonPayload();
-            transport:JsonRpcResponse rpcResp =
-                check body.cloneWithType(transport:JsonRpcResponse);
+            transport:JsonRpcResponse|error rpcRespResult =
+                body.cloneWithType(transport:JsonRpcResponse);
+            if rpcRespResult is error {
+                return error InvalidAgentResponseError(
+                    "Malformed JSON-RPC response: " + rpcRespResult.message()
+                );
+            }
+            transport:JsonRpcResponse rpcResp = rpcRespResult;
             transport:JsonRpcError? rpcErr = rpcResp?.'error;
             if rpcErr is transport:JsonRpcError {
                 return toA2AError(rpcErr);
