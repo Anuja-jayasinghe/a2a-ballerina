@@ -54,6 +54,11 @@ type MockRpcScript record {|
     // stream end). Used to exercise ReconnectingStreamGenerator's
     // reconnect-on-error path, which must NOT trigger on a clean close.
     boolean simulateDropError = false;
+    // When true, the scripted jsonBody is sent verbatim — its "id" is not
+    // overwritten with the real request's id. Only set by
+    // setNextJsonResponseWithLiteralId, for the one test that deliberately
+    // exercises a genuine response/request id mismatch.
+    boolean skipIdEcho = false;
 |};
 
 type MockWellKnownScript record {|
@@ -183,6 +188,19 @@ public isolated function getLastRequestHeaders() returns map<string> {
 public isolated function setNextJsonResponse(json body, int statusCode = 200) {
     lock {
         rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0};
+    }
+}
+
+# Scripts the next JSON-RPC request to receive a plain JSON response sent
+# verbatim — unlike setNextJsonResponse, the body's "id" is NOT overwritten
+# with the real request's id. Exists solely to exercise the deliberate
+# id-mismatch case; every other test wants its scripted id to be ignored.
+#
+# + body - the JSON body to respond with, id included as literally given
+# + statusCode - the HTTP status code to respond with
+public isolated function setNextJsonResponseWithLiteralId(json body, int statusCode = 200) {
+    lock {
+        rpcScript = {jsonBody: body.clone(), statusCode, isSse: false, delaySeconds: 0, skipIdEcho: true};
     }
 }
 
@@ -340,6 +358,30 @@ public isolated function messageJson(string messageId) returns string {
 # + return - the SSE event's `data:` field content
 public isolated function statusUpdateJson(string taskId, string state) returns string {
     return string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"${taskId}","contextId":"ctx-1","status":{"state":"${state}"}}}}`;
+}
+
+# Stamps a scripted JSON-RPC response body with the actual request's id
+# before it goes out, so scripted responses (which are written once per
+# test with a placeholder id) still satisfy JsonRpcClient's response-id
+# correlation check against the client's real, randomly-generated request
+# id. Every other scripted test in the suite predates that check and picks
+# an arbitrary literal id (typically "1") that was never meant to be
+# asserted on — only the tests that deliberately script a mismatched id to
+# exercise the check itself should bypass this.
+#
+# + responseBody - the scripted response body a test set via setNextJsonResponse
+# + requestBody - the actual request body the mock received
+# + return - responseBody with its top-level "id" replaced by the request's id, if both are JSON-RPC-shaped objects carrying one
+isolated function echoRequestId(json responseBody, json requestBody) returns json {
+    if responseBody is map<json> && requestBody is map<json> && responseBody.hasKey("id") {
+        json? reqId = requestBody["id"];
+        if reqId is string {
+            map<json> stamped = responseBody.clone();
+            stamped["id"] = reqId;
+            return stamped;
+        }
+    }
+    return responseBody;
 }
 
 isolated function defaultMockAgentCard() returns json {
@@ -518,7 +560,7 @@ service / on mockListener {
         } else {
             http:Response res = new;
             res.statusCode = script.statusCode;
-            res.setJsonPayload(script.jsonBody);
+            res.setJsonPayload(script.skipIdEcho ? script.jsonBody : echoRequestId(script.jsonBody, body));
             respondIgnoringClientGoneAway(caller, res);
         }
     }

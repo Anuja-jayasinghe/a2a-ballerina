@@ -97,6 +97,18 @@ function testJsonRpcClientSendsCorrectMethodNamePerOperation() returns error? {
     test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig");
 }
 
+# A response correlated to a different request (e.g. a proxy or
+# multiplexing server returning the wrong reply under HTTP 200) must not be
+# silently accepted as this call's result.
+@test:Config {}
+function testJsonRpcClientRejectsMismatchedResponseId() returns error? {
+    JsonRpcClient c = check new (getServerBaseUrl());
+    setNextJsonResponseWithLiteralId({jsonrpc: "2.0", id: "not-this-requests-id", result: {task: defaultTaskJson()}});
+    Task|Message|error result = c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    test:assertTrue(result is InvalidAgentResponseError,
+            "a JSON-RPC response whose id does not match the request must be rejected, not decoded as the result");
+}
+
 @test:Config {}
 function testJsonRpcClientMapsErrorCodesToTypedErrors() returns error? {
     JsonRpcClient c = check new (getServerBaseUrl());

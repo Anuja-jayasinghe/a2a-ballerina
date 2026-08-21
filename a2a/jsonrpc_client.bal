@@ -143,6 +143,11 @@ public isolated client class JsonRpcClient {
             );
         }
         transport:JsonRpcResponse rpcResp = rpcRespResult;
+        if rpcResp.id != req.id {
+            return error InvalidAgentResponseError(
+                "JSON-RPC response id does not match request id"
+            );
+        }
         transport:JsonRpcError? rpcErr = rpcResp?.'error;
         if rpcErr is transport:JsonRpcError {
             return toA2AError(rpcErr);
