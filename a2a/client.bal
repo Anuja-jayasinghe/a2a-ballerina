@@ -563,7 +563,7 @@ isolated function buildDelegate(
 # hold the interface and be handed either.
 #
 # LIFECYCLE: there is deliberately no `close`. Unlike the reference a2a-sdk
-# (Python), whose `Client.close()` disposes the `httpx.AsyncClient` it was
+# (Python), whose 'Client.close()' disposes the `httpx.AsyncClient` it was
 # handed, a Ballerina `http:Client` holds no per-instance connection state to
 # dispose: it routes through the process-wide `globalHttpClientConnPool`, which
 # evicts idle connections on its own. Neither `http:Client` nor `grpc:Client`

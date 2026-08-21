@@ -165,6 +165,9 @@ isolated function toA2AErrorFromRest(int statusCode, json? body) returns A2AErro
 # body has no usable ErrorInfo entry. json field access with an
 # "@"-prefixed key ("@type") isn't valid dot-syntax, so this reads through
 # a map<json> bracket index instead.
+#
+# + body - the REST error response body, or () if there was none
+# + return - the matching ErrorInfo entry as a map, or () if none was found
 isolated function extractRestErrorDetail(json? body) returns map<json>? {
     if body is () {
         return ();

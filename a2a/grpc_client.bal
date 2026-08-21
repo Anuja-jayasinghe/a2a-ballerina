@@ -441,6 +441,11 @@ public isolated client class GrpcClient {
     # specification section 3.1.10, so a card that (perhaps stale-ly)
     # denies the capability shouldn't block a call that's a legitimate
     # no-op either way. See issue #11.
+    #
+    # + taskId - the task the config is registered on
+    # + id - the push-notification config's identifier
+    # + tenant - optional per-call tenant override
+    # + return - nil on success, or an error
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
