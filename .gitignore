@@ -1,5 +1,12 @@
 # Local git worktrees used for isolated subagent-driven development.
 .worktrees/
 
+# Gradle build output and local cache.
+.gradle/
+build/
+
+# macOS Finder metadata.
+.DS_Store
+
 # Local guidance for Claude Code, not part of tracked content.
 CLAUDE.md
