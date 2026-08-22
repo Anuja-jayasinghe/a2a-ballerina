@@ -18,11 +18,11 @@ jobs:
           version: 2201.13.4
 
       - name: Build
-        working-directory: a2a
+        working-directory: ballerina
         run: bal build
 
       - name: Test
-        working-directory: a2a
+        working-directory: ballerina
         run: bal test
 
   grpc-stub-freshness:
@@ -36,5 +36,5 @@ jobs:
           version: 2201.13.4
 
       - name: Check gRPC stub is up to date with vendored proto
-        working-directory: a2a
+        working-directory: ballerina
         run: bash scripts/regen-grpc-stub.sh
