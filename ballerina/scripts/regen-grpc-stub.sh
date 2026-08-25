@@ -30,7 +30,7 @@ fi
 # surface as the `anydata` values of a `map<anydata>`. So this rewrite is not
 # an erasure -- it lines the generated type up with the runtime's real
 # representation. See a2a/modules/grpcstub/wellknown_desc.bal.
-echo "Post-processing 1/2: rewriting google_protobuf_Value -> anydata ..."
+echo "Post-processing 1/3: rewriting google_protobuf_Value -> anydata ..."
 OCCURRENCES=$(grep -o "google_protobuf_Value" "$GENERATED_FILE" | wc -l | tr -d ' ')
 if [ "$OCCURRENCES" -ne 2 ]; then
     echo "ERROR: expected exactly 2 occurrences of google_protobuf_Value, found $OCCURRENCES." >&2
@@ -58,7 +58,7 @@ sed -i 's/google_protobuf_Value/anydata/g' "$GENERATED_FILE"
 # generate or overwrite) resolves struct.proto for real, so Value/ListValue/
 # NullValue are proper descriptors and the runtime's existing
 # google.protobuf.Value <-> anydata machinery is reachable.
-echo "Post-processing 2/2: wiring A2A_DESCRIPTOR_MAP into initStub ..."
+echo "Post-processing 2/3: wiring A2A_DESCRIPTOR_MAP into initStub ..."
 STUB_OCCURRENCES=$(grep -c "initStub(self, A2A_DESC)" "$GENERATED_FILE" | tr -d ' ')
 if [ "$STUB_OCCURRENCES" -ne 1 ]; then
     echo "ERROR: expected exactly 1 occurrence of 'initStub(self, A2A_DESC)', found $STUB_OCCURRENCES." >&2
@@ -68,6 +68,37 @@ if [ "$STUB_OCCURRENCES" -ne 1 ]; then
     exit 1
 fi
 sed -i 's/initStub(self, A2A_DESC)/initStub(self, A2A_DESC, A2A_DESCRIPTOR_MAP)/' "$GENERATED_FILE"
+
+# Post-processing step 3 of 3 -- the Apache-2.0 license header.
+#
+# `bal grpc` emits no header at all. Every other .bal file in this repo
+# carries one (see the other 35 files), matching real ballerina-platform
+# module convention -- checked directly against module-ballerina-http and
+# module-ballerina-ai, neither of which exempts generated files. Prepended
+# here, not hand-edited into the checked-in file, because a hand-added
+# header would be silently wiped by the next --apply run.
+echo "Post-processing 3/3: prepending the Apache-2.0 license header ..."
+HEADER_FILE="$SCRATCH_DIR/license_header.txt"
+cat > "$HEADER_FILE" <<'EOF'
+// Copyright (c) 2026 WSO2 LLC (http://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+EOF
+cat "$HEADER_FILE" "$GENERATED_FILE" > "$GENERATED_FILE.headered"
+mv "$GENERATED_FILE.headered" "$GENERATED_FILE"
 
 if [ "${1:-}" = "--apply" ]; then
     cp "$GENERATED_FILE" "$STUB_DIR/a2a_pb.bal"
