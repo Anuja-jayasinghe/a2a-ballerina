@@ -8,5 +8,26 @@ build/
 # macOS Finder metadata.
 .DS_Store
 
+# IDE-related files
+.idea
+*.iml
+*.ipr
+*.iws
+.project
+.settings
+.vscode
+
+# Ballerina related ignores
+Ballerina.lock
+velocity.log*
+
+# Dependencies.toml of examples and load-tests
+examples/**/Dependencies.toml
+load-tests/**/Dependencies.toml
+
 # Local guidance for Claude Code, not part of tracked content.
 CLAUDE.md
+
+# Working checklist for org-move conformance work — scaffolding, not a
+# permanent repo artifact. Delete once every item is checked off.
+CONFORMANCE_CHECKLIST.md
