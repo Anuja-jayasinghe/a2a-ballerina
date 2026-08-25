@@ -205,9 +205,12 @@ public isolated client class RestClient {
 
     # + return - the headers to send with the request
     private isolated function buildHeaders() returns map<string> {
+        // The A2A spec's REST/HTTP+JSON binding requires the
+        // application/a2a+json media type, not plain application/json
+        // (spec §11) -- verified against the real, current spec text.
         map<string> headers = {
             "A2A-Version": "1.0",
-            "Content-Type": "application/json"
+            "Content-Type": "application/a2a+json"
         };
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
