@@ -129,6 +129,57 @@ function testRestClientPrefixesPathWithTenant() returns error? {
     test:assertEquals(getLastRestRequest().path, "/acme-corp/tasks/task-1");
 }
 
+# The A2A spec's REST binding requires application/a2a+json, not plain
+# application/json (spec §11) — this is what the Client must send by
+# default, before any server has ever rejected it.
+@test:Config {}
+function testRestClientSendsSpecContentTypeByDefault() returns error? {
+    RestClient c = check new (getServerBaseUrl());
+    setNextRestResponse(defaultTaskJson());
+    Task _ = check c->getTask("task-1");
+    test:assertEquals(getLastRestHeaders()["content-type"], "application/a2a+json");
+}
+
+# Some real, currently-released servers haven't caught up to the spec yet
+# — e.g. a2a-java-sdk-reference-rest:1.1.0.Final rejects application/a2a+json
+# outright with a 415 (confirmed by decompiling its route registration).
+# The Client must transparently retry with the legacy application/json
+# rather than surfacing the 415 to the caller.
+@test:Config {}
+function testRestClientNegotiatesLegacyContentTypeOn415() returns error? {
+    RestClient c = check new (getServerBaseUrl());
+    // setNextRestResponse replaces the whole mock script record, so it
+    // must be called before setRestRejectContentType, not after -- same
+    // ordering already required by setRestRejectMethod's own callers.
+    setNextRestResponse(defaultTaskJson());
+    setRestRejectContentType("application/a2a+json", 415);
+    Task result = check c->getTask("task-1");
+    test:assertEquals(result.id, "task-1", "the retry with application/json should succeed transparently");
+    test:assertEquals(getLastRestHeaders()["content-type"], "application/json",
+            "the request that actually succeeded should be the application/json retry");
+}
+
+# Once a 415 has taught this Client instance that its server needs the
+# legacy content type, every later call should go straight there — not
+# pay a 415 round trip on every single request forever.
+@test:Config {}
+function testRestClientRemembersNegotiatedContentTypeAcrossCalls() returns error? {
+    RestClient c = check new (getServerBaseUrl());
+    setNextRestResponse(defaultTaskJson());
+    setRestRejectContentType("application/a2a+json", 415);
+    Task _ = check c->getTask("task-1");
+
+    // No rejection scripted this time — if the Client still tried
+    // application/a2a+json first, this call would still succeed (nothing
+    // is rejecting it), so the only way to prove it remembered is to
+    // check which Content-Type this second, unscripted request actually
+    // carried.
+    setNextRestResponse(defaultTaskJson());
+    Task _ = check c->getTask("task-1");
+    test:assertEquals(getLastRestHeaders()["content-type"], "application/json",
+            "a Client that already learned its server needs application/json should send it immediately, not retry into it again");
+}
+
 # REST cannot distinguish A2A errors by HTTP status alone — seven map onto
 # 400 — so the ErrorInfo reason field carries the discrimination.
 @test:Config {}

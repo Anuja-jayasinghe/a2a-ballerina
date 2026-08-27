@@ -167,6 +167,12 @@ public isolated client class RestClient {
     # The most recent AgentCard this client knows about; replaced by the
     # extended card once getExtendedAgentCard fetches one.
     private AgentCard? agentCard;
+    # Learned, not configured: flips to true the first time a server
+    # rejects the spec-mandated application/a2a+json with a 415, so every
+    # later call on this instance skips straight to the legacy
+    # application/json instead of paying a 415 round trip each time. See
+    # buildHeaders and performRestCallWithNegotiation.
+    private boolean useLegacyContentType = false;
 
     # Creates a REST client pointed at a remote A2A agent.
     #
@@ -223,10 +229,23 @@ public isolated client class RestClient {
     private isolated function buildHeaders() returns map<string> {
         // The A2A spec's REST/HTTP+JSON binding requires the
         // application/a2a+json media type, not plain application/json
-        // (spec §11) -- verified against the real, current spec text.
+        // (spec §11) -- verified against the real, current spec text --
+        // and that's what this client sends by default. Some real,
+        // currently-released servers haven't caught up yet: the reference
+        // Java server (a2a-java-sdk-reference-rest:1.1.0.Final) rejects
+        // application/a2a+json outright with a 415 (confirmed by
+        // decompiling its route registration, which hardcodes
+        // .consumes("application/json")). performRestCallWithNegotiation
+        // retries once with application/json on a real 415 and flips
+        // useLegacyContentType so every later call goes straight there --
+        // this only reads that already-learned choice.
+        boolean legacy;
+        lock {
+            legacy = self.useLegacyContentType;
+        }
         map<string> headers = {
             "A2A-Version": "1.0",
-            "Content-Type": "application/a2a+json"
+            "Content-Type": legacy ? "application/json" : "application/a2a+json"
         };
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
@@ -235,6 +254,57 @@ public isolated client class RestClient {
             headers["A2A-Extensions"] = string:'join(",", ...self.requestedExtensions);
         }
         return headers;
+    }
+
+    # Issues one raw HTTP call for a REST operation, with no content-type
+    # negotiation -- callers that need negotiation go through
+    # performRestCallWithNegotiation instead.
+    #
+    # + op - the operation descriptor (method/path already resolved)
+    # + path - the request path built by buildRestRequest
+    # + body - the request body, or () for a bodiless operation
+    # + headers - the exact headers to send
+    # + return - the raw HTTP response, or a transport-level error
+    private isolated function rawRestCall(RestOperation op, string path, json? body, map<string> headers) returns http:Response|error {
+        if op.httpMethod == "GET" {
+            return self.httpClient->get(path, headers);
+        } else if op.httpMethod == "DELETE" {
+            return self.httpClient->delete(path, headers = headers);
+        } else {
+            return self.httpClient->post(path, body ?: {}, headers);
+        }
+    }
+
+    # Issues one REST call, transparently retrying once with the legacy
+    # application/json content type if the server rejects the spec-mandated
+    # application/a2a+json with a 415 -- see buildHeaders' doc comment.
+    #
+    # + op - the operation descriptor (method/path already resolved)
+    # + path - the request path built by buildRestRequest
+    # + body - the request body, or () for a bodiless operation
+    # + extraHeaders - additional headers merged in on top of buildHeaders'
+    #                  defaults (e.g. Accept: text/event-stream)
+    # + return - the raw HTTP response (from whichever attempt settled),
+    #            or a transport-level error
+    private isolated function performRestCallWithNegotiation(
+            RestOperation op, string path, json? body, map<string> extraHeaders = {}) returns http:Response|error {
+        map<string> headers = self.buildHeaders();
+        foreach [string, string] [k, v] in extraHeaders.entries() {
+            headers[k] = v;
+        }
+        http:Response resp = check self.rawRestCall(op, path, body, headers);
+        if resp.statusCode == 415 && headers["Content-Type"] != "application/json" {
+            map<string> legacyHeaders = headers.clone();
+            legacyHeaders["Content-Type"] = "application/json";
+            http:Response retryResp = check self.rawRestCall(op, path, body, legacyHeaders);
+            if retryResp.statusCode != 415 {
+                lock {
+                    self.useLegacyContentType = true;
+                }
+            }
+            return retryResp;
+        }
+        return resp;
     }
 
     # Performs one REST call and returns the unwrapped result.
@@ -251,15 +321,7 @@ public isolated client class RestClient {
     private isolated function restCall(string method, map<json> params) returns json|error {
         [string, json?] [path, body] = check buildRestRequest(method, params);
         RestOperation op = REST_OPERATIONS.get(method);
-        map<string> headers = self.buildHeaders();
-        http:Response resp;
-        if op.httpMethod == "GET" {
-            resp = check self.httpClient->get(path, headers);
-        } else if op.httpMethod == "DELETE" {
-            resp = check self.httpClient->delete(path, headers = headers);
-        } else {
-            resp = check self.httpClient->post(path, body ?: {}, headers);
-        }
+        http:Response resp = check self.performRestCallWithNegotiation(op, path, body);
         if resp.statusCode >= 200 && resp.statusCode < 300 {
             json|error payload = resp.getJsonPayload();
             if payload is json {
@@ -279,22 +341,24 @@ public isolated client class RestClient {
     private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
         [string, json?] [path, body] = check buildRestRequest(method, params);
         RestOperation op = REST_OPERATIONS.get(method);
-        map<string> headers = self.buildHeaders();
-        headers["Accept"] = "text/event-stream";
-        http:Response resp;
-        if op.httpMethod == "GET" {
-            resp = check self.httpClient->get(path, headers);
-            // SubscribeToTask's proto annotation says GET, but a
-            // non-reference server that hand-rolled its REST routes
-            // following the reference *client* (which sends POST) might
-            // only have registered POST. Scoped to exactly this one
-            // operation — retrying broadly for every operation would
-            // mask genuine method-not-allowed errors elsewhere.
-            if method == "SubscribeToTask" && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
-                resp = check self.httpClient->post(path, body ?: {}, headers);
-            }
-        } else {
-            resp = check self.httpClient->post(path, body ?: {}, headers);
+        map<string> extraHeaders = {"Accept": "text/event-stream"};
+        http:Response resp = check self.performRestCallWithNegotiation(op, path, body, extraHeaders);
+        // SubscribeToTask's proto annotation says GET, but a non-reference
+        // server that hand-rolled its REST routes following the reference
+        // *client* (which sends POST) might only have registered POST.
+        // Scoped to exactly this one operation — retrying broadly for
+        // every operation would mask genuine method-not-allowed errors
+        // elsewhere.
+        if method == "SubscribeToTask" && op.httpMethod == "GET"
+                && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
+            RestOperation postOp = {
+                httpMethod: "POST",
+                pathTemplate: op.pathTemplate,
+                pathParams: op.pathParams,
+                hasBody: op.hasBody,
+                streaming: op.streaming
+            };
+            resp = check self.performRestCallWithNegotiation(postOp, path, body, extraHeaders);
         }
         if !resp.getContentType().startsWith("text/event-stream") {
             json|error errBody = resp.getJsonPayload();
