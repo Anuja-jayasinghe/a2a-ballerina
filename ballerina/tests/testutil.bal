@@ -93,6 +93,7 @@ type MockRestScript record {|
     string lastPath = "";
     string lastMethod = "";
     json lastBody = {};
+    map<string> lastHeaders = {};
     http:SseEvent[] sseEvents = [];
     boolean isSse = false;
     boolean simulateDropError = false;
@@ -102,6 +103,13 @@ type MockRestScript record {|
     // succeeds normally. () means no rejection scripted.
     string? rejectMethod = ();
     int rejectStatusCode = 0;
+    // Content-type negotiation support (rest_client.bal's
+    // performRestCallWithNegotiation): when set, the mock rejects exactly
+    // one request carrying this Content-Type with this status, then
+    // clears itself so the retry (a different Content-Type) succeeds
+    // normally. () means no rejection scripted.
+    string? rejectContentType = ();
+    int rejectContentTypeStatusCode = 0;
 |};
 
 isolated MockRestScript restScript = {};
@@ -142,6 +150,33 @@ public isolated function setRestRejectMethod(string httpMethod, int statusCode) 
     lock {
         restScript.rejectMethod = httpMethod;
         restScript.rejectStatusCode = statusCode;
+    }
+}
+
+# Scripts the mock to reject exactly the next REST request carrying the
+# given Content-Type with the given status code (e.g. simulating a real
+# server, like a2a-java-sdk-reference-rest, that rejects the spec-mandated
+# application/a2a+json with a 415), then clear the rejection so a
+# subsequent request — the client's retry with a different Content-Type —
+# succeeds normally against whatever else is scripted.
+#
+# + contentType - the exact Content-Type value to reject once, e.g. "application/a2a+json"
+# + statusCode - the status to reject it with, e.g. 415
+public isolated function setRestRejectContentType(string contentType, int statusCode) {
+    lock {
+        restScript.rejectContentType = contentType;
+        restScript.rejectContentTypeStatusCode = statusCode;
+    }
+}
+
+# Returns the headers of the last REST request the mock received, so tests
+# can assert on outbound headers (e.g. Content-Type). Keys are lowercased —
+# see getLastRequestHeaders' doc comment for why.
+#
+# + return - the last received REST request's headers, keyed by lowercase header name
+public isolated function getLastRestHeaders() returns map<string> {
+    lock {
+        return restScript.lastHeaders.clone();
     }
 }
 
@@ -579,11 +614,20 @@ service / on mockListener {
         // tests assert on what the Client sent, not to validate it.
         json|error parsedBody = req.getJsonPayload();
         json capturedBody = parsedBody is json ? parsedBody : {};
+        // Same lowercasing rationale as the JSON-RPC handler above.
+        map<string> headers = {};
+        foreach string headerName in req.getHeaderNames() {
+            string|http:HeaderNotFoundError headerValue = req.getHeader(headerName);
+            if headerValue is string {
+                headers[headerName.toLowerAscii()] = headerValue;
+            }
+        }
         lock {
             restScript.lastMethod = req.method;
             restScript.lastPath = fullPath;
             restScript.lastQueryParams = queryParams.clone();
             restScript.lastBody = capturedBody.clone();
+            restScript.lastHeaders = headers.clone();
         }
 
         if script.rejectMethod is string && req.method == script.rejectMethod {
@@ -591,6 +635,16 @@ service / on mockListener {
             rejectRes.statusCode = script.rejectStatusCode;
             lock {
                 restScript.rejectMethod = ();
+            }
+            check caller->respond(rejectRes);
+            return;
+        }
+
+        if script.rejectContentType is string && headers["content-type"] == script.rejectContentType {
+            http:Response rejectRes = new;
+            rejectRes.statusCode = script.rejectContentTypeStatusCode;
+            lock {
+                restScript.rejectContentType = ();
             }
             check caller->respond(rejectRes);
             return;
