@@ -33,6 +33,24 @@
 # a2a:AgentClient agent = check new a2a:GrpcClient(url); // caller decides
 # ```
 #
+# **Error contract: every method below returns a bare `error`, not a
+# narrowed A2AError union — the `+ return` doc on each names the specific
+# A2AError subtype(s) (errors.bal) a protocol-level failure produces (the
+# agent rejected the request, or a capability check short-circuited it
+# client-side), but that named type is not the only possibility.** A raw
+# transport or decode error — a connection failure, a malformed response
+# body, an unexpected shape `cloneWithType` rejects — propagates via
+# `check` alongside it, unwrapped, exactly as documented on
+# `fetchAgentCardBody`/`resolveAgentCard` (client.bal) for the same
+# reason: those failures come from `ballerina/http`/`ballerina/grpc`/
+# `ballerina/mime`, which return plain `error`, not this library's
+# distinct A2AError type, so `check`ing them straight through is what
+# keeps every operation to three or four lines instead of a rewrap at
+# every fallible call. A caller that needs to tell a protocol failure
+# apart from a transport failure must pattern-match on the concrete
+# type (`result is a2a:TaskNotFoundError`, etc.) rather than assume the
+# error is always one of errors.bal's named types.
+#
 # **Stability note: implemented by this library only, not a stable
 # extension point for external implementors.** It is a public, syntactically
 # implementable object type — nothing stops a caller writing their own

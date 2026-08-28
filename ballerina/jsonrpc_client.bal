@@ -43,6 +43,10 @@ import ballerina/a2a.transport;
 # were split. It is the only one that does — v0.3 defines all three
 # bindings, but `compat_v03.bal` translates the JSON-RPC dialect alone, so
 # `RestClient` and `GrpcClient` reject a v0.3 card. See issue #31.
+#
+# See `AgentClient`'s doc comment for this type's error contract: the
+# A2AError subtype named on each method below is what a protocol-level
+# failure produces, not the only kind of error that can come back.
 public isolated client class JsonRpcClient {
     *AgentClient;
 
@@ -139,7 +143,11 @@ public isolated client class JsonRpcClient {
     #
     # + method - the v1.0 method name; translated for v0.3 when needed
     # + params - the method parameters
-    # + return - the unwrapped result, or a typed A2AError
+    # + return - the unwrapped result; a typed A2AError for a JSON-RPC-level
+    #            failure (an `error` object in the response, or a response
+    #            with neither `result` nor `error`); or the underlying
+    #            http/mime/clone error, unwrapped, for a connection failure
+    #            or a response that doesn't parse as JSON-RPC at all
     private isolated function rpcCall(string method, map<json> params) returns json|error {
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
@@ -254,6 +262,15 @@ public isolated client class JsonRpcClient {
         return decodeSendMessageResult(result, self.mode);
     }
 
+    # Sends a message to the remote agent over JSON-RPC.
+    #
+    # + message - The message to send; messageId must be set by the caller
+    # + config - Optional send configuration
+    # + tenant - Optional per-call tenant override
+    # + metadata - Optional request-level metadata, per SendMessageRequest
+    #              (specification section 3.2.1) — distinct from
+    #              message.metadata, which is metadata on the Message itself
+    # + return - A Task or a Message on success, or a typed A2AError on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
@@ -262,6 +279,18 @@ public isolated client class JsonRpcClient {
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
+    # Sends a message and receives updates as they happen, over JSON-RPC SSE.
+    #
+    # Falls back to a single unary sendMessage call, wrapped as a one-event
+    # stream, when the held AgentCard says streaming is unsupported — see
+    # issue #11 — instead of opening (and having the server reject) a
+    # streaming connection.
+    #
+    # + message - The message to send
+    # + config - Optional send configuration
+    # + tenant - Optional per-call tenant override
+    # + metadata - Optional request-level metadata
+    # + return - A stream of StreamResponse values, or a typed A2AError
     isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
@@ -285,6 +314,13 @@ public isolated client class JsonRpcClient {
         return wrapReconnecting(rawStream, self, self.maxReconnectAttempts, effectiveTenant);
     }
 
+    # Retrieves the current state of a task.
+    #
+    # + taskId - The task identifier returned by a previous sendMessage
+    # + historyLength - Maximum messages to include in task.history
+    # + tenant - Optional per-call tenant override
+    # + return - The current Task, or a TaskNotFoundError (or other typed
+    #            A2AError) if unknown
     isolated remote function getTask(
             string taskId,
             int? historyLength = (),
@@ -294,6 +330,13 @@ public isolated client class JsonRpcClient {
         return decodeTaskResult(result, self.mode);
     }
 
+    # Requests cancellation of an in-progress task.
+    #
+    # + taskId - The task to cancel
+    # + metadata - Optional additional context passed to the agent
+    # + tenant - Optional per-call tenant override
+    # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
+    #            (or other typed A2AError)
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
@@ -303,6 +346,16 @@ public isolated client class JsonRpcClient {
         return decodeTaskResult(result, self.mode);
     }
 
+    # Opens a stream on an existing task over JSON-RPC SSE.
+    #
+    # Unlike sendStreamingMessage, subscribing to a task already in flight
+    # has no unary equivalent to fall back to when the held AgentCard says
+    # streaming is unsupported — see issue #11 — so that case is rejected
+    # client-side with an UnsupportedOperationError instead.
+    #
+    # + taskId - The task to subscribe to
+    # + tenant - Optional per-call tenant override
+    # + return - A stream of StreamResponse values, or a typed A2AError
     isolated remote function subscribeToTask(
             string taskId,
             string? tenant = ()) returns stream<StreamResponse, error?>|error {
@@ -325,6 +378,13 @@ public isolated client class JsonRpcClient {
         return wrapped;
     }
 
+    # Lists tasks matching an optional filter, with cursor-based pagination.
+    #
+    # + filter - Optional filter/pagination parameters
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching tasks, or a VersionNotSupportedError if
+    #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
+    #            or another typed A2AError
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
             string? tenant = ()) returns ListTasksResult|error {
@@ -334,6 +394,12 @@ public isolated client class JsonRpcClient {
         return decodeListTasksResult(result);
     }
 
+    # Registers a webhook to receive updates for a task.
+    #
+    # + config - The webhook configuration; config.taskId identifies the task
+    # + tenant - Optional per-call tenant override
+    # + return - The created config as the server persisted it, or a
+    #            PushNotificationNotSupportedError (or other typed A2AError)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
             string? tenant = ()) returns TaskPushNotificationConfig|error {
@@ -350,6 +416,13 @@ public isolated client class JsonRpcClient {
         return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
+    # Retrieves a previously registered push-notification webhook config.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier, from its creation response
+    # + tenant - Optional per-call tenant override
+    # + return - The config, or a PushNotificationNotSupportedError/
+    #            TaskNotFoundError (or other typed A2AError)
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
@@ -367,6 +440,14 @@ public isolated client class JsonRpcClient {
         return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
+    # Lists all push-notification webhook configs registered for a task.
+    #
+    # + taskId - The task to list configs for
+    # + pageSize - Maximum results per page
+    # + pageToken - Opaque cursor from a previous result's nextPageToken
+    # + tenant - Optional per-call tenant override
+    # + return - A page of matching configs, or a
+    #            PushNotificationNotSupportedError (or other typed A2AError)
     isolated remote function listTaskPushNotificationConfigs(
             string taskId,
             int? pageSize = (),
@@ -385,11 +466,19 @@ public isolated client class JsonRpcClient {
         return decodeListTaskPushNotificationConfigsResult(result, self.mode);
     }
 
+    # Deletes a push-notification webhook config. Idempotent per
+    # specification section 3.1.10.
+    #
     # deleteTaskPushNotificationConfig is deliberately NOT gated on
     # capabilities.pushNotifications - deletion is idempotent per
     # specification section 3.1.10, so a card that (perhaps stale-ly)
     # denies the capability shouldn't block a call that's a legitimate
     # no-op either way. See issue #11.
+    #
+    # + taskId - The task the config was registered against
+    # + id - The config's identifier
+    # + tenant - Optional per-call tenant override
+    # + return - nil on success, or a typed A2AError
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
@@ -399,6 +488,11 @@ public isolated client class JsonRpcClient {
         json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
     }
 
+    # Retrieves the agent's extended AgentCard.
+    #
+    # + tenant - Optional per-call tenant override
+    # + return - The extended AgentCard, the already-held card when that
+    #            card declares no extended-card support, or a typed A2AError
     isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
         lock {
             AgentCard? held = self.agentCard;

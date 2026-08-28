@@ -103,7 +103,8 @@ isolated function v03MethodName(string v1Method) returns string {
 }
 
 # + role - the v0.3 wire role string ("user"/"agent")
-# + return - the equivalent v1.0 Role, or an error if unrecognized
+# + return - the equivalent v1.0 Role, or an InvalidAgentResponseError if
+#            the agent sent a role this library doesn't recognize
 isolated function mapV03Role(string role) returns Role|error {
     match role {
         "user" => {
@@ -113,15 +114,16 @@ isolated function mapV03Role(string role) returns Role|error {
             return ROLE_AGENT;
         }
         _ => {
-            return error(string `Unrecognized v0.3 role: ${role}`);
+            string msg = string `Unrecognized v0.3 role: ${role}`;
+            return error InvalidAgentResponseError(msg, message = msg, code = -32006);
         }
     }
 }
 
 # + role - the outbound v1.0 Role to encode
-# + return - the equivalent v0.3 wire role string, or an error for
-#            ROLE_UNSPECIFIED (or anything else unrecognized) — the mirror
-#            image of mapV03Role, which errors the same way on decode
+# + return - the equivalent v0.3 wire role string, or an A2AInternalError for
+#            ROLE_UNSPECIFIED (or anything else unrecognized) — a caller-side
+#            mistake, unlike mapV03Role's InvalidAgentResponseError on decode
 isolated function encodeV03Role(Role role) returns string|error {
     match role {
         ROLE_USER => {
@@ -131,13 +133,15 @@ isolated function encodeV03Role(Role role) returns string|error {
             return "agent";
         }
         _ => {
-            return error(string `Cannot encode v0.3 message: unrecognized or unspecified role ${role}`);
+            string msg = string `Cannot encode v0.3 message: unrecognized or unspecified role ${role}`;
+            return error A2AInternalError(msg, message = msg);
         }
     }
 }
 
 # + state - the v0.3 wire state string (e.g. "completed", "input-required")
-# + return - the equivalent v1.0 TaskState, or an error if unrecognized
+# + return - the equivalent v1.0 TaskState, or an InvalidAgentResponseError
+#            if the agent sent a state this library doesn't recognize
 isolated function mapV03State(string state) returns TaskState|error {
     match state {
         "submitted" => {
@@ -165,7 +169,8 @@ isolated function mapV03State(string state) returns TaskState|error {
             return TASK_STATE_AUTH_REQUIRED;
         }
         _ => {
-            return error(string `Unrecognized v0.3 task state: ${state}`);
+            string msg = string `Unrecognized v0.3 task state: ${state}`;
+            return error InvalidAgentResponseError(msg, message = msg, code = -32006);
         }
     }
 }
@@ -177,7 +182,10 @@ isolated function mapV03State(string state) returns TaskState|error {
 # fromBase64, which errors on malformed input rather than silently mangling it.
 #
 # + partJson - the raw v0.3 Part JSON
-# + return - the equivalent v1.0 Part, or an error if malformed/unrecognized
+# + return - the equivalent v1.0 Part; an InvalidAgentResponseError if the
+#            agent sent an unrecognized `kind` or a file part with neither
+#            `bytes` nor `uri`; or the underlying clone/decode error for
+#            any other malformed shape
 isolated function parseV03Part(json partJson) returns Part|error {
     map<json> m = check partJson.ensureType();
     string kind = check m["kind"].ensureType();
@@ -201,7 +209,8 @@ isolated function parseV03Part(json partJson) returns Part|error {
             } else if file.hasKey("uri") {
                 v1Shape["url"] = file["uri"];
             } else {
-                return error("v0.3 FilePart.file has neither bytes nor uri");
+                string msg = "v0.3 FilePart.file has neither bytes nor uri";
+                return error InvalidAgentResponseError(msg, message = msg, code = -32006);
             }
             if file.hasKey("name") {
                 v1Shape["filename"] = file["name"];
@@ -213,7 +222,8 @@ isolated function parseV03Part(json partJson) returns Part|error {
             }
         }
         _ => {
-            return error(string `Unrecognized v0.3 Part kind: ${kind}`);
+            string msg = string `Unrecognized v0.3 Part kind: ${kind}`;
+            return error InvalidAgentResponseError(msg, message = msg, code = -32006);
         }
     }
 
@@ -346,8 +356,9 @@ isolated function parseV03Task(json taskJson) returns Task|error {
 # wire shape, the mirror image of parseV03Part.
 #
 # + part - the outbound Part, in v1.0 field-presence-discriminated shape
-# + return - the equivalent v0.3 Part JSON, or an error if none of
-#            text/raw/url/data is actually set
+# + return - the equivalent v0.3 Part JSON, or an A2AInternalError — a
+#            caller-side mistake — if none of text/raw/url/data is
+#            actually set
 isolated function encodeV03Part(Part part) returns json|error {
     map<json> result = {};
     string? partText = part?.text;
@@ -385,7 +396,8 @@ isolated function encodeV03Part(Part part) returns json|error {
         result["kind"] = "data";
         result["data"] = data;
     } else {
-        return error("Cannot encode v0.3 Part: none of text, raw, url, or data is set");
+        string msg = "Cannot encode v0.3 Part: none of text, raw, url, or data is set";
+        return error A2AInternalError(msg, message = msg);
     }
     map<json>? partMetadata = part?.metadata;
     if partMetadata is map<json> {
@@ -485,7 +497,9 @@ isolated function encodeV03SendConfiguration(SendMessageConfiguration config) re
 # kind-tagged (unlike v1.0's {"task":...}/{"message":...} wrapper).
 #
 # + result - the raw JSON-RPC result field
-# + return - the equivalent Task or Message, or an error
+# + return - the equivalent Task or Message; an InvalidAgentResponseError if
+#            the agent sent an unrecognized `kind`; or the underlying
+#            clone/decode error for any other malformed shape
 isolated function decodeV03SendResult(json result) returns Task|Message|error {
     map<json> m = check result.ensureType();
     string kind = check m["kind"].ensureType();
@@ -497,7 +511,8 @@ isolated function decodeV03SendResult(json result) returns Task|Message|error {
             return parseV03Message(result);
         }
         _ => {
-            return error(string `Unrecognized v0.3 sendMessage result kind: ${kind}`);
+            string msg = string `Unrecognized v0.3 sendMessage result kind: ${kind}`;
+            return error InvalidAgentResponseError(msg, message = msg, code = -32006);
         }
     }
 }
@@ -506,7 +521,9 @@ isolated function decodeV03SendResult(json result) returns Task|Message|error {
 # StreamResponse shape v1.0 streams already produce.
 #
 # + result - the raw JSON-RPC result field for one SSE event
-# + return - the equivalent StreamResponse, or an error
+# + return - the equivalent StreamResponse; an InvalidAgentResponseError if
+#            the agent sent an unrecognized `kind`; or the underlying
+#            clone/decode error for any other malformed shape
 isolated function decodeV03StreamEvent(json result) returns StreamResponse|error {
     map<json> m = check result.ensureType();
     string kind = check m["kind"].ensureType();
@@ -556,7 +573,8 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
             return {artifactUpdate: event};
         }
         _ => {
-            return error(string `Unrecognized v0.3 stream event kind: ${kind}`);
+            string msg = string `Unrecognized v0.3 stream event kind: ${kind}`;
+            return error InvalidAgentResponseError(msg, message = msg, code = -32006);
         }
     }
 }
