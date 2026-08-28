@@ -75,7 +75,8 @@ isolated function buildSendMessageParams(
 #
 # + result - the raw result payload
 # + mode - the wire dialect this client speaks
-# + return - the Task or Message the agent replied with, or an error
+# + return - the Task or Message the agent replied with, or an
+#            InvalidAgentResponseError if it doesn't match the expected shape
 isolated function decodeSendMessageResult(json result, ProtocolMode mode) returns Task|Message|error {
     if mode == "V0_3" {
         return decodeV03SendResult(result);
@@ -83,7 +84,14 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
 
     // The wire response wraps the payload — {"task": {...}} or
     // {"message": {...}} — rather than returning either one flat.
-    SendMessageResult wrapped = check (check decodeRawBytesFromWire(result)).cloneWithType(SendMessageResult);
+    json|error rewired = decodeRawBytesFromWire(result);
+    if rewired is error {
+        return invalidAgentResponse(string `sendMessage response could not be decoded: ${rewired.message()}`);
+    }
+    SendMessageResult|error wrapped = rewired.cloneWithType(SendMessageResult);
+    if wrapped is error {
+        return invalidAgentResponse(string `sendMessage response did not match the expected shape: ${wrapped.message()}`);
+    }
     Task? maybeTask = wrapped?.task;
     Message? maybeMessage = wrapped?.message;
 
@@ -94,9 +102,7 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
     // stops a non-conforming server from sending both. Rather than
     // silently preferring one, treat it as the malformed response it is.
     if maybeTask is Task && maybeMessage is Message {
-        return error InvalidAgentResponseError(
-            "Response contained both a task and a message"
-        );
+        return invalidAgentResponse("Response contained both a task and a message");
     }
     if maybeTask is Task {
         return maybeTask;
@@ -104,9 +110,7 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
     if maybeMessage is Message {
         return maybeMessage;
     }
-    return error InvalidAgentResponseError(
-        "Response contained neither a task nor a message"
-    );
+    return invalidAgentResponse("Response contained neither a task nor a message");
 }
 
 # Decodes a response whose payload is a bare Task. Shared by getTask and
@@ -114,11 +118,21 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
 #
 # + result - the raw result payload
 # + mode - the wire dialect this client speaks
-# + return - the decoded Task, or an error
+# + return - the decoded Task, or an InvalidAgentResponseError if it
+#            doesn't match the expected shape
 isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|error {
-    return mode == "V0_3"
-        ? parseV03Task(result)
-        : (check decodeRawBytesFromWire(result)).cloneWithType(Task);
+    if mode == "V0_3" {
+        return parseV03Task(result);
+    }
+    json|error rewired = decodeRawBytesFromWire(result);
+    if rewired is error {
+        return invalidAgentResponse(string `Task response could not be decoded: ${rewired.message()}`);
+    }
+    Task|error decoded = rewired.cloneWithType(Task);
+    if decoded is error {
+        return invalidAgentResponse(string `Task response did not match the expected shape: ${decoded.message()}`);
+    }
+    return decoded;
 }
 
 # + taskId - the task identifier
@@ -282,9 +296,18 @@ isolated function buildListTasksParams(
 }
 
 # + result - the raw result payload
-# + return - the decoded page of tasks, or an error
+# + return - the decoded page of tasks, or an InvalidAgentResponseError if
+#            it doesn't match the expected shape
 isolated function decodeListTasksResult(json result) returns ListTasksResult|error {
-    return (check decodeRawBytesFromWire(result)).cloneWithType(ListTasksResult);
+    json|error rewired = decodeRawBytesFromWire(result);
+    if rewired is error {
+        return invalidAgentResponse(string `ListTasks response could not be decoded: ${rewired.message()}`);
+    }
+    ListTasksResult|error decoded = rewired.cloneWithType(ListTasksResult);
+    if decoded is error {
+        return invalidAgentResponse(string `ListTasks response did not match the expected shape: ${decoded.message()}`);
+    }
+    return decoded;
 }
 
 # + config - the webhook configuration to register
@@ -324,11 +347,17 @@ isolated function buildPushNotificationConfigRefParams(
 
 # + result - the raw result payload
 # + mode - the wire dialect this client speaks
-# + return - the decoded config, or an error
+# + return - the decoded config, or an InvalidAgentResponseError if it
+#            doesn't match the expected shape
 isolated function decodeTaskPushNotificationConfig(json result, ProtocolMode mode) returns TaskPushNotificationConfig|error {
-    return mode == "V0_3"
-        ? parseV03TaskPushNotificationConfig(result)
-        : result.cloneWithType(TaskPushNotificationConfig);
+    if mode == "V0_3" {
+        return parseV03TaskPushNotificationConfig(result);
+    }
+    TaskPushNotificationConfig|error decoded = result.cloneWithType(TaskPushNotificationConfig);
+    if decoded is error {
+        return invalidAgentResponse(string `TaskPushNotificationConfig response did not match the expected shape: ${decoded.message()}`);
+    }
+    return decoded;
 }
 
 # v0.3's ListTaskPushNotificationConfigParams is {id: <taskId>} only — no
@@ -361,11 +390,18 @@ isolated function buildListTaskPushNotificationConfigsParams(
 
 # + result - the raw result payload
 # + mode - the wire dialect this client speaks
-# + return - the decoded page of configs, or an error
+# + return - the decoded page of configs, or an InvalidAgentResponseError
+#            if it doesn't match the expected shape
 isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode) returns ListTaskPushNotificationConfigsResult|error {
-    return mode == "V0_3"
-        ? parseV03ListTaskPushNotificationConfigsResult(result)
-        : result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    if mode == "V0_3" {
+        return parseV03ListTaskPushNotificationConfigsResult(result);
+    }
+    ListTaskPushNotificationConfigsResult|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    if decoded is error {
+        return invalidAgentResponse(
+            string `ListTaskPushNotificationConfigs response did not match the expected shape: ${decoded.message()}`);
+    }
+    return decoded;
 }
 
 # + effectiveTenant - the per-call override, or the client's default

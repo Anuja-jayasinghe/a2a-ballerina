@@ -556,6 +556,7 @@ public type ListTasksFilter record {|
 
 # Paginated result of a listTasks call.
 public type ListTasksResult record {|
+    # The matching tasks for this page
     Task[] tasks;
     # Opaque cursor for the next page; empty when there are no more results
     string nextPageToken;
@@ -568,7 +569,9 @@ public type ListTasksResult record {|
 
 # Paginated result of a listTaskPushNotificationConfigs call.
 public type ListTaskPushNotificationConfigsResult record {|
+    # The matching configs for this page
     TaskPushNotificationConfig[] configs;
+    # Opaque cursor for the next page; empty when there are no more results
     string nextPageToken;
     json...;
 |};
@@ -622,9 +625,13 @@ public type PasswordOAuthFlow record {|
 # The set of OAuth 2.0 flows an OAuth2SecurityScheme supports. Each is
 # independently optional; a scheme may support one or several.
 public type OAuthFlows record {|
+    # Configuration for the Authorization Code flow
     AuthorizationCodeOAuthFlow? authorizationCode?;
+    # Configuration for the Client Credentials flow
     ClientCredentialsOAuthFlow? clientCredentials?;
+    # Configuration for the Implicit flow
     ImplicitOAuthFlow? implicit?;
+    # Configuration for the Resource Owner Password flow
     PasswordOAuthFlow? password?;
     json...;
 |};
@@ -632,11 +639,13 @@ public type OAuthFlows record {|
 # A security scheme using an API key, per OpenAPI 3.0's Security Scheme
 # Object.
 public type ApiKeySecurityScheme record {|
+    # Human-readable summary of this scheme
     string? description?;
     # Where the API key is sent
     "query"|"header"|"cookie" 'in;
     # The header, query, or cookie parameter name
     string name;
+    # Discriminator; always "apiKey"
     "apiKey" 'type = "apiKey";
     json...;
 |};
@@ -644,11 +653,13 @@ public type ApiKeySecurityScheme record {|
 # A security scheme using HTTP authentication (e.g. Bearer, Basic), per
 # OpenAPI 3.0's Security Scheme Object.
 public type HttpAuthSecurityScheme record {|
+    # Human-readable summary of this scheme
     string? description?;
     # The IANA HTTP Authentication Scheme name, e.g. "Bearer"
     string scheme;
     # Hint for how the bearer token is formatted, e.g. "JWT"
     string? bearerFormat?;
+    # Discriminator; always "http"
     "http" 'type = "http";
     json...;
 |};
@@ -656,11 +667,13 @@ public type HttpAuthSecurityScheme record {|
 # A security scheme using OAuth 2.0, per OpenAPI 3.0's Security Scheme
 # Object.
 public type OAuth2SecurityScheme record {|
+    # Human-readable summary of this scheme
     string? description?;
     # The OAuth 2.0 flows this scheme supports
     OAuthFlows flows;
     # URL to the OAuth2 authorization server's RFC 8414 metadata
     string? oauth2MetadataUrl?;
+    # Discriminator; always "oauth2"
     "oauth2" 'type = "oauth2";
     json...;
 |};
@@ -668,9 +681,11 @@ public type OAuth2SecurityScheme record {|
 # A security scheme using OpenID Connect, per OpenAPI 3.0's Security
 # Scheme Object.
 public type OpenIdConnectSecurityScheme record {|
+    # Human-readable summary of this scheme
     string? description?;
     # The OpenID Connect Discovery URL for the provider's metadata
     string openIdConnectUrl;
+    # Discriminator; always "openIdConnect"
     "openIdConnect" 'type = "openIdConnect";
     json...;
 |};
@@ -678,7 +693,9 @@ public type OpenIdConnectSecurityScheme record {|
 # A security scheme using mutual TLS authentication, per OpenAPI 3.0's
 # Security Scheme Object.
 public type MutualTlsSecurityScheme record {|
+    # Human-readable summary of this scheme
     string? description?;
+    # Discriminator; always "mutualTLS"
     "mutualTLS" 'type = "mutualTLS";
     json...;
 |};
