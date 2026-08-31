@@ -1,6 +1,6 @@
 target/
 .ballerina/
 *.log
-.claude/settings.local.json
+.claude/
 CLAUDE.md
 LEARNING_LOG.md
