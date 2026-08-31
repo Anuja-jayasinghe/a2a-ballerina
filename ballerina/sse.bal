@@ -20,7 +20,7 @@
 // because it constructs StreamResponse/A2AError values directly and
 // neither module can import the root a2a module without creating a
 // cyclic module dependency (the root module already needs to import
-// both for their respective wire types). See LEARNING_LOG.md.
+// both for their respective wire types).
 //
 // A2AStreamGenerator (JSON-RPC/REST, which share an SSE wire shape) and
 // GrpcStreamAdapter (gRPC's per-element analogue - simpler at this layer

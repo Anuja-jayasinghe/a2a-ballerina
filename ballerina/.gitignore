@@ -3,4 +3,3 @@ target/
 *.log
 .claude/
 CLAUDE.md
-LEARNING_LOG.md

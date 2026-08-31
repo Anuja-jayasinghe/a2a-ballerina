@@ -205,12 +205,10 @@ Deliberately deferred to a later phase (not started): `a2a:Listener` and a
 service-object contract for exposing a Ballerina program as an A2A agent, a
 `TaskStore` abstraction, an Agent Card/skills authoring guide, and a push
 notification webhook receiver. See
-[`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) §12.2.
+[`A2A_Technical_Design.md`](https://github.com/Anuja-jayasinghe/a2a-project-resources/blob/main/a2a-ballerina-design/A2A_Technical_Design.md) §12.2.
 
 ## Documentation
 
-- [`docs/A2A_Technical_Design.md`](docs/A2A_Technical_Design.md) — full
-  technical design: data model, client methods, transport layer, error
-  mapping, and the current known-gaps list (§12).
-- [`LEARNING_LOG.md`](LEARNING_LOG.md) — accumulated lessons from building
-  this library.
+- [`A2A_Technical_Design.md`](https://github.com/Anuja-jayasinghe/a2a-project-resources/blob/main/a2a-ballerina-design/A2A_Technical_Design.md) —
+  full technical design: data model, client methods, transport layer,
+  error mapping, and the current known-gaps list (§12).
