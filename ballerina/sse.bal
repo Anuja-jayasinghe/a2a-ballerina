@@ -47,7 +47,7 @@ import ballerina/grpc;
 #             defaults to JSONRPC, preserving every existing caller's
 #             behavior unchanged
 # + return - a stream of decoded StreamResponse values
-isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = "JSONRPC")
+isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = JSONRPC)
         returns stream<StreamResponse, error?>|error {
     stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
     A2aStreamGenerator generator = new (sseStream, mode, binding);
@@ -65,7 +65,7 @@ class A2aStreamGenerator {
     private ProtocolMode mode;
     private TransportBinding binding;
 
-    isolated function init(stream<http:SseEvent, error?> sseStream, ProtocolMode mode = "V1_0", TransportBinding binding = "JSONRPC") {
+    isolated function init(stream<http:SseEvent, error?> sseStream, ProtocolMode mode = "V1_0", TransportBinding binding = JSONRPC) {
         self.sseStream = sseStream;
         self.mode = mode;
         self.binding = binding;
@@ -99,7 +99,7 @@ class A2aStreamGenerator {
             // StreamResponse at all. The JSON-RPC binding has no
             // equivalent (its errors travel inside the envelope), so this
             // check is REST-only.
-            if self.binding == "HTTP+JSON" && chunk.value.'event == "error" {
+            if self.binding == HTTP_JSON && chunk.value.'event == "error" {
                 json|error errBody = data.fromJsonString();
                 self.closed = true;
                 return toA2AErrorFromRest(200, errBody is json ? errBody : ());
@@ -119,7 +119,7 @@ class A2aStreamGenerator {
     }
 
     private isolated function decodeEvent(string data) returns StreamResponse|error {
-        if self.binding == "HTTP+JSON" {
+        if self.binding == HTTP_JSON {
             // REST events carry a bare StreamResponse with no JSON-RPC
             // envelope, unlike the JSON-RPC binding's enveloped events.
             json restEnvelope = check data.fromJsonString();

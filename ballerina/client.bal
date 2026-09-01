@@ -76,7 +76,7 @@ isolated function normalizeLegacyInterfaces(map<json> cardMap) {
     // serviceable entry, and specification section 5.6.4 says a client
     // SHOULD use the main url when it can speak preferredTransport.
     json? preferredJson = cardMap["preferredTransport"];
-    string preferred = preferredJson is string ? preferredJson : "JSONRPC";
+    string preferred = preferredJson is string ? preferredJson : JSONRPC;
     json? urlJson = cardMap["url"];
     if urlJson is string {
         interfaces.push({url: urlJson, protocolBinding: preferred, protocolVersion});
@@ -390,6 +390,13 @@ public isolated function resolveAgentCardCached(
 # never by naming one.
 type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 
+// Named, not public -- same reasoning as TransportBinding itself: these
+// exist so call sites don't repeat the bare string literals, not to give
+// callers a way to name a binding themselves.
+const TransportBinding JSONRPC = "JSONRPC";
+const TransportBinding HTTP_JSON = "HTTP+JSON";
+const TransportBinding GRPC = "GRPC";
+
 # Resolves the whole matched AgentInterface for a preferred binding, not
 # just its url — callers need the interface's own tenant and
 # protocolVersion, which must come from the same entry the url did, not
@@ -416,7 +423,7 @@ type TransportBinding "JSONRPC"|"HTTP+JSON"|"GRPC";
 #            "JSONRPC" callers fall back to it (see primaryUrl)
 isolated function selectInterface(
         AgentCard card,
-        TransportBinding preferredBinding = "JSONRPC") returns AgentInterface|error {
+        TransportBinding preferredBinding = JSONRPC) returns AgentInterface|error {
     foreach AgentInterface iface in card.supportedInterfaces {
         if iface.protocolBinding == preferredBinding {
             return iface;
@@ -436,12 +443,12 @@ isolated function selectInterface(
 # + return - the matching supportedInterfaces entry's url, the legacy url
 #            field if preferredBinding is "JSONRPC" and no such entry
 #            exists, or an A2AInternalError if neither is present
-isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding = "JSONRPC") returns string|error {
+isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding = JSONRPC) returns string|error {
     AgentInterface|error iface = selectInterface(card, preferredBinding);
     if iface is AgentInterface {
         return iface.url;
     }
-    if preferredBinding == "JSONRPC" {
+    if preferredBinding == JSONRPC {
         string? legacyUrl = card?.url;
         if legacyUrl is string {
             return legacyUrl;
@@ -501,7 +508,7 @@ isolated function normalizeGrpcSchemeUrl(string url) returns string {
 isolated function selectBindingFromCard(AgentCard card) returns TransportBinding|error {
     foreach AgentInterface iface in card.supportedInterfaces {
         string declared = iface.protocolBinding;
-        if declared != "JSONRPC" && declared != "HTTP+JSON" && declared != "GRPC" {
+        if declared != JSONRPC && declared != HTTP_JSON && declared != GRPC {
             continue;
         }
         TransportBinding binding = <TransportBinding>declared;
@@ -518,7 +525,7 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
         // the judgement matches exactly what the concrete client will
         // resolve: both go through selectInterface, which takes the first
         // interface declaring that binding.
-        if binding == "JSONRPC" || detectProtocolModeForBinding(card, binding) == "V1_0" {
+        if binding == JSONRPC || detectProtocolModeForBinding(card, binding) == "V1_0" {
             return binding;
         }
     }
@@ -532,7 +539,7 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
     // unreachable while v0.3 cards parsed with an empty list; normalizing
     // their transports makes it reachable, and wrong.
     if card.supportedInterfaces.length() == 0 && card?.url is string {
-        return "JSONRPC";
+        return JSONRPC;
     }
     return error(
         "AgentCard declares no supportedInterfaces entry this library can speak (JSONRPC, HTTP+JSON, or GRPC) and no legacy url field");
@@ -557,10 +564,10 @@ isolated function buildDelegate(
         string? tenant,
         string[] requestedExtensions,
         int maxReconnectAttempts) returns ClientMethods|error {
-    if binding == "HTTP+JSON" {
+    if binding == HTTP_JSON {
         return new RestClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
     }
-    if binding == "GRPC" {
+    if binding == GRPC {
         return new GrpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
     }
     return new JsonRpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);

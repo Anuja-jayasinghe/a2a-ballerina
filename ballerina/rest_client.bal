@@ -211,15 +211,15 @@ public isolated client class RestClient {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
-        string serviceUrl = check primaryUrl(card, "HTTP+JSON");
+        string serviceUrl = check primaryUrl(card, HTTP_JSON);
         string? effectiveTenant = tenant;
         if effectiveTenant is () {
-            AgentInterface|error iface = selectInterface(card, "HTTP+JSON");
+            AgentInterface|error iface = selectInterface(card, HTTP_JSON);
             if iface is AgentInterface {
                 effectiveTenant = iface?.tenant;
             }
         }
-        ProtocolMode detected = detectProtocolModeForBinding(card, "HTTP+JSON");
+        ProtocolMode detected = detectProtocolModeForBinding(card, HTTP_JSON);
         if detected == "V0_3" {
             return error VersionNotSupportedError(
                 "this library does not implement A2A v0.3 over the REST/HTTP+JSON binding; use JsonRpcClient for a v0.3 agent",
@@ -382,7 +382,7 @@ public isolated client class RestClient {
             json|error errBody = resp.getJsonPayload();
             return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());
         }
-        return readSseStream(resp, self.mode, "HTTP+JSON");
+        return readSseStream(resp, self.mode, HTTP_JSON);
     }
 
     # Opens the raw, unwrapped subscribeToTask stream. See

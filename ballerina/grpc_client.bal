@@ -99,15 +99,15 @@ public isolated client class GrpcClient {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
-        string serviceUrl = check primaryUrl(card, "GRPC");
+        string serviceUrl = check primaryUrl(card, GRPC);
         string? effectiveTenant = tenant;
         if effectiveTenant is () {
-            AgentInterface|error iface = selectInterface(card, "GRPC");
+            AgentInterface|error iface = selectInterface(card, GRPC);
             if iface is AgentInterface {
                 effectiveTenant = iface?.tenant;
             }
         }
-        ProtocolMode detected = detectProtocolModeForBinding(card, "GRPC");
+        ProtocolMode detected = detectProtocolModeForBinding(card, GRPC);
         if detected == "V0_3" {
             return error VersionNotSupportedError(
                 "this library does not implement A2A v0.3 over the gRPC binding; use JsonRpcClient for a v0.3 agent",

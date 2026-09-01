@@ -45,7 +45,7 @@ type ProtocolMode "V1_0"|"V0_3";
 #            or the existing index-0/legacy rules if no interface matches
 isolated function detectProtocolModeForBinding(
         AgentCard card,
-        TransportBinding preferredBinding = "JSONRPC") returns ProtocolMode {
+        TransportBinding preferredBinding = JSONRPC) returns ProtocolMode {
     AgentInterface|error iface = selectInterface(card, preferredBinding);
     if iface is AgentInterface {
         string? v = iface?.protocolVersion;

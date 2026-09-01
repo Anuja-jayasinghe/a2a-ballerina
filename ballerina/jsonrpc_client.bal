@@ -97,10 +97,10 @@ public isolated client class JsonRpcClient {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
-        string serviceUrl = check primaryUrl(card, "JSONRPC");
+        string serviceUrl = check primaryUrl(card, JSONRPC);
         string? effectiveTenant = tenant;
         if effectiveTenant is () {
-            AgentInterface|error iface = selectInterface(card, "JSONRPC");
+            AgentInterface|error iface = selectInterface(card, JSONRPC);
             if iface is AgentInterface {
                 effectiveTenant = iface?.tenant;
             }
@@ -113,7 +113,7 @@ public isolated client class JsonRpcClient {
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = headers.clone().cloneReadOnly();
         self.tenant = effectiveTenant;
-        self.mode = detectProtocolModeForBinding(card, "JSONRPC");
+        self.mode = detectProtocolModeForBinding(card, JSONRPC);
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
         self.maxReconnectAttempts = maxReconnectAttempts;
         self.agentCard = card.clone();
@@ -218,7 +218,7 @@ public isolated client class JsonRpcClient {
             );
         }
 
-        return readSseStream(resp, self.mode, "JSONRPC");
+        return readSseStream(resp, self.mode, JSONRPC);
     }
 
     # Opens the raw, unwrapped subscribeToTask stream — the same request
