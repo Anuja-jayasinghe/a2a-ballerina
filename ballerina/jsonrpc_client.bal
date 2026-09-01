@@ -321,10 +321,7 @@ public isolated client class JsonRpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            A2AError) if unknown
-    isolated remote function getTask(
-            string taskId,
-            int? historyLength = (),
-            string? tenant = ()) returns Task|error {
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|error {
         map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("GetTask", params);
         return decodeTaskResult(result, self.mode);

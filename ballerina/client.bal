@@ -436,9 +436,7 @@ isolated function selectInterface(
 # + return - the matching supportedInterfaces entry's url, the legacy url
 #            field if preferredBinding is "JSONRPC" and no such entry
 #            exists, or an A2AInternalError if neither is present
-isolated function primaryUrl(
-        AgentCard card,
-        TransportBinding preferredBinding = "JSONRPC") returns string|error {
+isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding = "JSONRPC") returns string|error {
     AgentInterface|error iface = selectInterface(card, preferredBinding);
     if iface is AgentInterface {
         return iface.url;
@@ -703,10 +701,7 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            A2AError) if unknown
-    isolated remote function getTask(
-            string taskId,
-            int? historyLength = (),
-            string? tenant = ()) returns Task|error {
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|error {
         return self.delegate->getTask(taskId, historyLength, tenant);
     }
 

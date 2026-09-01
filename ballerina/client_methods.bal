@@ -93,10 +93,7 @@ type ClientMethods isolated client object {
     # + historyLength - Maximum messages to include in task.history
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or an error if unknown
-    isolated remote function getTask(
-            string taskId,
-            int? historyLength = (),
-            string? tenant = ()) returns Task|error;
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|error;
 
     # Requests cancellation of an in-progress task.
     #
@@ -123,9 +120,7 @@ type ClientMethods isolated client object {
     # + filter - Optional filter/pagination parameters
     # + tenant - Optional per-call tenant override
     # + return - A page of matching tasks, or an error
-    isolated remote function listTasks(
-            ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|error;
+    isolated remote function listTasks(ListTasksFilter? filter = (), string? tenant = ()) returns ListTasksResult|error;
 
     # Registers a webhook to receive updates for a task.
     #

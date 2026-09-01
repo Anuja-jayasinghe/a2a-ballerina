@@ -407,8 +407,6 @@ isolated function decodeListTaskPushNotificationConfigsResult(json result, Proto
 # + effectiveTenant - the per-call override, or the client's default
 # + mode - the wire dialect this client speaks
 # + return - the parameter map
-isolated function buildGetExtendedAgentCardParams(
-        string? effectiveTenant,
-        ProtocolMode mode) returns map<json> {
+isolated function buildGetExtendedAgentCardParams(string? effectiveTenant, ProtocolMode mode) returns map<json> {
     return applyTenant({}, effectiveTenant, mode);
 }
