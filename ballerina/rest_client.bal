@@ -226,6 +226,10 @@ public isolated client class RestClient {
                 message = "this library does not implement A2A v0.3 over the REST/HTTP+JSON binding; use JsonRpcClient for a v0.3 agent"
             );
         }
+        // http:ClientConfiguration isn't Cloneable (some of its fields
+        // aren't pure data), so a mapping-constructor spread is used
+        // instead of .clone() to shallow-copy it — otherwise this could
+        // mutate the caller's own clientConfig in place.
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
         self.httpClient = check new (serviceUrl, effectiveClientConfig);
         self.defaultHeaders = headers.clone().cloneReadOnly();

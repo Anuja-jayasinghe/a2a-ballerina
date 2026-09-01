@@ -114,6 +114,10 @@ public isolated client class GrpcClient {
                 message = "this library does not implement A2A v0.3 over the gRPC binding; use JsonRpcClient for a v0.3 agent"
             );
         }
+        // http:ClientConfiguration isn't Cloneable (some of its fields
+        // aren't pure data), so a mapping-constructor spread is used
+        // instead of .clone() to shallow-copy it — otherwise this could
+        // mutate the caller's own clientConfig in place.
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
         grpc:ClientConfiguration grpcConfig = projectToGrpcClientConfig(effectiveClientConfig);
         self.grpcStub = check new (normalizeGrpcSchemeUrl(serviceUrl), grpcConfig);
