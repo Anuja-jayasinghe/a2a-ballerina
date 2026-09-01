@@ -26,7 +26,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MUTATIONS_DIR="$REPO_ROOT/scripts/mutations"
-cd "$REPO_ROOT"
+cd "$REPO_ROOT/ballerina"
 
 BAL_CMD="bal"
 if ! command -v bal >/dev/null 2>&1 && command -v bal.bat >/dev/null 2>&1; then
@@ -41,7 +41,7 @@ fi
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
 
-# Applies one mutation's SEARCH -> REPLACE to $REPO_ROOT/$1, failing loudly
+# Applies one mutation's SEARCH -> REPLACE to $REPO_ROOT/ballerina/$1, failing loudly
 # if SEARCH doesn't appear in the file exactly once - the same
 # fail-on-drift discipline scripts/regen-grpc-stub.sh uses, so a mutation
 # silently doing nothing (or hitting the wrong occurrence) is never
@@ -73,7 +73,7 @@ run_one() {
     local FILE DESC SEARCH REPLACE
     # shellcheck disable=SC1090
     source "$mutation_path"
-    local target="$REPO_ROOT/$FILE"
+    local target="$REPO_ROOT/ballerina/$FILE"
 
     echo "=== $id: $DESC ==="
     apply_mutation "$target" "$SEARCH" "$REPLACE"
