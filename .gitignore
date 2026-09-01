@@ -31,3 +31,7 @@ CLAUDE.md
 # Working checklist for org-move conformance work — scaffolding, not a
 # permanent repo artifact. Delete once every item is checked off.
 CONFORMANCE_CHECKLIST.md
+
+# Working checklist for tracking API review comments as they come in —
+# same scaffolding pattern as CONFORMANCE_CHECKLIST.md above.
+API_REVIEW_CHECKLIST.md
