@@ -34,6 +34,16 @@ function testJsonRpcClientConstructsFromUrl() returns error? {
 }
 
 @test:Config {}
+function testJsonRpcClientConnectionFailureWrapsAsA2AInternalError() {
+    // Constructing from a bare URL resolves the AgentCard first (see
+    // resolveAgentCard/fetchAgentCardBody, client.bal), so an unreachable
+    // host fails right here rather than at a later remote call.
+    JsonRpcClient|error result = new ("http://localhost:1");
+    test:assertTrue(result is A2AInternalError,
+            "a real connection failure should surface as a typed A2AInternalError, not a bare error");
+}
+
+@test:Config {}
 function testJsonRpcClientConstructsFromAgentCard() returns error? {
     AgentCard card = check resolveAgentCard(getServerBaseUrl());
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});

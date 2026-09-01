@@ -71,6 +71,26 @@ public type AgentCardKeyProvider isolated function (string kid, string? jku) ret
 # several ways verification failed for any one entry.
 public type AgentCardSignatureError distinct error;
 
+# Wraps any raw error (JSON shape mismatch, invalid UTF-8, malformed
+# base64url, a crypto library failure, a key provider's own error) into
+# this module's single public error type, so nothing but
+# AgentCardSignatureError ever crosses verifyAgentCardSignature's or
+# canonicalizeAgentCardBody's boundary - matching errors.bal's
+# wrapTransportError, but for this module's own error type rather than
+# A2AError, since signature verification is a distinct concern from
+# transport/protocol handling and already had its own dedicated error
+# type before this change.
+#
+# + e - the raw error to wrap
+# + return - `e` unchanged if it is already an AgentCardSignatureError,
+#            otherwise a new AgentCardSignatureError wrapping its message
+isolated function wrapSignatureError(error e) returns AgentCardSignatureError {
+    if e is AgentCardSignatureError {
+        return e;
+    }
+    return error AgentCardSignatureError(string `signature verification failed: ${e.message()}`);
+}
+
 # Verifies at least one signature on a raw AgentCard JSON body, per
 # specification section 8.4.3.
 #
@@ -88,8 +108,12 @@ public type AgentCardSignatureError distinct error;
 # + keyProvider - resolves the public key for a signature's `kid`/`jku`
 # + return - `()` if at least one signature verified, or an
 #            AgentCardSignatureError if none did
-public isolated function verifyAgentCardSignature(json rawCard, AgentCardKeyProvider keyProvider) returns error? {
-    map<json> cardMap = check rawCard.ensureType();
+public isolated function verifyAgentCardSignature(json rawCard, AgentCardKeyProvider keyProvider) returns AgentCardSignatureError? {
+    map<json>|error cardMapResult = rawCard.ensureType();
+    if cardMapResult is error {
+        return wrapSignatureError(cardMapResult);
+    }
+    map<json> cardMap = cardMapResult;
     json signaturesJson = cardMap["signatures"] ?: [];
     json[] signatures = signaturesJson is json[] ? signaturesJson : [];
     if signatures.length() == 0 {
@@ -101,7 +125,7 @@ public isolated function verifyAgentCardSignature(json rawCard, AgentCardKeyProv
     string encodedPayload = encodeBase64Url(payloadBytes);
 
     foreach json entry in signatures {
-        error? result = verifyOneSignatureEntry(entry, encodedPayload, payloadBytes, keyProvider);
+        AgentCardSignatureError? result = verifyOneSignatureEntry(entry, encodedPayload, payloadBytes, keyProvider);
         if result is () {
             return; // spec: verification succeeds if any one signature verifies
         }
@@ -130,8 +154,12 @@ isolated function verifyOneSignatureEntry(
         json entry,
         string encodedPayload,
         byte[] payloadBytes,
-        AgentCardKeyProvider keyProvider) returns error? {
-    map<json> entryMap = check entry.ensureType();
+        AgentCardKeyProvider keyProvider) returns AgentCardSignatureError? {
+    map<json>|error entryMapResult = entry.ensureType();
+    if entryMapResult is error {
+        return wrapSignatureError(entryMapResult);
+    }
+    map<json> entryMap = entryMapResult;
     json? protectedJson = entryMap["protected"];
     json? signatureJson = entryMap["signature"];
     if protectedJson !is string || signatureJson !is string {
@@ -139,9 +167,20 @@ isolated function verifyOneSignatureEntry(
     }
 
     byte[] protectedHeaderBytes = check decodeBase64Url(protectedJson);
-    string protectedHeaderText = check string:fromBytes(protectedHeaderBytes);
-    json protectedHeaderJson = check protectedHeaderText.fromJsonString();
-    map<json> protectedHeader = check protectedHeaderJson.ensureType();
+    string|error protectedHeaderTextResult = string:fromBytes(protectedHeaderBytes);
+    if protectedHeaderTextResult is error {
+        return wrapSignatureError(protectedHeaderTextResult);
+    }
+    string protectedHeaderText = protectedHeaderTextResult;
+    json|error protectedHeaderJsonResult = protectedHeaderText.fromJsonString();
+    if protectedHeaderJsonResult is error {
+        return wrapSignatureError(protectedHeaderJsonResult);
+    }
+    map<json>|error protectedHeaderResult = protectedHeaderJsonResult.ensureType();
+    if protectedHeaderResult is error {
+        return wrapSignatureError(protectedHeaderResult);
+    }
+    map<json> protectedHeader = protectedHeaderResult;
 
     // Per spec 8.4.2 the protected header MUST include alg and kid (typ
     // SHOULD be present but carries no information needed to verify, so
@@ -154,7 +193,11 @@ isolated function verifyOneSignatureEntry(
     json? jkuJson = protectedHeader["jku"];
     string? jku = jkuJson is string ? jkuJson : ();
 
-    crypto:PublicKey publicKey = check keyProvider(kidJson, jku);
+    crypto:PublicKey|error publicKeyResult = keyProvider(kidJson, jku);
+    if publicKeyResult is error {
+        return wrapSignatureError(publicKeyResult);
+    }
+    crypto:PublicKey publicKey = publicKeyResult;
     byte[] signatureBytes = check decodeBase64Url(signatureJson);
 
     // JWS signing input, per RFC 7515 - identical for every serialization
@@ -168,12 +211,18 @@ isolated function verifyOneSignatureEntry(
     byte[] signingInputBytes = signingInput.toBytes();
 
     if algJson == "RS256" {
-        boolean valid = check crypto:verifyRsaSha256Signature(signingInputBytes, signatureBytes, publicKey);
+        boolean|error valid = crypto:verifyRsaSha256Signature(signingInputBytes, signatureBytes, publicKey);
+        if valid is error {
+            return wrapSignatureError(valid);
+        }
         return valid ? () : error AgentCardSignatureError("RS256 signature did not verify");
     }
     if algJson == "ES256" {
         byte[] derSignature = check ecdsaJwsSignatureToDer(signatureBytes);
-        boolean valid = check crypto:verifySha256withEcdsaSignature(signingInputBytes, derSignature, publicKey);
+        boolean|error valid = crypto:verifySha256withEcdsaSignature(signingInputBytes, derSignature, publicKey);
+        if valid is error {
+            return wrapSignatureError(valid);
+        }
         return valid ? () : error AgentCardSignatureError("ES256 signature did not verify");
     }
     return error AgentCardSignatureError(string `unsupported signature algorithm "${algJson}" - only RS256 and ES256 are implemented`);
@@ -192,7 +241,7 @@ isolated function verifyOneSignatureEntry(
 # + rawSignature - the 64-byte raw R‖S signature, as carried in a JWS
 #                   `signature` field
 # + return - the same signature, DER-encoded
-isolated function ecdsaJwsSignatureToDer(byte[] rawSignature) returns byte[]|error {
+isolated function ecdsaJwsSignatureToDer(byte[] rawSignature) returns byte[]|AgentCardSignatureError {
     if rawSignature.length() != 64 {
         return error AgentCardSignatureError(
                 string `ES256 signature must be exactly 64 bytes (raw R‖S), found ${rawSignature.length()}`);
@@ -263,7 +312,7 @@ isolated function encodeBase64Url(byte[] data) returns string {
 # + encoded - the base64url string to decode (unpadded, per RFC 4648 §5)
 # + return - the decoded bytes, or an error if `encoded` isn't valid
 #            base64url
-isolated function decodeBase64Url(string encoded) returns byte[]|error {
+isolated function decodeBase64Url(string encoded) returns byte[]|AgentCardSignatureError {
     string[] pieces = [];
     foreach int i in 0 ..< encoded.length() {
         string c = encoded.substring(i, i + 1);
@@ -284,7 +333,11 @@ isolated function decodeBase64Url(string encoded) returns byte[]|error {
     } else if remainder == 1 {
         return error AgentCardSignatureError("invalid base64url string length");
     }
-    return array:fromBase64(standard);
+    byte[]|error decoded = array:fromBase64(standard);
+    if decoded is error {
+        return wrapSignatureError(decoded);
+    }
+    return decoded;
 }
 
 # The v1.0 `AgentCard` proto message's complete field list (a2a.proto,
@@ -364,8 +417,12 @@ final readonly & string[] AGENT_CARD_V1_FIELDS = [
 #             are excluded either way)
 # + return - the canonical JSON string, or an error if rawCard is not a
 #            JSON object
-public isolated function canonicalizeAgentCardBody(json rawCard) returns string|error {
-    map<json> cardMap = check rawCard.ensureType();
+public isolated function canonicalizeAgentCardBody(json rawCard) returns string|AgentCardSignatureError {
+    map<json>|error cardMapResult = rawCard.ensureType();
+    if cardMapResult is error {
+        return wrapSignatureError(cardMapResult);
+    }
+    map<json> cardMap = cardMapResult;
     map<json> schemaFiltered = {};
     foreach string fieldName in AGENT_CARD_V1_FIELDS {
         if fieldName == "signatures" {

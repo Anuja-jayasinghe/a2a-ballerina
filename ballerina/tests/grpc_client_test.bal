@@ -86,6 +86,26 @@ function testGrpcClientRejectsV03Card() {
             "a card resolving to v0.3 must be rejected with a typed error, since this library implements v0.3 over JSON-RPC only");
 }
 
+# Points the GRPC interface at an unreachable port directly (rather than
+# routing through getServerBaseUrl()'s well-known lookup, per this file's
+# header comment) so the failure this test forces is a real gRPC
+# connection failure, not an HTTP agent-card-resolution failure already
+# covered by testResolveAgentCardUnreachableEndpoint.
+@test:Config {groups: ["grpc"]}
+function testGrpcClientConnectionFailureWrapsAsA2AInternalError() returns error? {
+    AgentCard card = {
+        name: "n", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:1", protocolBinding: "GRPC"}
+        ],
+        skills: []
+    };
+    GrpcClient c = check new (card);
+    Task|error result = c->getTask("task-1");
+    test:assertTrue(result is A2AInternalError,
+            "a real gRPC connection failure should surface as a typed A2AInternalError, not a bare error");
+}
+
 @test:Config {groups: ["grpc"]}
 function testGrpcClientUnaryOperationsRoundTrip() returns error? {
     GrpcClient c = check new (getServerBaseUrl());

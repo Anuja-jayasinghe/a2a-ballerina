@@ -32,6 +32,16 @@ function testRestClientConstructsFromUrl() returns error? {
 }
 
 @test:Config {}
+function testRestClientConnectionFailureWrapsAsA2AInternalError() {
+    // Constructing from a bare URL resolves the AgentCard first (see
+    // resolveAgentCard/fetchAgentCardBody, client.bal), so an unreachable
+    // host fails right here rather than at a later remote call.
+    RestClient|error result = new ("http://localhost:1");
+    test:assertTrue(result is A2AInternalError,
+            "a real connection failure should surface as a typed A2AInternalError, not a bare error");
+}
+
+@test:Config {}
 function testRestClientConstructsFromAgentCard() returns error? {
     AgentCard card = check resolveAgentCard(getServerBaseUrl());
     setNextRestResponse({task: defaultTaskJson()});

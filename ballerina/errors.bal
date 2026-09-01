@@ -69,8 +69,35 @@ public type A2AInternalError distinct A2AError;
 #
 # + message - what specifically failed to parse
 # + return - a typed InvalidAgentResponseError
-isolated function invalidAgentResponse(string message) returns error {
+isolated function invalidAgentResponse(string message) returns InvalidAgentResponseError {
     return error InvalidAgentResponseError(message, message = message, code = -32006);
+}
+
+# Wraps a raw, untyped error (a connection failure from `ballerina/http`/
+# `ballerina/grpc`, a mime-parsing failure, an unencodable parameter
+# value, ...) into an A2AInternalError, so no public method returns a
+# bare `error` a caller can't pattern-match against. Idempotent: passes
+# an already-typed A2AError straight through unchanged, so this is safe
+# to call at every boundary between this library's internals and its
+# public surface without needing to know in advance whether the error
+# it's given has already been wrapped.
+#
+# Does not use Ballerina's built-in `cause` — confirmed empirically it
+# isn't accepted once an error's detail type has named fields of its own
+# (A2AErrorDetail's `message`/`code`/`data` are), only on the bare
+# default `error` detail shape. The original error's own message is
+# folded into the new one's instead, so the real failure reason is still
+# visible to a caller/log, just not as a structurally separate cause.
+#
+# + e - the raw error to wrap, or an already-typed A2AError to pass through
+# + return - e unchanged if it was already an A2AError, otherwise a new
+#            A2AInternalError carrying e's message
+isolated function wrapTransportError(error e) returns A2AError {
+    if e is A2AError {
+        return e;
+    }
+    string msg = string `Transport-level failure: ${e.message()}`;
+    return error A2AInternalError(msg, message = msg);
 }
 
 # Maps a JSON-RPC error code to its typed A2AError, per the error code

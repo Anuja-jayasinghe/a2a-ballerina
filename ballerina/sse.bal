@@ -48,8 +48,11 @@ import ballerina/grpc;
 #             behavior unchanged
 # + return - a stream of decoded StreamResponse values
 isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = JSONRPC)
-        returns stream<StreamResponse, error?>|error {
-    stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
+        returns stream<StreamResponse, error?>|A2AError {
+    stream<http:SseEvent, error?>|error sseStream = resp.getSseEventStream();
+    if sseStream is error {
+        return wrapTransportError(sseStream);
+    }
     A2aStreamGenerator generator = new (sseStream, mode, binding);
     stream<StreamResponse, error?> result = new (generator);
     return result;
@@ -328,13 +331,13 @@ isolated function wrapReconnecting(
         stream<StreamResponse, error?> rawStream,
         StreamReconnectable owner,
         int maxReconnectAttempts,
-        string? tenant) returns stream<StreamResponse, error?>|error {
+        string? tenant) returns stream<StreamResponse, error?>|A2AError {
     if maxReconnectAttempts <= 0 {
         return rawStream;
     }
     record {| StreamResponse value; |}|error? peeked = rawStream.next();
     if peeked is error {
-        return peeked;
+        return wrapTransportError(peeked);
     }
     if peeked is () {
         stream<StreamResponse, error?> wrapped =

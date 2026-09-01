@@ -84,16 +84,17 @@ public isolated client class JsonRpcClient {
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection; 0 (the
     #                          default) surfaces a dropped stream's error
     #                          immediately
-    # + return - an error from resolveAgentCard, from URL derivation when
-    #            the card declares no JSONRPC interface and no legacy url,
-    #            or if the underlying http:Client cannot be created
+    # + return - a typed A2AError: from resolveAgentCard, from URL
+    #            derivation when the card declares no JSONRPC interface
+    #            and no legacy url, or an A2AInternalError if the
+    #            underlying http:Client cannot be created
     public isolated function init(
             AgentCard|string agent,
             http:ClientConfiguration clientConfig = {},
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns error? {
+            int maxReconnectAttempts = 0) returns A2AError? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -110,7 +111,11 @@ public isolated client class JsonRpcClient {
         // instead of .clone() to shallow-copy it — otherwise this could
         // mutate the caller's own clientConfig in place.
         http:ClientConfiguration effectiveClientConfig = {...clientConfig};
-        self.httpClient = check new (serviceUrl, effectiveClientConfig);
+        http:Client|error newHttpClient = new (serviceUrl, effectiveClientConfig);
+        if newHttpClient is error {
+            return wrapTransportError(newHttpClient);
+        }
+        self.httpClient = newHttpClient;
         self.defaultHeaders = headers.clone().cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detectProtocolModeForBinding(card, JSONRPC);
@@ -145,22 +150,31 @@ public isolated client class JsonRpcClient {
     # + params - the method parameters
     # + return - the unwrapped result; a typed A2AError for a JSON-RPC-level
     #            failure (an `error` object in the response, or a response
-    #            with neither `result` nor `error`); or the underlying
-    #            http/mime/clone error, unwrapped, for a connection failure
-    #            or a response that doesn't parse as JSON-RPC at all
-    private isolated function rpcCall(string method, map<json> params) returns json|error {
+    #            with neither `result` nor `error`), or a connection
+    #            failure or a response that doesn't parse as JSON-RPC at
+    #            all (wrapped as A2AInternalError)
+    private isolated function rpcCall(string method, map<json> params) returns json|A2AError {
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
             method: wireMethod,
             params: params
         };
-        http:Response resp = check self.httpClient->post(
+        http:Response|error rawResp = self.httpClient->post(
             "", req.toJson(), self.buildHeaders()
         );
-        json body = check resp.getJsonPayload();
-        transport:JsonRpcResponse rpcResp =
-            check body.cloneWithType(transport:JsonRpcResponse);
+        if rawResp is error {
+            return wrapTransportError(rawResp);
+        }
+        http:Response resp = rawResp;
+        json|error body = resp.getJsonPayload();
+        if body is error {
+            return wrapTransportError(body);
+        }
+        transport:JsonRpcResponse|error rpcResp = body.cloneWithType(transport:JsonRpcResponse);
+        if rpcResp is error {
+            return wrapTransportError(rpcResp);
+        }
         transport:JsonRpcError? rpcErr = rpcResp?.'error;
         if rpcErr is transport:JsonRpcError {
             return toA2AError(rpcErr);
@@ -179,8 +193,8 @@ public isolated client class JsonRpcClient {
     #
     # + method - the method name
     # + params - the method parameters
-    # + return - a stream of StreamResponse values, or an error
-    private isolated function openEventStream(string method, map<json> params) returns stream<StreamResponse, error?>|error {
+    # + return - a stream of StreamResponse values, or a typed A2AError
+    private isolated function openEventStream(string method, map<json> params) returns stream<StreamResponse, error?>|A2AError {
         string wireMethod = self.mode == "V0_3" ? v03MethodName(method) : method;
         transport:JsonRpcRequest req = {
             id: uuid:createType4AsString(),
@@ -189,9 +203,13 @@ public isolated client class JsonRpcClient {
         };
         map<string> headers = self.buildHeaders();
         headers["Accept"] = "text/event-stream";
-        http:Response resp = check self.httpClient->post(
+        http:Response|error rawResp = self.httpClient->post(
             "", req.toJson(), headers
         );
+        if rawResp is error {
+            return wrapTransportError(rawResp);
+        }
+        http:Response resp = rawResp;
         if resp.statusCode != 200 {
             return error A2AInternalError(
                 string `Stream request failed with HTTP ${resp.statusCode}`,
@@ -206,9 +224,14 @@ public isolated client class JsonRpcClient {
         // surfacing the actual JSON-RPC error underneath. Detect that case
         // first and route it through the same error mapping as a unary call.
         if !resp.getContentType().startsWith("text/event-stream") {
-            json body = check resp.getJsonPayload();
-            transport:JsonRpcResponse rpcResp =
-                check body.cloneWithType(transport:JsonRpcResponse);
+            json|error body = resp.getJsonPayload();
+            if body is error {
+                return wrapTransportError(body);
+            }
+            transport:JsonRpcResponse|error rpcResp = body.cloneWithType(transport:JsonRpcResponse);
+            if rpcResp is error {
+                return wrapTransportError(rpcResp);
+            }
             transport:JsonRpcError? rpcErr = rpcResp?.'error;
             if rpcErr is transport:JsonRpcError {
                 return toA2AError(rpcErr);
@@ -235,7 +258,7 @@ public isolated client class JsonRpcClient {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or an error
-    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|error {
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
         map<json> params = buildSubscribeToTaskParams(taskId, tenant ?: self.tenant, self.mode);
         return self.openEventStream("SubscribeToTask", params);
     }
@@ -255,7 +278,7 @@ public isolated client class JsonRpcClient {
             Message message,
             SendMessageConfiguration? config,
             string? tenant,
-            map<json>? metadata) returns Task|Message|error {
+            map<json>? metadata) returns Task|Message|A2AError {
         map<json> params = check buildSendMessageParams(
                 message, config, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("SendMessage", params);
@@ -275,7 +298,7 @@ public isolated client class JsonRpcClient {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|error {
+            map<json>? metadata = ()) returns Task|Message|A2AError {
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
@@ -295,7 +318,7 @@ public isolated client class JsonRpcClient {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|error {
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|A2AError {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -321,7 +344,7 @@ public isolated client class JsonRpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            A2AError) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|error {
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|A2AError {
         map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("GetTask", params);
         return decodeTaskResult(result, self.mode);
@@ -337,7 +360,7 @@ public isolated client class JsonRpcClient {
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
-            string? tenant = ()) returns Task|error {
+            string? tenant = ()) returns Task|A2AError {
         map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("CancelTask", params);
         return decodeTaskResult(result, self.mode);
@@ -355,7 +378,7 @@ public isolated client class JsonRpcClient {
     # + return - A stream of StreamResponse values, or a typed A2AError
     isolated remote function subscribeToTask(
             string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|error {
+            string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -384,7 +407,7 @@ public isolated client class JsonRpcClient {
     #            or another typed A2AError
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|error {
+            string? tenant = ()) returns ListTasksResult|A2AError {
         check guardListTasksSupported(self.mode);
         map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
         json result = check self.rpcCall("ListTasks", params);
@@ -399,7 +422,7 @@ public isolated client class JsonRpcClient {
     #            PushNotificationNotSupportedError (or other typed A2AError)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|error {
+            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -423,7 +446,7 @@ public isolated client class JsonRpcClient {
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|error {
+            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -449,7 +472,7 @@ public isolated client class JsonRpcClient {
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|error {
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|A2AError {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -479,7 +502,7 @@ public isolated client class JsonRpcClient {
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns error? {
+            string? tenant = ()) returns A2AError? {
         map<json> params = buildPushNotificationConfigRefParams(
                 taskId, id, tenant ?: self.tenant, self.mode);
         json _ = check self.rpcCall("DeleteTaskPushNotificationConfig", params);
@@ -490,7 +513,7 @@ public isolated client class JsonRpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or a typed A2AError
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|error {
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|A2AError {
         lock {
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {
