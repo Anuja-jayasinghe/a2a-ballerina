@@ -29,9 +29,9 @@ generates.
 ## Post-processing applied to the generated stub
 
 The vendored proto above is fed to `bal grpc` unchanged, but the file it
-emits (`a2a/modules/grpcstub/a2a_pb.bal`) gets two scripted, asserted
+emits (`ballerina/modules/grpcstub/a2a_pb.bal`) gets two scripted, asserted
 rewrites before it is checked in. Both are applied by
-`a2a/scripts/regen-grpc-stub.sh`, which fails loudly if either stops
+`scripts/regen-grpc-stub.sh`, which fails loudly if either stops
 matching the expected number of occurrences.
 
 1. **`google_protobuf_Value` → `anydata`** (2 occurrences: the `Part.data`
@@ -54,7 +54,7 @@ matching the expected number of occurrences.
    `"Failed to frame message: ... because fileDescriptor is null"`.
 
 `A2A_DESCRIPTOR_MAP` and the `google/protobuf/struct.proto` descriptor it
-carries live in `a2a/modules/grpcstub/wellknown_desc.bal`, a **hand-maintained**
+carries live in `ballerina/modules/grpcstub/wellknown_desc.bal`, a **hand-maintained**
 companion file that the regeneration script neither generates nor overwrites.
 That file documents the failure mode and the descriptor's own provenance in
 full. It tracks the protobuf well-known types, not the A2A spec, so it does
@@ -62,9 +62,9 @@ not need revisiting when `a2a.proto` moves.
 
 ## Regenerating
 
-Run `a2a/scripts/regen-grpc-stub.sh` from the repo root. It re-derives the
+Run `scripts/regen-grpc-stub.sh` from the repo root. It re-derives the
 stub from this vendored proto and fails (with a diff) if the checked-in
-`a2a/modules/grpcstub/a2a_pb.bal` would change — review the diff, decide
+`ballerina/modules/grpcstub/a2a_pb.bal` would change — review the diff, decide
 whether it's expected (spec moved) or a regression, and re-run with
 `--apply` to accept it.
 
