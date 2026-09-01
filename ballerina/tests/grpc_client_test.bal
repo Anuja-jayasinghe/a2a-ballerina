@@ -151,9 +151,9 @@ function testGrpcClientConstructsWithOAuth2ClientCredentialsAuth() returns error
 }
 
 @test:Config {groups: ["grpc"]}
-function testGrpcClientSatisfiesAgentClient() returns error? {
+function testGrpcClientSatisfiesClientMethods() returns error? {
     setNextGrpcResponse(grpcTaskResponse("task-1"));
-    AgentClient c = check new GrpcClient(getServerBaseUrl());
+    ClientMethods c = check new GrpcClient(getServerBaseUrl());
     Task t = check c->getTask("task-1");
-    test:assertEquals(t.id, "task-1", "a GrpcClient must be usable through the AgentClient interface type");
+    test:assertEquals(t.id, "task-1", "a GrpcClient must be usable through the ClientMethods shape");
 }

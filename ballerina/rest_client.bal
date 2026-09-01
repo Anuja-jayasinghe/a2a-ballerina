@@ -160,11 +160,11 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 # construction rather than at the first call. Use `JsonRpcClient` for a v0.3
 # agent. See issue #31.
 #
-# See `AgentClient`'s doc comment for this type's error contract: the
+# See `ClientMethods`'s doc comment for this type's error contract: the
 # A2AError subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 public isolated client class RestClient {
-    *AgentClient;
+    *ClientMethods;
 
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;

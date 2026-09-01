@@ -18,20 +18,27 @@
 // transport binding it speaks.
 
 # The client-side A2A operation set (specification section 9.4), declared
-# once and implemented by every client type in this module.
+# once here and mixed into every client type in this module via `*ClientMethods;`,
+# instead of repeating all eleven signatures four times.
 #
 # `JsonRpcClient`, `RestClient`, and `GrpcClient` each implement it over
 # exactly one transport binding. `Client` implements it too, by resolving
 # an Agent Card, picking the binding the card prefers, and delegating.
 #
-# Code that does not care which binding it is talking over should be
-# written against this type — it works identically whether it holds the
-# auto-detecting `Client` or a concrete client constructed directly:
-#
-# ```ballerina
-# a2a:AgentClient agent = check new a2a:Client(url);   // card decides
-# a2a:AgentClient agent = check new a2a:GrpcClient(url); // caller decides
-# ```
+# **Not public, deliberately.** Ballerina object types are structurally
+# typed: a caller who wants to write binding-agnostic code across two or
+# more of this library's client types does not need this library to
+# export a named interface for that — they can declare their own local
+# object type covering whichever methods they actually use, and any of
+# `Client`/`RestClient`/`JsonRpcClient`/`GrpcClient` satisfies it
+# automatically, with no dependency on this type. Confirmed directly: a
+# scratch package assigning a real `RestClient` to a locally-declared
+# type with a matching `getTask` signature compiles with no reference to
+# this type at all. Exporting it would only have saved a caller from
+# writing that one-time local declaration themselves — not enabled
+# anything otherwise impossible — and no real caller (internal test
+# aside) has needed it. Revisit only if that changes: adding `public`
+# back later is additive, not breaking; the reverse would not be.
 #
 # **Error contract: every method below returns a bare `error`, not a
 # narrowed A2AError union — the `+ return` doc on each names the specific
@@ -50,23 +57,7 @@
 # apart from a transport failure must pattern-match on the concrete
 # type (`result is a2a:TaskNotFoundError`, etc.) rather than assume the
 # error is always one of errors.bal's named types.
-#
-# **Stability note: implemented by this library only, not a stable
-# extension point for external implementors.** It is a public, syntactically
-# implementable object type — nothing stops a caller writing their own
-# `AgentClient`, and holding one behind this type (as above) is exactly
-# the supported way to accept any of this library's four client types
-# interchangeably. What is *not* promised is that this method set stays
-# fixed forever: a genuinely useful per-call addition (timeout, extra
-# headers, tracing context — none of which the A2A specification defines,
-# and none of which this library currently has a way to plumb through)
-# would need a new parameter on some or all of these eleven methods, and
-# adding one to a client object type is a breaking change for anyone who
-# implemented it themselves. Held open deliberately rather than closed
-# off with a speculative parameter nobody has asked for yet — see the
-# design plan's discussion of per-call context for the tradeoff this
-# balances.
-public type AgentClient isolated client object {
+type ClientMethods isolated client object {
 
     # Sends a message to the remote agent.
     #

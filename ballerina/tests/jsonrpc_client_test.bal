@@ -173,12 +173,12 @@ function testJsonRpcClientSpeaksV03Dialect() returns error? {
             "a v0.3 card must produce v0.3 wire method names through this class");
 }
 
-# AgentClient is the point of the split: binding-agnostic code holds the
-# interface, not a concrete class.
+# Confirms JsonRpcClient still satisfies the shared internal ClientMethods
+# shape, not a concrete class.
 @test:Config {}
-function testJsonRpcClientSatisfiesAgentClient() returns error? {
+function testJsonRpcClientSatisfiesClientMethods() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    AgentClient c = check new JsonRpcClient(getServerBaseUrl());
+    ClientMethods c = check new JsonRpcClient(getServerBaseUrl());
     Task|Message result = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
-    test:assertTrue(result is Task, "a JsonRpcClient must be usable through the AgentClient interface type");
+    test:assertTrue(result is Task, "a JsonRpcClient must be usable through the ClientMethods shape");
 }
