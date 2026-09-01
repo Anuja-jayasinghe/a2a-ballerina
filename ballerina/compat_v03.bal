@@ -357,9 +357,13 @@ isolated function parseV03Task(json taskJson) returns Task|error {
 #
 # + part - the outbound Part, in v1.0 field-presence-discriminated shape
 # + return - the equivalent v0.3 Part JSON, or an A2AInternalError — a
-#            caller-side mistake — if none of text/raw/url/data is
-#            actually set
+#            caller-side mistake — if it doesn't have exactly one of
+#            text/raw/url/data set (specification section 4.1.6)
 isolated function encodeV03Part(Part part) returns json|error {
+    int variantCount = countSetPartVariants(part);
+    if variantCount != 1 {
+        return outboundPartVariantError(variantCount);
+    }
     map<json> result = {};
     string? partText = part?.text;
     byte[]? raw = part?.raw;
@@ -395,9 +399,6 @@ isolated function encodeV03Part(Part part) returns json|error {
     } else if data !is () {
         result["kind"] = "data";
         result["data"] = data;
-    } else {
-        string msg = "Cannot encode v0.3 Part: none of text, raw, url, or data is set";
-        return error A2AInternalError(msg, message = msg);
     }
     map<json>? partMetadata = part?.metadata;
     if partMetadata is map<json> {

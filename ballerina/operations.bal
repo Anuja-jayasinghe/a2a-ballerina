@@ -58,7 +58,7 @@ isolated function buildSendMessageParams(
         ProtocolMode mode) returns map<json>|error {
     json messageJson = mode == "V0_3"
         ? check encodeV03Message(message)
-        : encodeRawBytesForWire(message.toJson());
+        : check encodeRawBytesForWire(message.toJson());
     map<json> params = {"message": messageJson};
     if config is SendMessageConfiguration {
         params["configuration"] = mode == "V0_3"

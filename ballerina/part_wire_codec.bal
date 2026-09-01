@@ -40,6 +40,80 @@ isolated function isPartBearingContainerKey(string k) returns boolean {
     return partBearingContainerKeys.indexOf(k) is int;
 }
 
+# Counts how many of text/raw/url/data are actually set on a raw,
+# not-yet-typed Part JSON object. Per specification section 4.1.6,
+# exactly one must be — used by both encodePartsRawField (outbound) and
+# decodePartsRawField (inbound), each of which picks its own error type
+# for a wrong count via outboundPartVariantError/inboundPartVariantError,
+# since one direction is a caller mistake and the other is the agent's.
+#
+# + partMap - one Part-shaped element of a `parts` array, already
+#             confirmed to be a map<json>
+# + return - how many of the four variant fields are non-nil
+isolated function countSetPartVariantsJson(map<json> partMap) returns int {
+    int count = 0;
+    if partMap["text"] !is () {
+        count += 1;
+    }
+    if partMap["raw"] !is () {
+        count += 1;
+    }
+    if partMap["url"] !is () {
+        count += 1;
+    }
+    if partMap["data"] !is () {
+        count += 1;
+    }
+    return count;
+}
+
+# The same count as countSetPartVariantsJson, for an already-typed Part —
+# used by encodeV03Part and the gRPC binding's Part encode/decode, which
+# work with the typed record rather than raw JSON.
+#
+# + part - the Part to check
+# + return - how many of the four variant fields are non-nil
+isolated function countSetPartVariants(Part part) returns int {
+    int count = 0;
+    if part?.text is string {
+        count += 1;
+    }
+    if part?.raw is byte[] {
+        count += 1;
+    }
+    if part?.url is string {
+        count += 1;
+    }
+    if part?.data !is () {
+        count += 1;
+    }
+    return count;
+}
+
+# A caller-constructed Part with other than exactly one variant set is a
+# library-side/caller mistake -- it never reaches the wire. Matches the
+# error type encodeV03Part's own (superseded) zero-set check already
+# used, for consistency.
+#
+# + count - the actual count, for the message
+# + return - a typed A2AInternalError
+isolated function outboundPartVariantError(int count) returns error {
+    string msg = string `Part must have exactly one of text, raw, url, or data set; found ${count}`;
+    return error A2AInternalError(msg, message = msg);
+}
+
+# An agent that sent a Part with other than exactly one variant set
+# violates specification section 4.1.6 -- the agent's fault, not ours,
+# so this uses the same error type every other "the agent's response
+# doesn't parse into what this call expects" case in this library uses.
+#
+# + count - the actual count, for the message
+# + return - a typed InvalidAgentResponseError
+isolated function inboundPartVariantError(int count) returns error {
+    string msg = string `Part must have exactly one of text, raw, url, or data set; found ${count}`;
+    return error InvalidAgentResponseError(msg, message = msg, code = -32006);
+}
+
 # Rewrites the "raw" field of each Part-shaped element of a `parts` array
 # (as produced by Message.parts/Artifact.parts) from the integer-array
 # shape Ballerina's default byte[] serialization produces into a base64
@@ -48,12 +122,19 @@ isolated function isPartBearingContainerKey(string k) returns boolean {
 # data-Part whose arbitrary JSON payload happens to contain a "raw" key is
 # never mistaken for Part.raw.
 #
+# Also validates each Part-shaped element per specification section
+# 4.1.6: exactly one of text/raw/url/data must be set, or this returns an
+# A2AInternalError -- a caller building an outbound Part with zero or
+# more than one set is a mistake on our side of the wire, never the
+# agent's.
+#
 # + partsValue - the json value of a `parts` field; expected to be a
 #                json[] of Part-shaped objects, but tolerates other shapes
 #                by returning them unchanged
 # + return - the same array with every Part.raw integer-array rewritten to
-#            a base64 string
-isolated function encodePartsRawField(json partsValue) returns json {
+#            a base64 string, or an A2AInternalError if a Part-shaped
+#            element doesn't have exactly one of text/raw/url/data set
+isolated function encodePartsRawField(json partsValue) returns json|error {
     if partsValue !is json[] {
         return partsValue;
     }
@@ -62,6 +143,10 @@ isolated function encodePartsRawField(json partsValue) returns json {
         if part !is map<json> {
             result.push(part);
             continue;
+        }
+        int variantCount = countSetPartVariantsJson(part);
+        if variantCount != 1 {
+            return outboundPartVariantError(variantCount);
         }
         map<json> partResult = {};
         foreach [string, json] [pk, pv] in part.entries() {
@@ -83,10 +168,17 @@ isolated function encodePartsRawField(json partsValue) returns json {
 # "raw" field, when it is a base64 string, back into the integer-array
 # shape cloneWithType expects for a byte[] field.
 #
+# Also validates each Part-shaped element per specification section
+# 4.1.6: exactly one of text/raw/url/data must be set, or this returns an
+# InvalidAgentResponseError -- an agent sending zero or more than one is
+# a malformed response, not a caller-side mistake.
+#
 # + partsValue - the json value of a `parts` field
 # + return - the same array with every Part.raw base64 string rewritten to
 #            an integer-array, or an error if a "raw" string on an actual
-#            Part isn't valid base64
+#            Part isn't valid base64, or an InvalidAgentResponseError if
+#            a Part-shaped element doesn't have exactly one of
+#            text/raw/url/data set
 isolated function decodePartsRawField(json partsValue) returns json|error {
     if partsValue !is json[] {
         return partsValue;
@@ -96,6 +188,10 @@ isolated function decodePartsRawField(json partsValue) returns json|error {
         if part !is map<json> {
             result.push(part);
             continue;
+        }
+        int variantCount = countSetPartVariantsJson(part);
+        if variantCount != 1 {
+            return inboundPartVariantError(variantCount);
         }
         map<json> partResult = {};
         foreach [string, json] [pk, pv] in part.entries() {
@@ -131,14 +227,18 @@ isolated function decodePartsRawField(json partsValue) returns json|error {
 # `metadata: {"raw": [1, 2, 3]}`) is passed through completely unchanged
 # instead of being silently mistaken for Part.raw.
 #
+# Also propagates encodePartsRawField's Part-variant validation, since it
+# is now fallible.
+#
 # + value - a json value (or subtree) to walk
 # + return - the same tree with every Part.raw integer-array rewritten to
-#            a base64 string
-isolated function encodeRawBytesForWire(json value) returns json {
+#            a base64 string, or an A2AInternalError if a Part-shaped
+#            element doesn't have exactly one of text/raw/url/data set
+isolated function encodeRawBytesForWire(json value) returns json|error {
     if value is json[] {
         json[] result = [];
         foreach json v in value {
-            result.push(encodeRawBytesForWire(v));
+            result.push(check encodeRawBytesForWire(v));
         }
         return result;
     }
@@ -146,9 +246,9 @@ isolated function encodeRawBytesForWire(json value) returns json {
         map<json> result = {};
         foreach [string, json] [k, v] in value.entries() {
             if k == "parts" {
-                result[k] = encodePartsRawField(v);
+                result[k] = check encodePartsRawField(v);
             } else if isPartBearingContainerKey(k) {
-                result[k] = encodeRawBytesForWire(v);
+                result[k] = check encodeRawBytesForWire(v);
             } else {
                 result[k] = v;
             }

@@ -143,6 +143,34 @@ function testEncodeDecodePartMetadataRoundTrips() returns error? {
 }
 
 @test:Config {groups: ["grpc"]}
+function testEncodeGrpcPartRejectsZeroVariantsSet() {
+    Part empty = {};
+    grpcstub:Part|error result = encodeGrpcPart(empty);
+    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
+}
+
+@test:Config {groups: ["grpc"]}
+function testEncodeGrpcPartRejectsMultipleVariantsSet() {
+    Part ambiguous = {text: "hi", url: "https://example.com/x"};
+    grpcstub:Part|error result = encodeGrpcPart(ambiguous);
+    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcPartRejectsZeroVariantsSet() {
+    grpcstub:Part empty = {};
+    Part|error result = decodeGrpcPart(empty, 0);
+    test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with none of text/raw/url/data set is the agent's fault, not ours");
+}
+
+@test:Config {groups: ["grpc"]}
+function testDecodeGrpcPartRejectsMultipleVariantsSet() {
+    grpcstub:Part ambiguous = {text: "hi", url: "https://example.com/x"};
+    Part|error result = decodeGrpcPart(ambiguous, 0);
+    test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+}
+
+@test:Config {groups: ["grpc"]}
 function testEncodeDecodeMessageRoundTrips() returns error? {
     Message original = {
         messageId: "m1", role: ROLE_USER,
@@ -456,7 +484,7 @@ function testEncodeGrpcRequestGetTask() returns error? {
 @test:Config {groups: ["grpc"]}
 function testEncodeGrpcRequestSendMessageUndoesBase64() returns error? {
     byte[] rawBytes = "hello bytes".toBytes();
-    json messageJson = encodeRawBytesForWire({
+    json messageJson = check encodeRawBytesForWire({
         messageId: "m1", role: "ROLE_USER",
         parts: [{raw: rawBytes.toJson()}]
     }.toJson());
