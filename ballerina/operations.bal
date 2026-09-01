@@ -55,10 +55,14 @@ isolated function buildSendMessageParams(
         SendMessageConfiguration? config,
         map<json>? metadata,
         string? effectiveTenant,
-        ProtocolMode mode) returns map<json>|error {
-    json messageJson = mode == "V0_3"
-        ? check encodeV03Message(message)
+        ProtocolMode mode) returns map<json>|A2AError {
+    json|error messageJsonResult = mode == "V0_3"
+        ? encodeV03Message(message)
         : encodeRawBytesForWire(message.toJson());
+    if messageJsonResult is error {
+        return wrapTransportError(messageJsonResult);
+    }
+    json messageJson = messageJsonResult;
     map<json> params = {"message": messageJson};
     if config is SendMessageConfiguration {
         params["configuration"] = mode == "V0_3"
@@ -77,9 +81,10 @@ isolated function buildSendMessageParams(
 # + mode - the wire dialect this client speaks
 # + return - the Task or Message the agent replied with, or an
 #            InvalidAgentResponseError if it doesn't match the expected shape
-isolated function decodeSendMessageResult(json result, ProtocolMode mode) returns Task|Message|error {
+isolated function decodeSendMessageResult(json result, ProtocolMode mode) returns Task|Message|A2AError {
     if mode == "V0_3" {
-        return decodeV03SendResult(result);
+        Task|Message|error v03Result = decodeV03SendResult(result);
+        return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
 
     // The wire response wraps the payload — {"task": {...}} or
@@ -120,9 +125,10 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
 # + mode - the wire dialect this client speaks
 # + return - the decoded Task, or an InvalidAgentResponseError if it
 #            doesn't match the expected shape
-isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|error {
+isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|A2AError {
     if mode == "V0_3" {
-        return parseV03Task(result);
+        Task|error v03Result = parseV03Task(result);
+        return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
@@ -186,7 +192,7 @@ isolated function buildSubscribeToTaskParams(
 #
 # + mode - the wire dialect this client speaks
 # + return - an error when the dialect is v0.3, otherwise nil
-isolated function guardListTasksSupported(ProtocolMode mode) returns error? {
+isolated function guardListTasksSupported(ProtocolMode mode) returns A2AError? {
     if mode == "V0_3" {
         return error VersionNotSupportedError(
             "ListTasks has no equivalent in A2A protocol v0.3",
@@ -238,7 +244,7 @@ isolated function cardDeniesPushNotifications(AgentCard? card) returns boolean {
 #
 # + operation - the operation name, for the error text (e.g. "subscribeToTask")
 # + return - a typed, client-side UnsupportedOperationError
-isolated function streamingUnsupportedError(string operation) returns error {
+isolated function streamingUnsupportedError(string operation) returns UnsupportedOperationError {
     string message = string `${operation}: AgentCard.capabilities.streaming is false - rejected client-side, no request sent`;
     return error UnsupportedOperationError(message, message = message, code = -32004);
 }
@@ -248,7 +254,7 @@ isolated function streamingUnsupportedError(string operation) returns error {
 #
 # + operation - the operation name, for the error text
 # + return - a typed, client-side PushNotificationNotSupportedError
-isolated function pushNotificationsUnsupportedError(string operation) returns error {
+isolated function pushNotificationsUnsupportedError(string operation) returns PushNotificationNotSupportedError {
     string message = string `${operation}: AgentCard.capabilities.pushNotifications is false - rejected client-side, no request sent`;
     return error PushNotificationNotSupportedError(message, message = message, code = -32003);
 }
@@ -298,7 +304,7 @@ isolated function buildListTasksParams(
 # + result - the raw result payload
 # + return - the decoded page of tasks, or an InvalidAgentResponseError if
 #            it doesn't match the expected shape
-isolated function decodeListTasksResult(json result) returns ListTasksResult|error {
+isolated function decodeListTasksResult(json result) returns ListTasksResult|A2AError {
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `ListTasks response could not be decoded: ${rewired.message()}`);
@@ -317,10 +323,14 @@ isolated function decodeListTasksResult(json result) returns ListTasksResult|err
 isolated function buildCreateTaskPushNotificationConfigParams(
         TaskPushNotificationConfig config,
         string? effectiveTenant,
-        ProtocolMode mode) returns map<json>|error {
-    map<json> params = mode == "V0_3"
-        ? encodeV03TaskPushNotificationConfig(config)
-        : check config.toJson().ensureType();
+        ProtocolMode mode) returns map<json>|A2AError {
+    if mode == "V0_3" {
+        return applyTenant(encodeV03TaskPushNotificationConfig(config), effectiveTenant, mode);
+    }
+    map<json>|error params = config.toJson().ensureType();
+    if params is error {
+        return wrapTransportError(params);
+    }
     return applyTenant(params, effectiveTenant, mode);
 }
 
@@ -349,9 +359,10 @@ isolated function buildPushNotificationConfigRefParams(
 # + mode - the wire dialect this client speaks
 # + return - the decoded config, or an InvalidAgentResponseError if it
 #            doesn't match the expected shape
-isolated function decodeTaskPushNotificationConfig(json result, ProtocolMode mode) returns TaskPushNotificationConfig|error {
+isolated function decodeTaskPushNotificationConfig(json result, ProtocolMode mode) returns TaskPushNotificationConfig|A2AError {
     if mode == "V0_3" {
-        return parseV03TaskPushNotificationConfig(result);
+        TaskPushNotificationConfig|error v03Result = parseV03TaskPushNotificationConfig(result);
+        return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
     TaskPushNotificationConfig|error decoded = result.cloneWithType(TaskPushNotificationConfig);
     if decoded is error {
@@ -392,9 +403,11 @@ isolated function buildListTaskPushNotificationConfigsParams(
 # + mode - the wire dialect this client speaks
 # + return - the decoded page of configs, or an InvalidAgentResponseError
 #            if it doesn't match the expected shape
-isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode) returns ListTaskPushNotificationConfigsResult|error {
+isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode)
+        returns ListTaskPushNotificationConfigsResult|A2AError {
     if mode == "V0_3" {
-        return parseV03ListTaskPushNotificationConfigsResult(result);
+        ListTaskPushNotificationConfigsResult|error v03Result = parseV03ListTaskPushNotificationConfigsResult(result);
+        return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
     ListTaskPushNotificationConfigsResult|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResult);
     if decoded is error {
@@ -407,8 +420,6 @@ isolated function decodeListTaskPushNotificationConfigsResult(json result, Proto
 # + effectiveTenant - the per-call override, or the client's default
 # + mode - the wire dialect this client speaks
 # + return - the parameter map
-isolated function buildGetExtendedAgentCardParams(
-        string? effectiveTenant,
-        ProtocolMode mode) returns map<json> {
+isolated function buildGetExtendedAgentCardParams(string? effectiveTenant, ProtocolMode mode) returns map<json> {
     return applyTenant({}, effectiveTenant, mode);
 }

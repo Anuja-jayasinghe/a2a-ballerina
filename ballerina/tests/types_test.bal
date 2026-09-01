@@ -84,7 +84,7 @@ function testEncodeRawBytesForWireConvertsIntArrayToBase64() returns error? {
     map<json> defaultPart = check defaultParts[0].ensureType();
     test:assertTrue(defaultPart["raw"] is json[], "sanity check: Ballerina's default toJson() must produce an int array for byte[] — if this fails, the underlying Ballerina behavior changed and this whole fix may be unnecessary");
 
-    json fixed = encodeRawBytesForWire(defaultEncoded);
+    json fixed = check encodeRawBytesForWire(defaultEncoded);
     map<json> fixedMap = check fixed.ensureType();
     json[] fixedParts = check fixedMap["parts"].ensureType();
     map<json> fixedPart = check fixedParts[0].ensureType();
@@ -96,7 +96,7 @@ function testDecodeRawBytesFromWireRoundTripsThroughEncodeRawBytesForWire() retu
     byte[] originalBytes = "hello world, some bytes".toBytes();
     Part original = {raw: originalBytes, mediaType: "application/octet-stream"};
     Message container = {messageId: "msg-1", role: ROLE_USER, parts: [original]};
-    json wireForm = encodeRawBytesForWire(container.toJson());
+    json wireForm = check encodeRawBytesForWire(container.toJson());
     json restoredForm = check decodeRawBytesFromWire(wireForm);
     Message decoded = check restoredForm.cloneWithType(Message);
     test:assertEquals(decoded.parts[0]?.raw, originalBytes);
@@ -136,7 +136,7 @@ function testEncodeRawBytesForWireLeavesDataPartRawKeyUntouched() returns error?
     Part dataPart = {data: {"raw": [1, 2, 3], "note": "caller's own data"}, mediaType: "application/json"};
     Message container = {messageId: "msg-1", role: ROLE_USER, parts: [dataPart]};
 
-    json encoded = encodeRawBytesForWire(container.toJson());
+    json encoded = check encodeRawBytesForWire(container.toJson());
     map<json> encodedMap = check encoded.ensureType();
     json[] encodedParts = check encodedMap["parts"].ensureType();
     Part decodedPart = check encodedParts[0].cloneWithType(Part);
@@ -1170,4 +1170,44 @@ function testParseAgentCardSignaturesOnEmptyArray() returns error? {
     AgentCardSignature[] result = check parseAgentCardSignatures(raw);
 
     test:assertEquals(result.length(), 0);
+}
+
+@test:Config {}
+function testEncodeRawBytesForWireRejectsZeroVariantsSet() {
+    Message container = {messageId: "msg-1", role: ROLE_USER, parts: [{}]};
+    json|error result = encodeRawBytesForWire(container.toJson());
+    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
+}
+
+@test:Config {}
+function testEncodeRawBytesForWireRejectsMultipleVariantsSet() {
+    Message container = {
+        messageId: "msg-1",
+        role: ROLE_USER,
+        parts: [{text: "hi", url: "https://example.com/x"}]
+    };
+    json|error result = encodeRawBytesForWire(container.toJson());
+    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireRejectsZeroVariantsSet() {
+    json payload = {
+        messageId: "msg-1",
+        role: "ROLE_AGENT",
+        parts: [{}]
+    };
+    json|error result = decodeRawBytesFromWire(payload);
+    test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with none of text/raw/url/data set is the agent's fault, not ours");
+}
+
+@test:Config {}
+function testDecodeRawBytesFromWireRejectsMultipleVariantsSet() {
+    json payload = {
+        messageId: "msg-1",
+        role: "ROLE_AGENT",
+        parts: [{"text": "hi", "url": "https://example.com/x"}]
+    };
+    json|error result = decodeRawBytesFromWire(payload);
+    test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
 }

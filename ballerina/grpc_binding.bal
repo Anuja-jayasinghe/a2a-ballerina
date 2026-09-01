@@ -155,9 +155,15 @@ isolated function jsonToGrpcStruct(map<json>? j) returns map<anydata> {
 # never should have reached a typed Part value in the first place.
 #
 # + p - the Part to encode
-# + return - the equivalent grpcstub:Part, or an error if p.data cannot be
-#            widened (it always can: json is a strict subtype of anydata)
+# + return - the equivalent grpcstub:Part, or an A2AInternalError if p
+#            doesn't have exactly one of text/raw/url/data set
+#            (specification section 4.1.6) -- a caller-side mistake, not
+#            something the wire ever sees
 isolated function encodeGrpcPart(Part p) returns grpcstub:Part|error {
+    int variantCount = countSetPartVariants(p);
+    if variantCount != 1 {
+        return outboundPartVariantError(variantCount);
+    }
     grpcstub:Part result = {
         metadata: jsonToGrpcStruct(p?.metadata)
     };
@@ -198,13 +204,20 @@ isolated function encodeGrpcPart(Part p) returns grpcstub:Part|error {
 #            google_protobuf_Value -> anydata workaround) holds a runtime
 #            value json cannot represent — see design spec Design decision
 #            5, rule 5, for why this is a real possible failure and not a
-#            defensive check against something that can't happen
+#            defensive check against something that can't happen — or if p
+#            doesn't have exactly one of text/raw/url/data set
+#            (specification section 4.1.6), the agent's fault, not ours
 isolated function decodeGrpcPart(grpcstub:Part p, int partIndex) returns Part|error {
     Part result = {};
     string? text = p?.text;
     byte[]? raw = p?.raw;
     string? url = p?.url;
     anydata? data = p?.data;
+    int variantCount = (text is string ? 1 : 0) + (raw is byte[] ? 1 : 0)
+            + (url is string ? 1 : 0) + (data !is () ? 1 : 0);
+    if variantCount != 1 {
+        return inboundPartVariantError(variantCount);
+    }
     if text is string {
         result.text = text;
     } else if raw is byte[] {
