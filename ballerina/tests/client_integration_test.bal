@@ -198,16 +198,18 @@ function testClientFromCardDoesNotRefetchIt() returns error? {
             "a Client built from a resolved card must hand that card to its delegate rather than fetching a second time");
 }
 
-# Binding-agnostic code holds AgentClient and is handed any of the four.
+# Confirms all three concrete types still satisfy the shared internal
+# ClientMethods shape as the codebase evolves — not a caller-facing
+# capability (ClientMethods isn't public; see client_methods.bal).
 @test:Config {}
-function testAgentClientInterfaceAcceptsEveryImplementation() returns error? {
-    AgentClient viaCommon = check new Client(cardForBinding("JSONRPC"));
-    AgentClient viaJsonRpc = check new JsonRpcClient(getServerBaseUrl());
-    AgentClient viaRest = check new RestClient(getServerBaseUrl());
+function testClientMethodsAcceptsEveryImplementation() returns error? {
+    ClientMethods viaCommon = check new Client(cardForBinding("JSONRPC"));
+    ClientMethods viaJsonRpc = check new JsonRpcClient(getServerBaseUrl());
+    ClientMethods viaRest = check new RestClient(getServerBaseUrl());
 
-    foreach AgentClient _ in [viaCommon, viaJsonRpc, viaRest] {
+    foreach ClientMethods _ in [viaCommon, viaJsonRpc, viaRest] {
         // Holding them in one array is itself the assertion: it only
-        // compiles because all three satisfy the interface type.
+        // compiles because all three satisfy the shared shape.
     }
     test:assertTrue(true);
 }

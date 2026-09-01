@@ -49,11 +49,11 @@ import ballerina/a2a.grpcstub;
 # structurally equivalent gRPC forms. Auth shapes with no gRPC equivalent
 # (OAuth2, JWT) are rejected at construction rather than silently dropped.
 #
-# See `AgentClient`'s doc comment for this type's error contract: the
+# See `ClientMethods`'s doc comment for this type's error contract: the
 # A2AError subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 public isolated client class GrpcClient {
-    *AgentClient;
+    *ClientMethods;
 
     private final grpcstub:A2AServiceClient grpcStub;
     private final map<string> & readonly defaultHeaders;

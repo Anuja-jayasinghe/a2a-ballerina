@@ -44,11 +44,11 @@ import ballerina/a2a.transport;
 # bindings, but `compat_v03.bal` translates the JSON-RPC dialect alone, so
 # `RestClient` and `GrpcClient` reject a v0.3 card. See issue #31.
 #
-# See `AgentClient`'s doc comment for this type's error contract: the
+# See `ClientMethods`'s doc comment for this type's error contract: the
 # A2AError subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 public isolated client class JsonRpcClient {
-    *AgentClient;
+    *ClientMethods;
 
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;

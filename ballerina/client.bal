@@ -558,7 +558,7 @@ isolated function buildDelegate(
         map<string> headers,
         string? tenant,
         string[] requestedExtensions,
-        int maxReconnectAttempts) returns AgentClient|error {
+        int maxReconnectAttempts) returns ClientMethods|error {
     if binding == "HTTP+JSON" {
         return new RestClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
     }
@@ -587,10 +587,15 @@ isolated function buildDelegate(
 # ordering is bypassed. Use this type when the agent's own preference
 # should win, which is the spec's default (section 8.3.2).
 #
-# Since all four types implement `AgentClient`, code that does not care can
-# hold the interface and be handed either.
+# All four client types in this module (this one included) share one
+# method-signature declaration internally (`ClientMethods`, client_methods.bal)
+# rather than repeating all eleven — not part of the public API; Ballerina's
+# structural typing means a caller who wants to write their own code across
+# more than one of these types can declare a local type covering whichever
+# methods they use and hand it any of them, with no dependency on this
+# library exporting a name for that shape.
 #
-# See `AgentClient`'s doc comment for this type's error contract: the
+# See `ClientMethods`'s doc comment for this type's error contract: the
 # A2AError subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 #
@@ -613,9 +618,9 @@ isolated function buildDelegate(
 #   shared pool and gives it a private one, which *cannot* be released. If you
 #   do that, reuse the Client - do not create them per request.
 public isolated client class Client {
-    *AgentClient;
+    *ClientMethods;
 
-    private final AgentClient delegate;
+    private final ClientMethods delegate;
 
     # Creates a client pointed at a remote A2A agent, speaking whichever
     # binding the agent's card prefers.

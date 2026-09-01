@@ -215,9 +215,9 @@ function testRestClientStreams() returns error? {
 }
 
 @test:Config {}
-function testRestClientSatisfiesAgentClient() returns error? {
+function testRestClientSatisfiesClientMethods() returns error? {
     setNextRestResponse({task: defaultTaskJson()});
-    AgentClient c = check new RestClient(getServerBaseUrl());
+    ClientMethods c = check new RestClient(getServerBaseUrl());
     Task|Message result = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
-    test:assertTrue(result is Task, "a RestClient must be usable through the AgentClient interface type");
+    test:assertTrue(result is Task, "a RestClient must be usable through the ClientMethods shape");
 }
