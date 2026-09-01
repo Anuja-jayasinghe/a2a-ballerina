@@ -36,7 +36,7 @@ service /events on sseTestListener {
 # connection — a short-lived listener serves a canned SSE response, a real
 # http:Client fetches it, and the resulting http:Response (including its
 # actual resp.getSseEventStream() call) is fed to readSseStream. Only
-# A2AStreamGenerator was covered by the synthetic-stream tests below;
+# A2aStreamGenerator was covered by the synthetic-stream tests below;
 # readSseStream's own wiring had zero coverage before this test.
 #
 # + return - an error if any HTTP or stream operation fails
@@ -58,7 +58,7 @@ function testReadSseStreamOverRealHttpResponse() returns error? {
 }
 
 // A synthetic SSE source for tests — no real HTTP involved. Feeds a
-// pre-built array of http:SseEvent|error values to an A2AStreamGenerator.
+// pre-built array of http:SseEvent|error values to an A2aStreamGenerator.
 class TestSseSource {
     private (http:SseEvent|error)[] events;
     private int idx = 0;
@@ -80,14 +80,14 @@ class TestSseSource {
     }
 }
 
-isolated function newGenerator((http:SseEvent|error)[] events, ProtocolMode mode = "V1_0") returns A2AStreamGenerator {
+isolated function newGenerator((http:SseEvent|error)[] events, ProtocolMode mode = "V1_0") returns A2aStreamGenerator {
     stream<http:SseEvent, error?> sseStream = new (new TestSseSource(events));
-    return new A2AStreamGenerator(sseStream, mode);
+    return new A2aStreamGenerator(sseStream, mode);
 }
 
 @test:Config {}
-function testA2AStreamGeneratorClosesOnTerminalStatus() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorClosesOnTerminalStatus() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"text":"partial"}]}}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
@@ -114,13 +114,13 @@ function testA2AStreamGeneratorClosesOnTerminalStatus() returns error? {
 #
 # + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testA2AStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns error? {
+function testA2aStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns error? {
     string[] terminal = [
         "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
         "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"
     ];
     foreach string state in terminal {
-        A2AStreamGenerator generator = newGenerator([
+        A2aStreamGenerator generator = newGenerator([
             {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
             {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
         ]);
@@ -139,7 +139,7 @@ function testA2AStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns 
         "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"
     ];
     foreach string state in nonTerminal {
-        A2AStreamGenerator generator = newGenerator([
+        A2aStreamGenerator generator = newGenerator([
             {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"${state}"}}}}`},
             {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_COMPLETED"}}}}`}
         ]);
@@ -151,8 +151,8 @@ function testA2AStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns 
 }
 
 @test:Config {}
-function testA2AStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_INPUT_REQUIRED"}}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
     ]);
@@ -287,8 +287,8 @@ function testWrapReconnectingHandsBackRawStreamWhenBudgetIsZero() returns error?
 }
 
 @test:Config {}
-function testA2AStreamGeneratorSkipsCommentFrames() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorSkipsCommentFrames() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {comment: "keep-alive"},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
     ]);
@@ -298,8 +298,8 @@ function testA2AStreamGeneratorSkipsCommentFrames() returns error? {
 }
 
 @test:Config {}
-function testA2AStreamGeneratorPropagatesUnderlyingStreamErrorBeforeTerminal() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorPropagatesUnderlyingStreamErrorBeforeTerminal() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"artifactUpdate":{"taskId":"task-1","contextId":"ctx-1","artifact":{"artifactId":"art-1","parts":[{"text":"partial"}]}}}}`},
         error("connection reset by peer")
@@ -323,8 +323,8 @@ function testA2AStreamGeneratorPropagatesUnderlyingStreamErrorBeforeTerminal() r
 }
 
 @test:Config {}
-function testA2AStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: "{not valid json"}
     ]);
 
@@ -337,8 +337,8 @@ function testA2AStreamGeneratorPropagatesMalformedJsonAsError() returns error? {
 }
 
 @test:Config {}
-function testA2AStreamGeneratorDecodesV03StatusUpdate() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorDecodesV03StatusUpdate() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"}}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
     ], "V0_3");
@@ -359,8 +359,8 @@ function testA2AStreamGeneratorDecodesV03StatusUpdate() returns error? {
 #
 # + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testA2AStreamGeneratorIgnoresV03FinalFieldOnNonTerminalState() returns error? {
-    A2AStreamGenerator generator = newGenerator([
+function testA2aStreamGeneratorIgnoresV03FinalFieldOnNonTerminalState() returns error? {
+    A2aStreamGenerator generator = newGenerator([
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"working"},"final":true}}`},
         {data: string `{"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","taskId":"task-1","contextId":"ctx-1","status":{"state":"completed"}}}`}
     ], "V0_3");

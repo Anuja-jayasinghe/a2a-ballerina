@@ -22,7 +22,7 @@
 // cyclic module dependency (the root module already needs to import
 // both for their respective wire types).
 //
-// A2AStreamGenerator (JSON-RPC/REST, which share an SSE wire shape) and
+// A2aStreamGenerator (JSON-RPC/REST, which share an SSE wire shape) and
 // GrpcStreamAdapter (gRPC's per-element analogue - simpler at this layer
 // since gRPC has no envelope or mid-stream "error" frame to special-case)
 // are each one binding's raw decoder; ReconnectingStreamGenerator and
@@ -50,7 +50,7 @@ import ballerina/grpc;
 isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = "JSONRPC")
         returns stream<StreamResponse, error?>|error {
     stream<http:SseEvent, error?> sseStream = check resp.getSseEventStream();
-    A2AStreamGenerator generator = new (sseStream, mode, binding);
+    A2aStreamGenerator generator = new (sseStream, mode, binding);
     stream<StreamResponse, error?> result = new (generator);
     return result;
 }
@@ -59,7 +59,7 @@ isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", 
 # into a StreamResponse. Stops once a terminal task status is reached; per
 # design §8.1, a TaskArtifactUpdateEvent never closes the stream, and
 # interrupted states (INPUT_REQUIRED, AUTH_REQUIRED) also do not close it.
-class A2AStreamGenerator {
+class A2aStreamGenerator {
     private stream<http:SseEvent, error?> sseStream;
     private boolean closed = false;
     private ProtocolMode mode;
@@ -378,7 +378,7 @@ isolated function isTerminalEvent(StreamResponse event) returns boolean {
 }
 
 # The gRPC binding's streaming adapter - the per-element analogue of
-# A2AStreamGenerator above for the JSON-RPC/REST bindings. Simpler at the
+# A2aStreamGenerator above for the JSON-RPC/REST bindings. Simpler at the
 # stream layer than either (gRPC has no envelope and no mid-stream
 # "error"-named frame to special-case - a transport error surfaces
 # directly as a grpc:Error from upstream.next()) and more involved at the
