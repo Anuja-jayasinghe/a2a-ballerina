@@ -155,7 +155,7 @@ isolated function jsonToGrpcStruct(map<json>? j) returns map<anydata> {
 # never should have reached a typed Part value in the first place.
 #
 # + p - the Part to encode
-# + return - the equivalent grpcstub:Part, or an A2AInternalError if p
+# + return - the equivalent grpcstub:Part, or an InternalError if p
 #            doesn't have exactly one of text/raw/url/data set
 #            (specification section 4.1.6) -- a caller-side mistake, not
 #            something the wire ever sees
@@ -929,7 +929,7 @@ isolated function decodeGrpcAgentCard(grpcstub:AgentCard c) returns AgentCard|er
 #               same string rpcCall's other branches already key off)
 # + params - the v1.0 params map, pre-base64-undone
 # + return - the typed grpcstub request value for this operation, or
-#            A2AInternalError if operation has no gRPC mapping
+#            InternalError if operation has no gRPC mapping
 isolated function encodeGrpcRequest(string operation, map<json> params) returns anydata|error {
     map<json> undone = check (check decodeRawBytesFromWire(params)).ensureType();
     match operation {
@@ -1070,7 +1070,7 @@ isolated function encodeGrpcRequest(string operation, map<json> params) returns 
             return req;
         }
         _ => {
-            return error A2AInternalError(
+            return error InternalError(
                 string `gRPC binding has no operation mapping for "${operation}"`,
                 message = string `gRPC binding has no operation mapping for "${operation}"`
             );
@@ -1088,7 +1088,7 @@ isolated function encodeGrpcRequest(string operation, map<json> params) returns 
 #
 # + operation - the JSON-RPC-style operation name
 # + response - the typed grpcstub response value returned by the rpc call
-# + return - the equivalent v1.0 json, or A2AInternalError if operation has
+# + return - the equivalent v1.0 json, or InternalError if operation has
 #            no gRPC mapping
 isolated function decodeGrpcResponse(string operation, anydata response) returns json|error {
     match operation {
@@ -1120,7 +1120,7 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
             return card.toJson();
         }
         _ => {
-            return error A2AInternalError(
+            return error InternalError(
                 string `gRPC binding has no response mapping for "${operation}"`,
                 message = string `gRPC binding has no response mapping for "${operation}"`
             );

@@ -17,7 +17,7 @@
 // Stream decoding for the A2A client, across all three bindings.
 //
 // Lives in the root module, not modules/transport/ or modules/grpcstub/,
-// because it constructs StreamResponse/A2AError values directly and
+// because it constructs StreamResponse/Error values directly and
 // neither module can import the root a2a module without creating a
 // cyclic module dependency (the root module already needs to import
 // both for their respective wire types).
@@ -48,7 +48,7 @@ import ballerina/grpc;
 #             behavior unchanged
 # + return - a stream of decoded StreamResponse values
 isolated function readSseStream(http:Response resp, ProtocolMode mode = "V1_0", TransportBinding binding = JSONRPC)
-        returns stream<StreamResponse, error?>|A2AError {
+        returns stream<StreamResponse, error?>|Error {
     stream<http:SseEvent, error?>|error sseStream = resp.getSseEventStream();
     if sseStream is error {
         return wrapTransportError(sseStream);
@@ -331,7 +331,7 @@ isolated function wrapReconnecting(
         stream<StreamResponse, error?> rawStream,
         StreamReconnectable owner,
         int maxReconnectAttempts,
-        string? tenant) returns stream<StreamResponse, error?>|A2AError {
+        string? tenant) returns stream<StreamResponse, error?>|Error {
     if maxReconnectAttempts <= 0 {
         return rawStream;
     }

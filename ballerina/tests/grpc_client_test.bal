@@ -102,8 +102,8 @@ function testGrpcClientConnectionFailureWrapsAsA2AInternalError() returns error?
     };
     GrpcClient c = check new (card);
     Task|error result = c->getTask("task-1");
-    test:assertTrue(result is A2AInternalError,
-            "a real gRPC connection failure should surface as a typed A2AInternalError, not a bare error");
+    test:assertTrue(result is InternalError,
+            "a real gRPC connection failure should surface as a typed InternalError, not a bare error");
 }
 
 @test:Config {groups: ["grpc"]}

@@ -452,7 +452,7 @@ function testEncodeV03PartRejectsEmptyPart() returns error? {
     // rather than silently emitting {"kind":"data","data":null}.
     Part part = {};
     json|error result = encodeV03Part(part);
-    test:assertTrue(result is A2AInternalError, "a Part with none of text/raw/url/data set should be rejected, not encoded as kind:data");
+    test:assertTrue(result is InternalError, "a Part with none of text/raw/url/data set should be rejected, not encoded as kind:data");
 }
 
 @test:Config {}
@@ -461,7 +461,7 @@ function testEncodeV03PartRejectsMultipleVariantsSet() returns error? {
     // silently narrowed to whichever the encoder's priority order picks.
     Part part = {text: "hi", url: "https://example.com/x"};
     json|error result = encodeV03Part(part);
-    test:assertTrue(result is A2AInternalError, "a Part with more than one of text/raw/url/data set should be rejected, not silently narrowed to one");
+    test:assertTrue(result is InternalError, "a Part with more than one of text/raw/url/data set should be rejected, not silently narrowed to one");
 }
 
 @test:Config {}

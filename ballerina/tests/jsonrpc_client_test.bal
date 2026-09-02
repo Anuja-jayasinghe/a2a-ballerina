@@ -39,8 +39,8 @@ function testJsonRpcClientConnectionFailureWrapsAsA2AInternalError() {
     // resolveAgentCard/fetchAgentCardBody, client.bal), so an unreachable
     // host fails right here rather than at a later remote call.
     JsonRpcClient|error result = new ("http://localhost:1");
-    test:assertTrue(result is A2AInternalError,
-            "a real connection failure should surface as a typed A2AInternalError, not a bare error");
+    test:assertTrue(result is InternalError,
+            "a real connection failure should surface as a typed InternalError, not a bare error");
 }
 
 @test:Config {}

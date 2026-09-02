@@ -19,8 +19,8 @@
 import ballerina/a2a.transport;
 import ballerina/grpc;
 
-# Detail attached to every A2AError.
-public type A2AErrorDetail record {|
+# Detail attached to every Error.
+public type ErrorDetail record {|
     # Originating JSON-RPC code, preserved for diagnostics
     int code?;
     # Human-readable error message
@@ -30,32 +30,32 @@ public type A2AErrorDetail record {|
     json...;
 |};
 
-# Base type for every A2A protocol error. Distinct so that `is A2AError`
+# Base type for every A2A protocol error. Distinct so that `is Error`
 # reliably matches any of its subtypes, and each subtype below is in turn
 # distinguishable from its siblings via `is`.
-public type A2AError distinct error<A2AErrorDetail>;
+public type Error distinct error<ErrorDetail>;
 
-# Each specific error derives from A2AError — adding a new one later means
+# Each specific error derives from Error — adding a new one later means
 # adding one line here, nothing else in the codebase changes.
-public type TaskNotFoundError distinct A2AError;
+public type TaskNotFoundError distinct Error;
 
-public type TaskNotCancelableError distinct A2AError;
+public type TaskNotCancelableError distinct Error;
 
-public type UnsupportedOperationError distinct A2AError;
+public type UnsupportedOperationError distinct Error;
 
-public type ContentTypeNotSupportedError distinct A2AError;
+public type ContentTypeNotSupportedError distinct Error;
 
-public type InvalidAgentResponseError distinct A2AError;
+public type InvalidAgentResponseError distinct Error;
 
-public type VersionNotSupportedError distinct A2AError;
+public type VersionNotSupportedError distinct Error;
 
-public type PushNotificationNotSupportedError distinct A2AError;
+public type PushNotificationNotSupportedError distinct Error;
 
-public type ExtendedAgentCardNotConfiguredError distinct A2AError;
+public type ExtendedAgentCardNotConfiguredError distinct Error;
 
-public type ExtensionSupportRequiredError distinct A2AError;
+public type ExtensionSupportRequiredError distinct Error;
 
-public type A2AInternalError distinct A2AError;
+public type InternalError distinct Error;
 
 # Builds a client-side InvalidAgentResponseError with the same JSON-RPC
 # code (-32006) toA2AError/toA2AErrorFromRest/toA2AErrorFromGrpc already
@@ -75,43 +75,43 @@ isolated function invalidAgentResponse(string message) returns InvalidAgentRespo
 
 # Wraps a raw, untyped error (a connection failure from `ballerina/http`/
 # `ballerina/grpc`, a mime-parsing failure, an unencodable parameter
-# value, ...) into an A2AInternalError, so no public method returns a
+# value, ...) into an InternalError, so no public method returns a
 # bare `error` a caller can't pattern-match against. Idempotent: passes
-# an already-typed A2AError straight through unchanged, so this is safe
+# an already-typed Error straight through unchanged, so this is safe
 # to call at every boundary between this library's internals and its
 # public surface without needing to know in advance whether the error
 # it's given has already been wrapped.
 #
 # Does not use Ballerina's built-in `cause` — confirmed empirically it
 # isn't accepted once an error's detail type has named fields of its own
-# (A2AErrorDetail's `message`/`code`/`data` are), only on the bare
+# (ErrorDetail's `message`/`code`/`data` are), only on the bare
 # default `error` detail shape. The original error's own message is
 # folded into the new one's instead, so the real failure reason is still
 # visible to a caller/log, just not as a structurally separate cause.
 #
-# + e - the raw error to wrap, or an already-typed A2AError to pass through
-# + return - e unchanged if it was already an A2AError, otherwise a new
-#            A2AInternalError carrying e's message
-isolated function wrapTransportError(error e) returns A2AError {
-    if e is A2AError {
+# + e - the raw error to wrap, or an already-typed Error to pass through
+# + return - e unchanged if it was already an Error, otherwise a new
+#            InternalError carrying e's message
+isolated function wrapTransportError(error e) returns Error {
+    if e is Error {
         return e;
     }
     string msg = string `Transport-level failure: ${e.message()}`;
-    return error A2AInternalError(msg, message = msg);
+    return error InternalError(msg, message = msg);
 }
 
-# Maps a JSON-RPC error code to its typed A2AError, per the error code
-# table in design doc §4.1. Unrecognised codes map to A2AInternalError
-# with the original code preserved in A2AErrorDetail.code.
+# Maps a JSON-RPC error code to its typed Error, per the error code
+# table in design doc §4.1. Unrecognised codes map to InternalError
+# with the original code preserved in ErrorDetail.code.
 #
 # Lives here rather than in modules/transport/ because it constructs
-# A2AError subtypes directly, and modules/transport/ cannot import the
+# Error subtypes directly, and modules/transport/ cannot import the
 # root a2a module without creating a cyclic module dependency (the root
 # module already imports modules/transport/ for the envelope types).
 #
 # + err - the JSON-RPC error object received on the wire
-# + return - the corresponding typed A2AError
-isolated function toA2AError(transport:JsonRpcError err) returns A2AError {
+# + return - the corresponding typed Error
+isolated function toA2AError(transport:JsonRpcError err) returns Error {
     match err.code {
         -32001 => {
             return error TaskNotFoundError(err.message, message = err.message, code = err.code, data = err?.data);
@@ -141,12 +141,12 @@ isolated function toA2AError(transport:JsonRpcError err) returns A2AError {
             return error VersionNotSupportedError(err.message, message = err.message, code = err.code, data = err?.data);
         }
         _ => {
-            return error A2AInternalError(err.message, message = err.message, code = err.code, data = err?.data);
+            return error InternalError(err.message, message = err.message, code = err.code, data = err?.data);
         }
     }
 }
 
-# Maps a REST binding error response onto the same A2AError hierarchy the
+# Maps a REST binding error response onto the same Error hierarchy the
 # JSON-RPC binding maps onto, so callers handle errors identically
 # regardless of which binding their Client negotiated. HTTP status alone
 # is not sufficient to disambiguate — seven distinct A2A errors all return
@@ -157,10 +157,10 @@ isolated function toA2AError(transport:JsonRpcError err) returns A2AError {
 # + statusCode - the HTTP status code the response carried
 # + body - the parsed JSON error body, if any (absent for e.g. a stream
 #          drop with no body available)
-# + return - the corresponding typed A2AError, with detail.code synthesized
+# + return - the corresponding typed Error, with detail.code synthesized
 #            to the equivalent JSON-RPC code so a caller checking
 #            detail.code sees identical values regardless of binding
-isolated function toA2AErrorFromRest(int statusCode, json? body) returns A2AError {
+isolated function toA2AErrorFromRest(int statusCode, json? body) returns Error {
     string? reason = extractRestErrorReason(body);
     string message = extractRestErrorMessage(body) ?: string `REST request failed with HTTP ${statusCode}`;
     json? data = extractRestErrorMetadata(body);
@@ -195,16 +195,16 @@ isolated function toA2AErrorFromRest(int statusCode, json? body) returns A2AErro
                 return error VersionNotSupportedError(message, message = message, code = -32009, data = data);
             }
             "INVALID_PARAMS" => {
-                return error A2AInternalError(message, message = message, code = -32602, data = data);
+                return error InternalError(message, message = message, code = -32602, data = data);
             }
             "INVALID_REQUEST" => {
-                return error A2AInternalError(message, message = message, code = -32600, data = data);
+                return error InternalError(message, message = message, code = -32600, data = data);
             }
             "METHOD_NOT_FOUND" => {
-                return error A2AInternalError(message, message = message, code = -32601, data = data);
+                return error InternalError(message, message = message, code = -32601, data = data);
             }
             "INTERNAL_ERROR" => {
-                return error A2AInternalError(message, message = message, code = -32603, data = data);
+                return error InternalError(message, message = message, code = -32603, data = data);
             }
         }
     }
@@ -214,9 +214,9 @@ isolated function toA2AErrorFromRest(int statusCode, json? body) returns A2AErro
         return error TaskNotFoundError(message, message = message, code = -32001, data = data);
     }
     if statusCode >= 500 {
-        return error A2AInternalError(message, message = message, code = -32603, data = data);
+        return error InternalError(message, message = message, code = -32603, data = data);
     }
-    return error A2AInternalError(message, message = message, code = statusCode, data = data);
+    return error InternalError(message, message = message, code = statusCode, data = data);
 }
 
 # Scans a REST error body's error.details array for the first
@@ -293,7 +293,7 @@ isolated function extractRestErrorMetadata(json? body) returns json? {
     return detailMap is () ? () : detailMap["metadata"];
 }
 
-# Maps a gRPC transport error onto the same A2AError hierarchy the
+# Maps a gRPC transport error onto the same Error hierarchy the
 # JSON-RPC and REST bindings map onto. Status-code granularity only —
 # ballerina/grpc:1.14.7 exposes no status details or trailing metadata
 # (grpc:Error is a bare `distinct error` with no detail record), so five
@@ -305,26 +305,26 @@ isolated function extractRestErrorMetadata(json? body) returns json? {
 # status-message text, rejected as unreliable).
 #
 # + err - the gRPC transport error received from a grpcstub client call
-# + return - the corresponding typed A2AError
-isolated function toA2AErrorFromGrpc(grpc:Error err) returns A2AError {
+# + return - the corresponding typed Error
+isolated function toA2AErrorFromGrpc(grpc:Error err) returns Error {
     string message = err.message();
     if err is grpc:NotFoundError {
         return error TaskNotFoundError(message, message = message, code = -32001);
     }
     if err is grpc:InvalidArgumentError {
-        return error A2AInternalError(message, message = message, code = -32602);
+        return error InternalError(message, message = message, code = -32602);
     }
     if err is grpc:FailedPreconditionError {
         return error UnsupportedOperationError(message, message = message, code = -32004);
     }
     if err is grpc:InternalError || err is grpc:DataLossError
             || err is grpc:UnKnownError || err is grpc:AbortedError {
-        return error A2AInternalError(message, message = message, code = -32603);
+        return error InternalError(message, message = message, code = -32603);
     }
     // Transport-only statuses with no A2A error counterpart (e.g.
-    // UNAVAILABLE, DEADLINE_EXCEEDED) - still A2AInternalError, and now
+    // UNAVAILABLE, DEADLINE_EXCEEDED) - still InternalError, and now
     // carrying the same -32603 code the "Internal" bucket above uses, so
     // detail().code is reliably populated on every arm of this function
     // rather than only most of them.
-    return error A2AInternalError(message, message = message, code = -32603);
+    return error InternalError(message, message = message, code = -32603);
 }

@@ -77,7 +77,7 @@ public type AgentCardSignatureError distinct error;
 # AgentCardSignatureError ever crosses verifyAgentCardSignature's or
 # canonicalizeAgentCardBody's boundary - matching errors.bal's
 # wrapTransportError, but for this module's own error type rather than
-# A2AError, since signature verification is a distinct concern from
+# Error, since signature verification is a distinct concern from
 # transport/protocol handling and already had its own dedicated error
 # type before this change.
 #

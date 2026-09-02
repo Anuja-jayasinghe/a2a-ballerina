@@ -50,7 +50,7 @@ function testGrpcStreamAdapterSurfacesMidStreamError() returns error? {
     record {|StreamResponse value;|}? r1 = check adapter.next();
     test:assertTrue(r1 is record {|StreamResponse value;|});
     record {|StreamResponse value;|}|error? r2 = adapter.next();
-    test:assertTrue(r2 is A2AError, "a mid-stream grpc:Error must surface as a typed A2AError");
+    test:assertTrue(r2 is Error, "a mid-stream grpc:Error must surface as a typed Error");
 }
 
 // Test-only generator that yields one value then a grpc:Error, to exercise

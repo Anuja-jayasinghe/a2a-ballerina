@@ -146,14 +146,14 @@ function testEncodeDecodePartMetadataRoundTrips() returns error? {
 function testEncodeGrpcPartRejectsZeroVariantsSet() {
     Part empty = {};
     grpcstub:Part|error result = encodeGrpcPart(empty);
-    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
+    test:assertTrue(result is InternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
 }
 
 @test:Config {groups: ["grpc"]}
 function testEncodeGrpcPartRejectsMultipleVariantsSet() {
     Part ambiguous = {text: "hi", url: "https://example.com/x"};
     grpcstub:Part|error result = encodeGrpcPart(ambiguous);
-    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+    test:assertTrue(result is InternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
 }
 
 @test:Config {groups: ["grpc"]}
@@ -508,5 +508,5 @@ function testDecodeGrpcResponseGetTask() returns error? {
 @test:Config {groups: ["grpc"]}
 function testEncodeGrpcRequestUnknownOperationErrors() {
     anydata|error result = encodeGrpcRequest("NotARealOperation", {});
-    test:assertTrue(result is A2AInternalError);
+    test:assertTrue(result is InternalError);
 }

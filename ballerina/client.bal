@@ -158,13 +158,13 @@ isolated function normalizeLegacyExtendedCardSupport(map<json> cardMap) {
 # second network round trip.
 #
 # + body - the raw JSON AgentCard body, straight off the wire
-# + return - the parsed AgentCard, or a typed A2AError: an
+# + return - the parsed AgentCard, or a typed Error: an
 #            InvalidAgentResponseError if `body` isn't a JSON object or
 #            the remainder of the card (everything but the
 #            four tolerantly-parsed fields) doesn't match the AgentCard
-#            shape, or an A2AInternalError wrapping anything else the
+#            shape, or an InternalError wrapping anything else the
 #            tolerant-field parsers reject
-public isolated function parseAgentCardBody(json body) returns AgentCard|A2AError {
+public isolated function parseAgentCardBody(json body) returns AgentCard|Error {
     AgentCard|error result = parseAgentCardBodyRaw(body);
     if result is error {
         return wrapTransportError(result);
@@ -283,12 +283,12 @@ isolated function stripTrailingSlash(string url) returns string {
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers
 # + return - The raw JSON AgentCard body exactly as received, or a typed
-#            A2AInternalError for a connection failure or malformed JSON
+#            InternalError for a connection failure or malformed JSON
 #            (wrapped by wrapTransportError).
 public isolated function fetchAgentCardBody(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
-        map<string> headers = {}) returns json|A2AError {
+        map<string> headers = {}) returns json|Error {
     http:Client|error discoveryClient = new (stripTrailingSlash(agentBaseUrl), clientConfig);
     if discoveryClient is error {
         return wrapTransportError(discoveryClient);
@@ -304,7 +304,7 @@ public isolated function fetchAgentCardBody(
         return wrapTransportError(resp);
     }
     if resp.statusCode != 200 {
-        return error A2AInternalError(
+        return error InternalError(
             string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
             code = resp.statusCode
         );
@@ -322,14 +322,14 @@ public isolated function fetchAgentCardBody(
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
 # + headers - Optional default headers
-# + return - The parsed AgentCard, or a typed A2AError -- a connection
-#            failure or malformed JSON comes back as an A2AInternalError
+# + return - The parsed AgentCard, or a typed Error -- a connection
+#            failure or malformed JSON comes back as an InternalError
 #            (wrapped by fetchAgentCardBody/parseAgentCardBody), the same
 #            as every other typed failure this can produce.
 public isolated function resolveAgentCard(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
-        map<string> headers = {}) returns AgentCard|A2AError {
+        map<string> headers = {}) returns AgentCard|Error {
     json body = check fetchAgentCardBody(agentBaseUrl, clientConfig, headers);
     return parseAgentCardBody(body);
 }
@@ -359,7 +359,7 @@ public type CachedAgentCard record {|
 # + previous - A card previously returned by this function, to enable a
 #              conditional (If-None-Match) request
 # + return - The parsed AgentCard plus its caching metadata, or a typed
-#            A2AError: an A2AInternalError for a connection failure or
+#            Error: an InternalError for a connection failure or
 #            malformed JSON (wrapped by wrapTransportError), or the same
 #            typed failure resolveAgentCard/parseAgentCardBody would
 #            produce for the fetched body.
@@ -367,7 +367,7 @@ public isolated function resolveAgentCardCached(
         string agentBaseUrl,
         http:ClientConfiguration clientConfig = {},
         map<string> headers = {},
-        CachedAgentCard? previous = ()) returns CachedAgentCard|A2AError {
+        CachedAgentCard? previous = ()) returns CachedAgentCard|Error {
     http:Client|error discoveryClient = new (stripTrailingSlash(agentBaseUrl), clientConfig);
     if discoveryClient is error {
         return wrapTransportError(discoveryClient);
@@ -390,7 +390,7 @@ public isolated function resolveAgentCardCached(
         return previous;
     }
     if resp.statusCode != 200 {
-        return error A2AInternalError(
+        return error InternalError(
             string `Agent Card fetch failed with HTTP ${resp.statusCode}`,
             code = resp.statusCode
         );
@@ -438,21 +438,21 @@ const TransportBinding GRPC = "GRPC";
 #                      "JSONRPC", preserving every existing single-binding
 #                      caller's behavior unchanged
 # + return - the best-ranked supportedInterfaces entry declaring the
-#            matching protocolBinding, or an A2AInternalError if none
+#            matching protocolBinding, or an InternalError if none
 #            exists — a card/binding mismatch, not a wire-protocol error.
 #            The legacy top-level url field is never treated as a match for
 #            "HTTP+JSON" — it predates that binding entirely — so only
 #            "JSONRPC" callers fall back to it (see primaryUrl)
 isolated function selectInterface(
         AgentCard card,
-        TransportBinding preferredBinding = JSONRPC) returns AgentInterface|A2AError {
+        TransportBinding preferredBinding = JSONRPC) returns AgentInterface|Error {
     foreach AgentInterface iface in card.supportedInterfaces {
         if iface.protocolBinding == preferredBinding {
             return iface;
         }
     }
     string msg = string `AgentCard has no ${preferredBinding} entry in supportedInterfaces`;
-    return error A2AInternalError(msg, message = msg);
+    return error InternalError(msg, message = msg);
 }
 
 # Resolves the URL to construct a Client against, per v1.0's removal of
@@ -464,8 +464,8 @@ isolated function selectInterface(
 #                      caller's behavior unchanged
 # + return - the matching supportedInterfaces entry's url, the legacy url
 #            field if preferredBinding is "JSONRPC" and no such entry
-#            exists, or an A2AInternalError if neither is present
-isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding = JSONRPC) returns string|A2AError {
+#            exists, or an InternalError if neither is present
+isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding = JSONRPC) returns string|Error {
     AgentInterface|error iface = selectInterface(card, preferredBinding);
     if iface is AgentInterface {
         return iface.url;
@@ -477,7 +477,7 @@ isolated function primaryUrl(AgentCard card, TransportBinding preferredBinding =
         }
     }
     string msg = string `AgentCard has no ${preferredBinding} entry in supportedInterfaces and no legacy url field`;
-    return error A2AInternalError(msg, message = msg);
+    return error InternalError(msg, message = msg);
 }
 
 # Normalizes a non-normative grpc://\grpcs:// scheme (observed in the wild
@@ -527,7 +527,7 @@ isolated function normalizeGrpcSchemeUrl(string url) returns string {
 # + card - the resolved Agent Card
 # + return - the binding to use, or an error if the card declares no
 #            interface this library can speak
-isolated function selectBindingFromCard(AgentCard card) returns TransportBinding|A2AError {
+isolated function selectBindingFromCard(AgentCard card) returns TransportBinding|Error {
     foreach AgentInterface iface in card.supportedInterfaces {
         string declared = iface.protocolBinding;
         if declared != JSONRPC && declared != HTTP_JSON && declared != GRPC {
@@ -577,7 +577,7 @@ isolated function selectBindingFromCard(AgentCard card) returns TransportBinding
 # + tenant - as accepted by every client type
 # + requestedExtensions - as accepted by every client type
 # + maxReconnectAttempts - as accepted by every client type
-# + return - the constructed client, or a typed A2AError from its own
+# + return - the constructed client, or a typed Error from its own
 #            construction
 isolated function buildDelegate(
         AgentCard card,
@@ -586,7 +586,7 @@ isolated function buildDelegate(
         map<string> headers,
         string? tenant,
         string[] requestedExtensions,
-        int maxReconnectAttempts) returns ClientMethods|A2AError {
+        int maxReconnectAttempts) returns ClientMethods|Error {
     if binding == HTTP_JSON {
         return new RestClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
     }
@@ -624,7 +624,7 @@ isolated function buildDelegate(
 # library exporting a name for that shape.
 #
 # See `ClientMethods`'s doc comment for this type's error contract: the
-# A2AError subtype named on each method below is what a protocol-level
+# Error subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 #
 # LIFECYCLE: there is deliberately no `close`. Unlike the reference a2a-sdk
@@ -670,7 +670,7 @@ public isolated client class Client {
     #            and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic stream reconnection
-    # + return - a typed A2AError: from resolveAgentCard, if the card
+    # + return - a typed Error: from resolveAgentCard, if the card
     #            declares no binding this library can speak, or from the
     #            underlying transport-specific client's own construction
     public isolated function init(
@@ -679,7 +679,7 @@ public isolated client class Client {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns A2AError? {
+            int maxReconnectAttempts = 0) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -698,12 +698,12 @@ public isolated client class Client {
     # + metadata - Optional request-level metadata, per SendMessageRequest
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
-    # + return - A Task or a Message on success, or a typed A2AError on failure
+    # + return - A Task or a Message on success, or a typed Error on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|A2AError {
+            map<json>? metadata = ()) returns Task|Message|Error {
         return self.delegate->sendMessage(message, config, tenant, metadata);
     }
 
@@ -714,12 +714,12 @@ public isolated client class Client {
     # + config - Optional send configuration
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|A2AError {
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
         return self.delegate->sendStreamingMessage(message, config, tenant, metadata);
     }
 
@@ -730,8 +730,8 @@ public isolated client class Client {
     # + historyLength - Maximum messages to include in task.history
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
-    #            A2AError) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|A2AError {
+    #            Error) if unknown
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
         return self.delegate->getTask(taskId, historyLength, tenant);
     }
 
@@ -742,11 +742,11 @@ public isolated client class Client {
     # + metadata - Optional additional context passed to the agent
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
-    #            (or other typed A2AError)
+    #            (or other typed Error)
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
-            string? tenant = ()) returns Task|A2AError {
+            string? tenant = ()) returns Task|Error {
         return self.delegate->cancelTask(taskId, metadata, tenant);
     }
 
@@ -755,10 +755,10 @@ public isolated client class Client {
     #
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function subscribeToTask(
             string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
+            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
         return self.delegate->subscribeToTask(taskId, tenant);
     }
 
@@ -769,10 +769,10 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
-    #            or another typed A2AError
+    #            or another typed Error
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|A2AError {
+            string? tenant = ()) returns ListTasksResult|Error {
         return self.delegate->listTasks(filter, tenant);
     }
 
@@ -782,10 +782,10 @@ public isolated client class Client {
     # + config - The webhook configuration; config.taskId identifies the task
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         return self.delegate->createTaskPushNotificationConfig(config, tenant);
     }
 
@@ -796,11 +796,11 @@ public isolated client class Client {
     # + id - The config's identifier, from its creation response
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
-    #            TaskNotFoundError (or other typed A2AError)
+    #            TaskNotFoundError (or other typed Error)
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         return self.delegate->getTaskPushNotificationConfig(taskId, id, tenant);
     }
 
@@ -812,12 +812,12 @@ public isolated client class Client {
     # + pageToken - Opaque cursor from a previous result's nextPageToken
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function listTaskPushNotificationConfigs(
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|A2AError {
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
         return self.delegate->listTaskPushNotificationConfigs(taskId, pageSize, pageToken, tenant);
     }
 
@@ -828,11 +828,11 @@ public isolated client class Client {
     # + taskId - The task the config was registered against
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
-    # + return - nil on success, or a typed A2AError
+    # + return - nil on success, or a typed Error
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns A2AError? {
+            string? tenant = ()) returns Error? {
         return self.delegate->deleteTaskPushNotificationConfig(taskId, id, tenant);
     }
 
@@ -841,8 +841,8 @@ public isolated client class Client {
     #
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
-    #            card declares no extended-card support, or a typed A2AError
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|A2AError {
+    #            card declares no extended-card support, or a typed Error
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
         return self.delegate->getExtendedAgentCard(tenant);
     }
 }
