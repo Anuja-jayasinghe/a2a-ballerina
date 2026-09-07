@@ -134,6 +134,65 @@ function testResolveSecuritySchemesRejectsAnUndeclaredScheme() {
 }
 
 @test:Config {}
+function testParsesSecurityRequirementsFromRealV10WireForm() returns error? {
+    // Captured from the real a2a-python SDK (1.1.2) by serialising an
+    // AgentCard through MessageToJson, so this is the exact shape a real
+    // v1.0 agent serves - not a hand-written approximation.
+    //
+    // v1.0 wraps the requirement in a `schemes` field and encodes each
+    // scope list as a StringList object (rendered `{}` when empty), where
+    // v0.3/OpenAPI used a bare `{"scheme": ["scope"]}` map.
+    json realV10Card = {
+        "name": "X",
+        "description": "d",
+        "version": "0.1.0",
+        "capabilities": {"extendedAgentCard": true},
+        "supportedInterfaces": [{"url": "http://x", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
+        "securitySchemes": {"bearer-staff": {"httpAuthSecurityScheme": {"scheme": "Bearer"}}},
+        "securityRequirements": [{"schemes": {"bearer-staff": {}}}],
+        "skills": [
+            {
+                "id": "case-escalation",
+                "name": "n",
+                "description": "d",
+                "securityRequirements": [{"schemes": {"bearer-staff": {"list": ["write"]}}}]
+            }
+        ]
+    };
+    AgentCard card = check parseAgentCardBody(realV10Card);
+
+    test:assertEquals(card.securitySchemes.length(), 1, "the v1.0 oneof-wrapped scheme must parse");
+    test:assertEquals(card.securityRequirements, <SecurityRequirement[]>[{"bearer-staff": []}],
+            "a v1.0 card-level securityRequirement must unwrap `schemes` and its empty StringList");
+    test:assertEquals(card.skills[0].securityRequirements, <SecurityRequirement[]>[{"bearer-staff": ["write"]}],
+            "a v1.0 skill-level securityRequirement must unwrap `schemes` and keep its scopes");
+
+    SecurityRequirement[] resolved = check skillSecurityRequirements(card, "case-escalation");
+    test:assertEquals(resolved, <SecurityRequirement[]>[{"bearer-staff": ["write"]}]);
+}
+
+@test:Config {}
+function testStillParsesSecurityRequirementsFromV03WireForm() returns error? {
+    // The v0.3/OpenAPI flat form must keep working alongside the above -
+    // compat_v03.bal renames `security` to `securityRequirements`, but the
+    // value shape stays flat.
+    json v03Card = {
+        "name": "X",
+        "description": "d",
+        "version": "0.1.0",
+        "protocolVersion": "0.3.0",
+        "url": "http://x",
+        "capabilities": {},
+        "securitySchemes": {"bearer-staff": {"type": "http", "scheme": "Bearer"}},
+        "securityRequirements": [{"bearer-staff": ["write"]}],
+        "skills": [{"id": "s", "name": "n", "description": "d", "securityRequirements": [{"bearer-staff": []}]}]
+    };
+    AgentCard card = check parseAgentCardBody(v03Card);
+    test:assertEquals(card.securityRequirements, <SecurityRequirement[]>[{"bearer-staff": ["write"]}]);
+    test:assertEquals(card.skills[0].securityRequirements, <SecurityRequirement[]>[{"bearer-staff": []}]);
+}
+
+@test:Config {}
 function testIsAuthorizationRequiredRecognisesOnlyThatState() {
     Task waiting = {id: "t1", status: {state: TASK_STATE_AUTH_REQUIRED}};
     Task working = {id: "t2", status: {state: TASK_STATE_WORKING}};

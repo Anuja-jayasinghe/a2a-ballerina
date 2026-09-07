@@ -199,11 +199,70 @@ isolated function parseSecuritySchemes(json raw) returns map<SecurityScheme>|err
     return result;
 }
 
+# Unwraps one v1.0 `{"schemes": {...}}` security requirement.
+#
+# A2A v1.0 models SecurityRequirement as a protobuf message with a single
+# `schemes` map field, and each of that map's values is a `StringList`
+# message rather than a bare array — so a real v1.0 agent serves
+# `{"schemes": {"bearer-staff": {"list": ["write"]}}}`, and `{}` for an
+# empty scope list, where v0.3/OpenAPI served `{"bearer-staff": ["write"]}`.
+# This module's SecurityRequirement type is the flat v0.3-shaped
+# `map<string[]>`, so the v1.0 form has to be flattened onto it.
+#
+# + entry - one raw securityRequirements array element, already known to
+#           be an object carrying an object-valued `schemes` key
+# + return - the flattened requirement, or () if any scheme's value isn't
+#            a StringList-shaped object
+isolated function unwrapV10SecurityRequirement(map<json> entry) returns SecurityRequirement? {
+    map<json>|error schemes = entry["schemes"].ensureType();
+    if schemes is error {
+        return ();
+    }
+    SecurityRequirement flattened = {};
+    foreach [string, json] [schemeName, scopesJson] in schemes.entries() {
+        map<json>|error stringList = scopesJson.ensureType();
+        if stringList is error {
+            return ();
+        }
+        json? listJson = stringList["list"];
+        if listJson is () {
+            // An empty StringList serialises as `{}` — no scopes, which is
+            // the common case for a bearer or API-key scheme.
+            flattened[schemeName] = [];
+            continue;
+        }
+        string[]|error scopes = listJson.cloneWithType();
+        if scopes is error {
+            return ();
+        }
+        flattened[schemeName] = scopes;
+    }
+    return flattened;
+}
+
+# Whether a raw securityRequirements entry is in the v1.0 wrapper form.
+#
+# The discriminator is deliberately narrow: a v0.3 requirement could in
+# principle name a scheme "schemes", but its value would then be a scope
+# *array*, never an object. Only an object-valued `schemes` key means v1.0.
+#
+# + entry - one raw securityRequirements array element
+# + return - true if this entry is the v1.0 wrapper form
+isolated function hasV10SecurityRequirementWrapper(map<json> entry) returns boolean {
+    return entry["schemes"] is map<json>;
+}
+
 # Parses a raw JSON array into a list of SecurityRequirement values,
-# silently dropping any entry that doesn't clone into map<string[]>.
-# Used for both AgentCard.securityRequirements and each AgentSkill's
-# securityRequirements, so one malformed entry can't fail the whole
-# AgentCard parse.
+# silently dropping any entry that matches neither wire form, so one
+# malformed entry can't fail the whole AgentCard parse. Used for both
+# AgentCard.securityRequirements and each AgentSkill's
+# securityRequirements.
+#
+# Handles both dialects, mirroring parseSecuritySchemes above: v1.0 wraps
+# the map in a `schemes` field and encodes scope lists as StringList
+# objects (see unwrapV10SecurityRequirement); v0.3 uses the flat
+# OpenAPI-style map this module's type is shaped around, which clones
+# directly.
 #
 # + raw - the raw JSON value of a securityRequirements field
 # + return - a list containing only the entries that parsed successfully
@@ -211,6 +270,16 @@ isolated function parseSecurityRequirements(json raw) returns SecurityRequiremen
     json[] rawArray = check raw.ensureType();
     SecurityRequirement[] result = [];
     foreach json entry in rawArray {
+        if entry is map<json> && hasV10SecurityRequirementWrapper(entry) {
+            SecurityRequirement? unwrapped = unwrapV10SecurityRequirement(entry);
+            if unwrapped is SecurityRequirement {
+                result.push(unwrapped);
+            }
+            // A declared-but-malformed wrapper is dropped here, never
+            // retried against the flat form below — the same rule
+            // parseSecuritySchemes applies to a malformed oneof arm.
+            continue;
+        }
         SecurityRequirement|error req = entry.cloneWithType(SecurityRequirement);
         if req is SecurityRequirement {
             result.push(req);
