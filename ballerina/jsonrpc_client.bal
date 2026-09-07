@@ -52,6 +52,11 @@ public isolated client class JsonRpcClient {
 
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;
+    # Supplies credentials by security-scheme name, if the caller opted in.
+    private final CredentialProvider? credentials;
+    # The card as resolved at construction, kept immutable for credential
+    # resolution.
+    private final AgentCard & readonly authCard;
     private final string? tenant;
     private final ProtocolMode mode;
     private final string[] & readonly requestedExtensions;
@@ -84,6 +89,8 @@ public isolated client class JsonRpcClient {
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection; 0 (the
     #                          default) surfaces a dropped stream's error
     #                          immediately
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's securityRequirements call for
     # + return - a typed Error: from resolveAgentCard, from URL
     #            derivation when the card declares no JSONRPC interface
     #            and no legacy url, or an InternalError if the
@@ -94,7 +101,8 @@ public isolated client class JsonRpcClient {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns Error? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -117,6 +125,8 @@ public isolated client class JsonRpcClient {
         }
         self.httpClient = newHttpClient;
         self.defaultHeaders = headers.clone().cloneReadOnly();
+        self.credentials = credentials;
+        self.authCard = card.cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detectProtocolModeForBinding(card, JSONRPC);
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
@@ -135,6 +145,12 @@ public isolated client class JsonRpcClient {
             "A2A-Version": self.mode == "V0_3" ? "0.3" : "1.0",
             "Content-Type": "application/json"
         };
+        // Card-resolved credentials first, so an explicit `headers` entry
+        // still wins. resolveCredentialHeaders refuses to produce a
+        // reserved header name, so the two set above cannot be displaced.
+        foreach [string, string] [k, v] in resolveCredentialHeaders(self.authCard, self.credentials).entries() {
+            headers[k] = v;
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }

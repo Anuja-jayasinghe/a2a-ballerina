@@ -57,6 +57,11 @@ public isolated client class GrpcClient {
 
     private final grpcstub:A2AServiceClient grpcStub;
     private final map<string> & readonly defaultHeaders;
+    # Supplies credentials by security-scheme name, if the caller opted in.
+    private final CredentialProvider? credentials;
+    # The card as resolved at construction, kept immutable for credential
+    # resolution.
+    private final AgentCard & readonly authCard;
     private final string? tenant;
     # Always "V1_0" — construction rejects anything else, since v0.3 has
     # no gRPC equivalent.
@@ -85,6 +90,8 @@ public isolated client class GrpcClient {
     #            and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic stream reconnection
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's securityRequirements call for
     # + return - a typed Error: from resolveAgentCard, from URL
     #            derivation when the card declares no GRPC interface, a
     #            VersionNotSupportedError if the card resolves to A2A
@@ -96,7 +103,8 @@ public isolated client class GrpcClient {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns Error? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -127,6 +135,8 @@ public isolated client class GrpcClient {
         }
         self.grpcStub = newGrpcStub;
         self.defaultHeaders = headers.clone().cloneReadOnly();
+        self.credentials = credentials;
+        self.authCard = card.cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detected;
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
@@ -155,6 +165,15 @@ public isolated client class GrpcClient {
     # + return - the metadata to send with the call
     private isolated function buildHeaders() returns map<string|string[]> {
         map<string|string[]> headers = {"A2A-Version": "1.0"};
+        // Card-resolved credentials first, so an explicit `headers` entry
+        // still wins. resolveCredentialHeaders refuses to produce a
+        // reserved header name, so A2A-Version cannot be displaced.
+        // Credentials travel as gRPC metadata here rather than HTTP
+        // headers, but the resolution rule is identical — spec section 7.3
+        // requires credentials on every A2A request, not only HTTP ones.
+        foreach [string, string] [k, v] in resolveCredentialHeaders(self.authCard, self.credentials).entries() {
+            headers[k] = v;
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }

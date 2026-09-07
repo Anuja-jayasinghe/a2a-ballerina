@@ -108,6 +108,13 @@ public isolated client class RestClient {
 
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;
+    # Supplies credentials by security-scheme name, if the caller opted in.
+    private final CredentialProvider? credentials;
+    # The card as resolved at construction, kept immutable purely for
+    # credential resolution — deliberately not `agentCard` below, which is
+    # replaced once an extended card is fetched. Which credential a request
+    # carries should not change as a side effect of that fetch.
+    private final AgentCard & readonly authCard;
     private final string? tenant;
     # Always "V1_0" — construction rejects anything else, since v0.3 has
     # no REST equivalent. Kept as a field rather than assumed, so the
@@ -137,6 +144,8 @@ public isolated client class RestClient {
     #            declares it, and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's securityRequirements call for
     # + return - a typed Error: from resolveAgentCard, from URL
     #            derivation when the card declares no HTTP+JSON
     #            interface, a VersionNotSupportedError if the card
@@ -148,7 +157,8 @@ public isolated client class RestClient {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns Error? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -178,6 +188,8 @@ public isolated client class RestClient {
         }
         self.httpClient = newHttpClient;
         self.defaultHeaders = headers.clone().cloneReadOnly();
+        self.credentials = credentials;
+        self.authCard = card.cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detected;
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
@@ -207,6 +219,13 @@ public isolated client class RestClient {
             "A2A-Version": "1.0",
             "Content-Type": legacy ? "application/json" : "application/a2a+json"
         };
+        // Card-resolved credentials first, so an explicit `headers` entry
+        // still wins — a caller who wrote a header literally meant it.
+        // resolveCredentialHeaders already refuses to produce a reserved
+        // header name, so the two set above cannot be displaced here.
+        foreach [string, string] [k, v] in resolveCredentialHeaders(self.authCard, self.credentials).entries() {
+            headers[k] = v;
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }

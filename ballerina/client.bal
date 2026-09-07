@@ -586,14 +586,18 @@ isolated function buildDelegate(
         map<string> headers,
         string? tenant,
         string[] requestedExtensions,
-        int maxReconnectAttempts) returns ClientMethods|Error {
+        int maxReconnectAttempts,
+        CredentialProvider? credentials = ()) returns ClientMethods|Error {
     if binding == HTTP_JSON {
-        return new RestClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+        return new RestClient(card, clientConfig, headers, tenant, requestedExtensions,
+                maxReconnectAttempts, credentials);
     }
     if binding == GRPC {
-        return new GrpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+        return new GrpcClient(card, clientConfig, headers, tenant, requestedExtensions,
+                maxReconnectAttempts, credentials);
     }
-    return new JsonRpcClient(card, clientConfig, headers, tenant, requestedExtensions, maxReconnectAttempts);
+    return new JsonRpcClient(card, clientConfig, headers, tenant, requestedExtensions,
+            maxReconnectAttempts, credentials);
 }
 
 # An A2A protocol client that speaks whichever transport binding the agent
@@ -670,6 +674,13 @@ public isolated client class Client {
     #            and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic stream reconnection
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's `securityRequirements` call
+    #                 for, keyed by security-scheme name. Covers the
+    #                 schemes that reduce to a single string (API key in a
+    #                 header, HTTP bearer/basic); OAuth2, OpenID Connect,
+    #                 and mutual TLS belong on `clientConfig.auth`, which
+    #                 handles their token exchange properly.
     # + return - a typed Error: from resolveAgentCard, if the card
     #            declares no binding this library can speak, or from the
     #            underlying transport-specific client's own construction
@@ -679,14 +690,15 @@ public isolated client class Client {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns Error? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
         TransportBinding binding = check selectBindingFromCard(card);
         self.delegate = check buildDelegate(
                 card, binding, clientConfig, headers, tenant,
-                requestedExtensions, maxReconnectAttempts);
+                requestedExtensions, maxReconnectAttempts, credentials);
     }
 
     # Sends a message to the remote agent, delegating to the transport
