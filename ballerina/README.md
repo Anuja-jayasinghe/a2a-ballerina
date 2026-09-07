@@ -158,13 +158,17 @@ extensions via `requestedExtensions`).
 
 ## 4. Authentication
 
-Configured through `clientConfig.auth` and `headers`, the same way as
-any other Ballerina client — this library does not wire auth from a
-card's `securitySchemes` automatically (spec §7.3 puts credential
-*acquisition* explicitly out-of-band; only *transmission*, which
-`clientConfig.auth` already does, is in scope). What `clientConfig.auth`
-accepts per scheme type, and what a card's `securitySchemes` entry looks
-like for each:
+Two routes, and which one you want depends on the scheme. Credential
+*acquisition* is out-of-band either way — spec §7.3 puts it there
+explicitly; only *transmission* is in scope for this library.
+
+### 4.1 `clientConfig.auth` and `headers` — the direct route
+
+Configured the same way as any other Ballerina client, and the **only**
+route for OAuth2, OpenID Connect, and mutual TLS, which need a live token
+exchange or a client certificate rather than a single string. What
+`clientConfig.auth` accepts per scheme type, and what a card's
+`securitySchemes` entry looks like for each:
 
 | Card scheme (`type`) | `clientConfig.auth` |
 |---|---|
@@ -186,6 +190,89 @@ projects onto gRPC unchanged.
 **Genuinely still open**: mutual TLS has no higher-level helper beyond
 what `http:ClientConfiguration.secureSocket` already offers generically
 (see issue #13).
+
+### 4.2 `CredentialProvider` — card-driven, opt-in
+
+A single `headers` map is keyed by HTTP header name, so it cannot hold two
+different credentials of the same kind — two bearer tokens for one agent,
+say. A `CredentialProvider` is keyed by *security-scheme name* instead, so
+it can:
+
+```ballerina
+a2a:InMemoryCredentialStore store = new ({
+    "bearer-staff": "tok_staff",
+    "bearer-admin": "tok_admin"
+});
+a2a:Client agent = check new ("https://agent.example.com", credentials = store);
+
+// A refreshed token does not need a new client.
+store.setCredential("bearer-admin", "tok_admin_v2");
+```
+
+The provider is consulted per request. The client resolves the first
+card-level `securityRequirements` entry it can satisfy in full (the list
+is an OR; each entry is an AND across the scheme names it lists) and
+attaches the resulting headers.
+
+Scoped deliberately to the schemes that reduce to one string —
+API-key-in-header and HTTP bearer/basic. Anything else is declined rather
+than guessed at, and belongs on `clientConfig.auth` per §4.1. Returning
+`()` from `getCredential` is normal, not an error: the request is sent
+without that credential and the agent decides how to answer.
+
+Two safeguards worth knowing: a resolved credential can never occupy
+`A2A-Version`, `Content-Type`, or `A2A-Extensions` (an API-key scheme
+names its own header, and cards are not necessarily signature-verified),
+and an explicit `headers` entry always wins over a card-resolved one.
+
+### 4.3 Finding out what a skill requires
+
+`securityRequirements` names schemes but does not describe them, and the
+name is arbitrary — `"bearer-admin"` says nothing on its own about whether
+a bearer token or an API key is wanted. Resolve it against the card:
+
+```ballerina
+a2a:SecurityRequirement[] required = check a2a:skillSecurityRequirements(card, "case-escalation");
+foreach a2a:SecurityRequirement requirement in required {
+    map<a2a:SecurityScheme> schemes = check a2a:resolveSecuritySchemes(card, requirement);
+    // schemes["bearer-admin"] is an a2a:HttpAuthSecurityScheme with scheme: "Bearer"
+}
+```
+
+A skill declaring no requirements of its own inherits the card-level ones.
+That rule is forced rather than chosen: protobuf3 `repeated` fields carry
+no presence information, so "declares nothing" and "declares an empty
+list" are the same value on the wire.
+
+### 4.4 When the agent asks mid-task
+
+A client cannot say which skill it is invoking — `Message` carries no
+skill identifier, in this library or in the spec's own proto — so
+per-skill credentials cannot be selected automatically at send time. The
+spec's own answer is for the agent to ask when it finds out (§7.6): it
+moves the task to `TASK_STATE_AUTH_REQUIRED` and waits.
+
+```ballerina
+if a2a:isAuthorizationRequired(task) {
+    a2a:Message? prompt = a2a:authorizationPrompt(task);
+    // Satisfy out-of-band, or reply to the same taskId to negotiate or reject.
+}
+```
+
+The state is not terminal, so a stream stays open across the pause. A
+client with no open stream can miss the resume; §7.6.2 names three ways
+to avoid that — `subscribeToTask`, a push notification config, or polling
+`getTask`.
+
+### 4.5 Limitation: this library cannot enforce anything
+
+Everything above is about what a **client** sends. Deciding whether a
+caller may actually use a guarded skill is the **server's** job — spec
+§7.5 makes authorization implementation-specific to the agent, and §13.1
+requires servers to "implement authorization checks on every request".
+This library has no server side (see Roadmap), so hiding a skill from an
+unauthenticated card does not prevent anyone from invoking it; only the
+agent implementation can do that.
 
 ## 5. AgentCard Resolution and Verification
 
