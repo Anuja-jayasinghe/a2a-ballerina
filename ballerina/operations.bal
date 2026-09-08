@@ -55,7 +55,7 @@ isolated function buildSendMessageParams(
         SendMessageConfiguration? config,
         map<json>? metadata,
         string? effectiveTenant,
-        ProtocolMode mode) returns map<json>|A2AError {
+        ProtocolMode mode) returns map<json>|Error {
     json|error messageJsonResult = mode == "V0_3"
         ? encodeV03Message(message)
         : encodeRawBytesForWire(message.toJson());
@@ -81,7 +81,7 @@ isolated function buildSendMessageParams(
 # + mode - the wire dialect this client speaks
 # + return - the Task or Message the agent replied with, or an
 #            InvalidAgentResponseError if it doesn't match the expected shape
-isolated function decodeSendMessageResult(json result, ProtocolMode mode) returns Task|Message|A2AError {
+isolated function decodeSendMessageResult(json result, ProtocolMode mode) returns Task|Message|Error {
     if mode == "V0_3" {
         Task|Message|error v03Result = decodeV03SendResult(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
@@ -125,7 +125,7 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
 # + mode - the wire dialect this client speaks
 # + return - the decoded Task, or an InvalidAgentResponseError if it
 #            doesn't match the expected shape
-isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|A2AError {
+isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|Error {
     if mode == "V0_3" {
         Task|error v03Result = parseV03Task(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
@@ -192,7 +192,7 @@ isolated function buildSubscribeToTaskParams(
 #
 # + mode - the wire dialect this client speaks
 # + return - an error when the dialect is v0.3, otherwise nil
-isolated function guardListTasksSupported(ProtocolMode mode) returns A2AError? {
+isolated function guardListTasksSupported(ProtocolMode mode) returns Error? {
     if mode == "V0_3" {
         return error VersionNotSupportedError(
             "ListTasks has no equivalent in A2A protocol v0.3",
@@ -304,7 +304,7 @@ isolated function buildListTasksParams(
 # + result - the raw result payload
 # + return - the decoded page of tasks, or an InvalidAgentResponseError if
 #            it doesn't match the expected shape
-isolated function decodeListTasksResult(json result) returns ListTasksResult|A2AError {
+isolated function decodeListTasksResult(json result) returns ListTasksResult|Error {
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `ListTasks response could not be decoded: ${rewired.message()}`);
@@ -323,7 +323,7 @@ isolated function decodeListTasksResult(json result) returns ListTasksResult|A2A
 isolated function buildCreateTaskPushNotificationConfigParams(
         TaskPushNotificationConfig config,
         string? effectiveTenant,
-        ProtocolMode mode) returns map<json>|A2AError {
+        ProtocolMode mode) returns map<json>|Error {
     if mode == "V0_3" {
         return applyTenant(encodeV03TaskPushNotificationConfig(config), effectiveTenant, mode);
     }
@@ -359,7 +359,7 @@ isolated function buildPushNotificationConfigRefParams(
 # + mode - the wire dialect this client speaks
 # + return - the decoded config, or an InvalidAgentResponseError if it
 #            doesn't match the expected shape
-isolated function decodeTaskPushNotificationConfig(json result, ProtocolMode mode) returns TaskPushNotificationConfig|A2AError {
+isolated function decodeTaskPushNotificationConfig(json result, ProtocolMode mode) returns TaskPushNotificationConfig|Error {
     if mode == "V0_3" {
         TaskPushNotificationConfig|error v03Result = parseV03TaskPushNotificationConfig(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
@@ -404,7 +404,7 @@ isolated function buildListTaskPushNotificationConfigsParams(
 # + return - the decoded page of configs, or an InvalidAgentResponseError
 #            if it doesn't match the expected shape
 isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode)
-        returns ListTaskPushNotificationConfigsResult|A2AError {
+        returns ListTaskPushNotificationConfigsResult|Error {
     if mode == "V0_3" {
         ListTaskPushNotificationConfigsResult|error v03Result = parseV03ListTaskPushNotificationConfigsResult(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;

@@ -50,13 +50,18 @@ import ballerina/a2a.grpcstub;
 # (OAuth2, JWT) are rejected at construction rather than silently dropped.
 #
 # See `ClientMethods`'s doc comment for this type's error contract: the
-# A2AError subtype named on each method below is what a protocol-level
+# Error subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 public isolated client class GrpcClient {
     *ClientMethods;
 
     private final grpcstub:A2AServiceClient grpcStub;
     private final map<string> & readonly defaultHeaders;
+    # Supplies credentials by security-scheme name, if the caller opted in.
+    private final CredentialProvider? credentials;
+    # The card as resolved at construction, kept immutable for credential
+    # resolution.
+    private final AgentCard & readonly authCard;
     private final string? tenant;
     # Always "V1_0" — construction rejects anything else, since v0.3 has
     # no gRPC equivalent.
@@ -85,10 +90,12 @@ public isolated client class GrpcClient {
     #            and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic stream reconnection
-    # + return - a typed A2AError: from resolveAgentCard, from URL
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's securityRequirements call for
+    # + return - a typed Error: from resolveAgentCard, from URL
     #            derivation when the card declares no GRPC interface, a
     #            VersionNotSupportedError if the card resolves to A2A
-    #            v0.3, or an A2AInternalError if the gRPC channel cannot
+    #            v0.3, or an InternalError if the gRPC channel cannot
     #            be created
     public isolated function init(
             AgentCard|string agent,
@@ -96,7 +103,8 @@ public isolated client class GrpcClient {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns A2AError? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -127,6 +135,8 @@ public isolated client class GrpcClient {
         }
         self.grpcStub = newGrpcStub;
         self.defaultHeaders = headers.clone().cloneReadOnly();
+        self.credentials = credentials;
+        self.authCard = card.cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detected;
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
@@ -155,6 +165,15 @@ public isolated client class GrpcClient {
     # + return - the metadata to send with the call
     private isolated function buildHeaders() returns map<string|string[]> {
         map<string|string[]> headers = {"A2A-Version": "1.0"};
+        // Card-resolved credentials first, so an explicit `headers` entry
+        // still wins. resolveCredentialHeaders refuses to produce a
+        // reserved header name, so A2A-Version cannot be displaced.
+        // Credentials travel as gRPC metadata here rather than HTTP
+        // headers, but the resolution rule is identical — spec section 7.3
+        // requires credentials on every A2A request, not only HTTP ones.
+        foreach [string, string] [k, v] in resolveCredentialHeaders(self.authCard, self.credentials).entries() {
+            headers[k] = v;
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
@@ -168,13 +187,13 @@ public isolated client class GrpcClient {
     #
     # + method - the operation name
     # + params - the same params map every binding builds
-    # + return - the unwrapped result json; a typed A2AError for a gRPC
+    # + return - the unwrapped result json; a typed Error for a gRPC
     #            status the call returned (via toA2AErrorFromGrpc), a
     #            response this binding can't decode (via
     #            decodeGrpcResponse/InvalidAgentResponseError), or a
     #            params shape encodeGrpcRequest can't marshal (wrapped as
-    #            A2AInternalError)
-    private isolated function grpcCall(string method, map<json> params) returns json|A2AError {
+    #            InternalError)
+    private isolated function grpcCall(string method, map<json> params) returns json|Error {
         anydata|error rawReq = encodeGrpcRequest(method, params);
         if rawReq is error {
             return wrapTransportError(rawReq);
@@ -292,11 +311,11 @@ public isolated client class GrpcClient {
     #
     # + method - "SendStreamingMessage" or "SubscribeToTask"
     # + params - the same params map every binding builds
-    # + return - a stream of StreamResponse values; a typed A2AError for a
+    # + return - a stream of StreamResponse values; a typed Error for a
     #            gRPC status the call returned (via toA2AErrorFromGrpc); or
     #            the underlying clone/decode error, unwrapped, for a params
     #            shape encodeGrpcRequest can't marshal
-    private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|A2AError {
+    private isolated function openGrpcStream(string method, map<json> params) returns stream<StreamResponse, error?>|Error {
         grpcstub:A2AServiceClient stub = self.grpcStub;
         anydata|error rawReq = encodeGrpcRequest(method, params);
         if rawReq is error {
@@ -329,7 +348,7 @@ public isolated client class GrpcClient {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or an error
-    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|Error {
         map<json> params = buildSubscribeToTaskParams(taskId, tenant ?: self.tenant, self.mode);
         return self.openGrpcStream("SubscribeToTask", params);
     }
@@ -347,7 +366,7 @@ public isolated client class GrpcClient {
             Message message,
             SendMessageConfiguration? config,
             string? tenant,
-            map<json>? metadata) returns Task|Message|A2AError {
+            map<json>? metadata) returns Task|Message|Error {
         map<json> params = check buildSendMessageParams(
                 message, config, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("SendMessage", params);
@@ -362,12 +381,12 @@ public isolated client class GrpcClient {
     # + metadata - Optional request-level metadata, per SendMessageRequest
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
-    # + return - A Task or a Message on success, or a typed A2AError on failure
+    # + return - A Task or a Message on success, or a typed Error on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|A2AError {
+            map<json>? metadata = ()) returns Task|Message|Error {
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
@@ -383,12 +402,12 @@ public isolated client class GrpcClient {
     # + config - Optional send configuration
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|A2AError {
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -413,8 +432,8 @@ public isolated client class GrpcClient {
     # + historyLength - Maximum messages to include in task.history
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
-    #            A2AError) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|A2AError {
+    #            Error) if unknown
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
         map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("GetTask", params);
         return decodeTaskResult(result, self.mode);
@@ -426,11 +445,11 @@ public isolated client class GrpcClient {
     # + metadata - Optional additional context passed to the agent
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
-    #            (or other typed A2AError)
+    #            (or other typed Error)
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
-            string? tenant = ()) returns Task|A2AError {
+            string? tenant = ()) returns Task|Error {
         map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("CancelTask", params);
         return decodeTaskResult(result, self.mode);
@@ -445,10 +464,10 @@ public isolated client class GrpcClient {
     #
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function subscribeToTask(
             string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
+            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -474,10 +493,10 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
-    #            or another typed A2AError
+    #            or another typed Error
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|A2AError {
+            string? tenant = ()) returns ListTasksResult|Error {
         check guardListTasksSupported(self.mode);
         map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("ListTasks", params);
@@ -489,10 +508,10 @@ public isolated client class GrpcClient {
     # + config - The webhook configuration; config.taskId identifies the task
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -512,11 +531,11 @@ public isolated client class GrpcClient {
     # + id - The config's identifier, from its creation response
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
-    #            TaskNotFoundError (or other typed A2AError)
+    #            TaskNotFoundError (or other typed Error)
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -537,12 +556,12 @@ public isolated client class GrpcClient {
     # + pageToken - Opaque cursor from a previous result's nextPageToken
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function listTaskPushNotificationConfigs(
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|A2AError {
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -568,11 +587,11 @@ public isolated client class GrpcClient {
     # + taskId - The task the config was registered against
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
-    # + return - nil on success, or a typed A2AError
+    # + return - nil on success, or a typed Error
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns A2AError? {
+            string? tenant = ()) returns Error? {
         map<json> params = buildPushNotificationConfigRefParams(
                 taskId, id, tenant ?: self.tenant, self.mode);
         json _ = check self.grpcCall("DeleteTaskPushNotificationConfig", params);
@@ -582,8 +601,8 @@ public isolated client class GrpcClient {
     #
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
-    #            card declares no extended-card support, or a typed A2AError
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|A2AError {
+    #            card declares no extended-card support, or a typed Error
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
         lock {
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {

@@ -40,23 +40,23 @@
 # aside) has needed it. Revisit only if that changes: adding `public`
 # back later is additive, not breaking; the reverse would not be.
 #
-# **Error contract: every method below returns a narrowed A2AError, never
+# **Error contract: every method below returns a narrowed Error, never
 # a bare `error`.** The `+ return` doc on each names the specific
-# A2AError subtype(s) (errors.bal) a protocol-level failure produces (the
+# Error subtype(s) (errors.bal) a protocol-level failure produces (the
 # agent rejected the request, or a capability check short-circuited it
 # client-side) — but a caller that only checks for those named subtypes
-# still sees every other failure as an A2AError too. A raw transport or
+# still sees every other failure as an Error too. A raw transport or
 # decode error — a connection failure, a malformed response body, an
 # unexpected shape `cloneWithType` rejects — comes from
 # `ballerina/http`/`ballerina/grpc`/`ballerina/mime`, which return plain
 # `error`, not this library's own type; each binding's implementation
 # wraps that at the boundary via `wrapTransportError` (errors.bal) into
-# an A2AInternalError before it ever reaches a caller, the same way
+# an InternalError before it ever reaches a caller, the same way
 # `fetchAgentCardBody`/`resolveAgentCard` (client.bal) already do. A
 # caller that needs to tell a protocol failure apart from a transport
 # failure still pattern-matches on the concrete type
 # (`result is a2a:TaskNotFoundError`, etc.) — only the fallback case
-# changed, from an untyped `error` to `a2a:A2AInternalError`.
+# changed, from an untyped `error` to `a2a:InternalError`.
 type ClientMethods isolated client object {
 
     # Sends a message to the remote agent.
@@ -72,7 +72,7 @@ type ClientMethods isolated client object {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|A2AError;
+            map<json>? metadata = ()) returns Task|Message|Error;
 
     # Sends a message and receives updates as they happen.
     #
@@ -85,7 +85,7 @@ type ClientMethods isolated client object {
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|A2AError;
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error;
 
     # Retrieves the current state of a task.
     #
@@ -93,7 +93,7 @@ type ClientMethods isolated client object {
     # + historyLength - Maximum messages to include in task.history
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or an error if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|A2AError;
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error;
 
     # Requests cancellation of an in-progress task.
     #
@@ -104,7 +104,7 @@ type ClientMethods isolated client object {
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
-            string? tenant = ()) returns Task|A2AError;
+            string? tenant = ()) returns Task|Error;
 
     # Opens a stream on an existing task.
     #
@@ -113,14 +113,14 @@ type ClientMethods isolated client object {
     # + return - A stream of StreamResponse values, or an error
     isolated remote function subscribeToTask(
             string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|A2AError;
+            string? tenant = ()) returns stream<StreamResponse, error?>|Error;
 
     # Lists tasks matching an optional filter, with cursor-based pagination.
     #
     # + filter - Optional filter/pagination parameters
     # + tenant - Optional per-call tenant override
     # + return - A page of matching tasks, or an error
-    isolated remote function listTasks(ListTasksFilter? filter = (), string? tenant = ()) returns ListTasksResult|A2AError;
+    isolated remote function listTasks(ListTasksFilter? filter = (), string? tenant = ()) returns ListTasksResult|Error;
 
     # Registers a webhook to receive updates for a task.
     #
@@ -129,7 +129,7 @@ type ClientMethods isolated client object {
     # + return - The created config as the server persisted it, or an error
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError;
+            string? tenant = ()) returns TaskPushNotificationConfig|Error;
 
     # Retrieves a previously registered push-notification webhook config.
     #
@@ -140,7 +140,7 @@ type ClientMethods isolated client object {
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError;
+            string? tenant = ()) returns TaskPushNotificationConfig|Error;
 
     # Lists all push-notification webhook configs registered for a task.
     #
@@ -153,7 +153,7 @@ type ClientMethods isolated client object {
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|A2AError;
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error;
 
     # Deletes a push-notification webhook config. Idempotent per
     # specification section 3.1.10.
@@ -165,12 +165,12 @@ type ClientMethods isolated client object {
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns A2AError?;
+            string? tenant = ()) returns Error?;
 
     # Retrieves the agent's extended AgentCard.
     #
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or an error
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|A2AError;
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error;
 };

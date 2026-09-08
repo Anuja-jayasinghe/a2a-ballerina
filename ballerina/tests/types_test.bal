@@ -1176,7 +1176,7 @@ function testParseAgentCardSignaturesOnEmptyArray() returns error? {
 function testEncodeRawBytesForWireRejectsZeroVariantsSet() {
     Message container = {messageId: "msg-1", role: ROLE_USER, parts: [{}]};
     json|error result = encodeRawBytesForWire(container.toJson());
-    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
+    test:assertTrue(result is InternalError, "a caller-constructed Part with none of text/raw/url/data set is an internal, not agent, error");
 }
 
 @test:Config {}
@@ -1187,7 +1187,7 @@ function testEncodeRawBytesForWireRejectsMultipleVariantsSet() {
         parts: [{text: "hi", url: "https://example.com/x"}]
     };
     json|error result = encodeRawBytesForWire(container.toJson());
-    test:assertTrue(result is A2AInternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+    test:assertTrue(result is InternalError, "a caller-constructed Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
 }
 
 @test:Config {}

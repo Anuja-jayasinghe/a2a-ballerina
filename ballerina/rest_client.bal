@@ -17,66 +17,26 @@
 // The REST (HTTP+JSON) transport binding.
 //
 // Same shape as JsonRpcClient: one binding, no branch. What differs is the
-// marshaling — an operation becomes an HTTP method, a templated path, and
-// optionally a body (REST_OPERATIONS/buildRestRequest, below), rather
-// than a JSON-RPC envelope posted to a single endpoint.
+// marshaling — an operation becomes an HTTP method, a path built directly
+// from that operation's own parameters, and optionally a body, rather than
+// a JSON-RPC envelope posted to a single endpoint. Each operation builds
+// its own request directly (see prefixTenant/buildQueryString, below)
+// rather than going through a shared method-name-keyed table — per review
+// feedback that the table added indirection without buying much. The two
+// pieces of logic every operation still needs in common (the
+// tenant-in-path rule, 415-retry-and-remember) stay centralized, just as
+// plain functions instead of a data table.
 
 import ballerina/http;
 import ballerina/url;
 
-# How one operation maps onto the REST binding.
-type RestOperation record {|
-    # HTTP verb to send, e.g. "GET" or "POST"
-    string httpMethod;
-    # Path template with "{param}" placeholders, e.g. "/tasks/{id}"
-    string pathTemplate;
-    # Names of the pathTemplate placeholders to substitute from params
-    string[] pathParams;
-    # Whether this operation sends params as a JSON body (true) or a query
-    # string (false)
-    boolean hasBody;
-    # Whether this operation opens an SSE stream rather than returning a
-    # single JSON response
-    boolean streaming;
-|};
-
-final readonly & map<RestOperation> REST_OPERATIONS = {
-    "SendMessage": {httpMethod: "POST", pathTemplate: "/message:send", pathParams: [], hasBody: true, streaming: false},
-    "SendStreamingMessage": {httpMethod: "POST", pathTemplate: "/message:stream", pathParams: [], hasBody: true, streaming: true},
-    "GetTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}", pathParams: ["id"], hasBody: false, streaming: false},
-    "ListTasks": {httpMethod: "GET", pathTemplate: "/tasks", pathParams: [], hasBody: false, streaming: false},
-    "CancelTask": {httpMethod: "POST", pathTemplate: "/tasks/{id}:cancel", pathParams: ["id"], hasBody: true, streaming: false},
-    "SubscribeToTask": {httpMethod: "GET", pathTemplate: "/tasks/{id}:subscribe", pathParams: ["id"], hasBody: false, streaming: true},
-    "CreateTaskPushNotificationConfig": {httpMethod: "POST", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: true, streaming: false},
-    "GetTaskPushNotificationConfig": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false},
-    "ListTaskPushNotificationConfigs": {httpMethod: "GET", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs", pathParams: ["taskId"], hasBody: false, streaming: false},
-    "GetExtendedAgentCard": {httpMethod: "GET", pathTemplate: "/extendedAgentCard", pathParams: [], hasBody: false, streaming: false},
-    "DeleteTaskPushNotificationConfig": {httpMethod: "DELETE", pathTemplate: "/tasks/{taskId}/pushNotificationConfigs/{id}", pathParams: ["taskId", "id"], hasBody: false, streaming: false}
-};
-
-# Builds the path (with tenant prefix and path-param substitution) and
-# body for one REST request, per the descriptor table above.
+# Percent-encodes a value for use in a REST request path or query string,
+# wrapping any encoding failure into this library's own error type.
 #
-# Path params and tenant are substituted from `params`. Per the design
-# spec's M3/M4 findings (matching the reference a2a-python SDK exactly,
-# not "cleaning up" the duplication): for hasBody operations, tenant and
-# path params stay in the body as well as the path; for bodiless
-# operations, they are removed from the working param set so they don't
-# leak into the query string. Bodiless operations serialize every
-# remaining param as a URL-encoded query parameter; TaskState enum values
-# serialize as their symbolic name (already what a bare enum value is in
-# Ballerina — no conversion needed), and any value containing characters
-# needing escaping (e.g. an RFC 3339 timestamp's `:`/`+`) goes through
-# url:encode.
-#
-# + method - the JSON-RPC-style method name already used to key
-#            REST_OPERATIONS (e.g. "GetTask") — the same string every
-#            remote function already passes to rpcCall/openEventStream
-# + params - the same params map the JSON-RPC binding would have sent
-# + return - the full request path (including query string for bodiless
-#            operations) and the JSON body to send (nil for bodiless
-#            operations), or an error if method has no REST mapping
-isolated function urlEncodeOrWrap(string value) returns string|A2AError {
+# + value - the raw value to encode
+# + return - the percent-encoded value, or a typed Error if it can't be
+#            encoded
+isolated function urlEncodeOrWrap(string value) returns string|Error {
     string|error encoded = url:encode(value, "UTF-8");
     if encoded is error {
         return wrapTransportError(encoded);
@@ -84,70 +44,42 @@ isolated function urlEncodeOrWrap(string value) returns string|A2AError {
     return encoded;
 }
 
-isolated function buildRestRequest(string method, map<json> params) returns [string, json?]|A2AError {
-    RestOperation? maybeOp = REST_OPERATIONS[method];
-    if maybeOp is () {
-        return error A2AInternalError(string `REST binding has no operation mapping for "${method}"`);
+# Prepends the tenant routing segment to a request path, per the REST
+# binding's path-prefix convention (`/{tenant}{path}`). A no-op when no
+# tenant applies.
+#
+# + path - the request path, before any tenant prefix
+# + tenant - the effective tenant for this call, or () if none applies
+# + return - the path with the tenant segment prepended, or unchanged if
+#            tenant is (), or a typed Error if tenant can't be encoded
+isolated function prefixTenant(string path, string? tenant) returns string|Error {
+    if tenant is () {
+        return path;
     }
-    RestOperation op = maybeOp;
-    map<json> workingParams = params.clone();
+    string encodedTenant = check urlEncodeOrWrap(tenant);
+    return string `/${encodedTenant}${path}`;
+}
 
-    string? tenant = ();
-    json? tenantJson = workingParams["tenant"];
-    if tenantJson is string {
-        tenant = tenantJson;
-        if !op.hasBody {
-            _ = workingParams.remove("tenant");
-        }
-    }
-
-    string path = op.pathTemplate;
-    foreach string pName in op.pathParams {
-        json? pValue = workingParams[pName];
-        if pValue !is string {
-            return error A2AInternalError(string `REST binding for "${method}" requires path parameter "${pName}", but it was missing or not a string`);
-        }
-        // Plain string substitution, not regex: pathTemplate never
-        // contains a literal "{"/"}" outside of exactly these
-        // placeholder markers, so there's no need for regex escaping
-        // here. lang.string has no plain literal-replace function
-        // (only regex-based replaceAll/replaceFirst), so the
-        // placeholder is substituted manually via indexOf/substring.
-        // The substituted value itself is percent-encoded so a value
-        // containing "/", "?", "#", or "%" can't restructure the path
-        // (e.g. break out into the query string, or shape a
-        // path-traversal-looking segment) — only the literal template
-        // text (e.g. ":cancel"/":subscribe") is left unencoded.
-        string encodedValue = check urlEncodeOrWrap(pValue);
-        string placeholder = string `{${pName}}`;
-        int? idx = path.indexOf(placeholder);
-        if idx is int {
-            path = path.substring(0, idx) + encodedValue + path.substring(idx + placeholder.length());
-        }
-        if !op.hasBody {
-            _ = workingParams.remove(pName);
-        }
-    }
-
-    if tenant is string {
-        string encodedTenant = check urlEncodeOrWrap(tenant);
-        path = string `/${encodedTenant}${path}`;
-    }
-
-    if op.hasBody {
-        return [path, workingParams];
-    }
-
+# Builds a URL query string from a set of already-stringified parameters —
+# every value is percent-encoded, joined with `&`, and prefixed with `?`.
+# Only called with parameters an operation actually has set; there's no
+# generic "whatever's left over" set to iterate here, unlike the old
+# table-driven version.
+#
+# + queryParams - the query parameters to include, already as strings
+# + return - the query string including its leading `?`, or `""` if
+#            queryParams is empty, or a typed Error if a value can't be
+#            encoded
+isolated function buildQueryString(map<string> queryParams) returns string|Error {
     string[] queryParts = [];
-    foreach [string, json] [k, v] in workingParams.entries() {
-        string stringValue = v is string ? v : v.toString();
-        string encoded = check urlEncodeOrWrap(stringValue);
+    foreach [string, string] [k, v] in queryParams.entries() {
+        string encoded = check urlEncodeOrWrap(v);
         queryParts.push(string `${k}=${encoded}`);
     }
-    if queryParts.length() > 0 {
-        path = path + "?" + string:'join("&", ...queryParts);
+    if queryParts.length() == 0 {
+        return "";
     }
-    return [path, ()];
+    return "?" + string:'join("&", ...queryParts);
 }
 
 # An A2A client that speaks the REST (HTTP+JSON) binding.
@@ -163,19 +95,26 @@ isolated function buildRestRequest(string method, map<json> params) returns [str
 #
 # A2A v0.3 does define a REST binding, but this library does not implement
 # it: `compat_v03.bal` is a JSON-RPC dialect translator (v0.3 method names
-# like `tasks/get` have no meaning as a REST path), and the operation-to-path
-# table here is v1.0's. A card resolving to v0.3 is therefore rejected at
+# like `tasks/get` have no meaning as a REST path), and the paths used
+# below are v1.0's. A card resolving to v0.3 is therefore rejected at
 # construction rather than at the first call. Use `JsonRpcClient` for a v0.3
 # agent. See issue #31.
 #
 # See `ClientMethods`'s doc comment for this type's error contract: the
-# A2AError subtype named on each method below is what a protocol-level
+# Error subtype named on each method below is what a protocol-level
 # failure produces, not the only kind of error that can come back.
 public isolated client class RestClient {
     *ClientMethods;
 
     private final http:Client httpClient;
     private final map<string> & readonly defaultHeaders;
+    # Supplies credentials by security-scheme name, if the caller opted in.
+    private final CredentialProvider? credentials;
+    # The card as resolved at construction, kept immutable purely for
+    # credential resolution — deliberately not `agentCard` below, which is
+    # replaced once an extended card is fetched. Which credential a request
+    # carries should not change as a side effect of that fetch.
+    private final AgentCard & readonly authCard;
     private final string? tenant;
     # Always "V1_0" — construction rejects anything else, since v0.3 has
     # no REST equivalent. Kept as a field rather than assumed, so the
@@ -205,10 +144,12 @@ public isolated client class RestClient {
     #            declares it, and an explicit value wins
     # + requestedExtensions - Optional A2A extension URIs to request
     # + maxReconnectAttempts - Opt-in automatic SSE reconnection
-    # + return - a typed A2AError: from resolveAgentCard, from URL
+    # + credentials - Optional provider consulted per request for the
+    #                 credentials the card's securityRequirements call for
+    # + return - a typed Error: from resolveAgentCard, from URL
     #            derivation when the card declares no HTTP+JSON
     #            interface, a VersionNotSupportedError if the card
-    #            resolves to A2A v0.3, or an A2AInternalError if the
+    #            resolves to A2A v0.3, or an InternalError if the
     #            http:Client cannot be created
     public isolated function init(
             AgentCard|string agent,
@@ -216,7 +157,8 @@ public isolated client class RestClient {
             map<string> headers = {},
             string? tenant = (),
             string[] requestedExtensions = [],
-            int maxReconnectAttempts = 0) returns A2AError? {
+            int maxReconnectAttempts = 0,
+            CredentialProvider? credentials = ()) returns Error? {
         AgentCard card = agent is string
             ? check resolveAgentCard(agent, clientConfig, headers)
             : agent;
@@ -246,6 +188,8 @@ public isolated client class RestClient {
         }
         self.httpClient = newHttpClient;
         self.defaultHeaders = headers.clone().cloneReadOnly();
+        self.credentials = credentials;
+        self.authCard = card.cloneReadOnly();
         self.tenant = effectiveTenant;
         self.mode = detected;
         self.requestedExtensions = requestedExtensions.cloneReadOnly();
@@ -275,6 +219,13 @@ public isolated client class RestClient {
             "A2A-Version": "1.0",
             "Content-Type": legacy ? "application/json" : "application/a2a+json"
         };
+        // Card-resolved credentials first, so an explicit `headers` entry
+        // still wins — a caller who wrote a header literally meant it.
+        // resolveCredentialHeaders already refuses to produce a reserved
+        // header name, so the two set above cannot be displaced here.
+        foreach [string, string] [k, v] in resolveCredentialHeaders(self.authCard, self.credentials).entries() {
+            headers[k] = v;
+        }
         foreach [string, string] [k, v] in self.defaultHeaders.entries() {
             headers[k] = v;
         }
@@ -284,20 +235,21 @@ public isolated client class RestClient {
         return headers;
     }
 
-    # Issues one raw HTTP call for a REST operation, with no content-type
-    # negotiation -- callers that need negotiation go through
-    # performRestCallWithNegotiation instead.
+    # Issues one raw HTTP call, with no content-type negotiation --
+    # callers that need negotiation go through performRestCallWithNegotiation
+    # instead.
     #
-    # + op - the operation descriptor (method/path already resolved)
-    # + path - the request path built by buildRestRequest
-    # + body - the request body, or () for a bodiless operation
+    # + httpMethod - the HTTP verb to send, e.g. "GET" or "POST"
+    # + path - the full request path, tenant prefix and path params already
+    #          substituted
+    # + body - the request body, or () for a bodiless request
     # + headers - the exact headers to send
     # + return - the raw HTTP response, or a transport-level error
-    private isolated function rawRestCall(RestOperation op, string path, json? body, map<string> headers) returns http:Response|A2AError {
+    private isolated function rawRestCall(string httpMethod, string path, json? body, map<string> headers) returns http:Response|Error {
         http:Response|error result;
-        if op.httpMethod == "GET" {
+        if httpMethod == "GET" {
             result = self.httpClient->get(path, headers);
-        } else if op.httpMethod == "DELETE" {
+        } else if httpMethod == "DELETE" {
             result = self.httpClient->delete(path, headers = headers);
         } else {
             result = self.httpClient->post(path, body ?: {}, headers);
@@ -312,24 +264,25 @@ public isolated client class RestClient {
     # application/json content type if the server rejects the spec-mandated
     # application/a2a+json with a 415 -- see buildHeaders' doc comment.
     #
-    # + op - the operation descriptor (method/path already resolved)
-    # + path - the request path built by buildRestRequest
-    # + body - the request body, or () for a bodiless operation
+    # + httpMethod - the HTTP verb to send, e.g. "GET" or "POST"
+    # + path - the full request path, tenant prefix and path params already
+    #          substituted
+    # + body - the request body, or () for a bodiless request
     # + extraHeaders - additional headers merged in on top of buildHeaders'
     #                  defaults (e.g. Accept: text/event-stream)
     # + return - the raw HTTP response (from whichever attempt settled),
     #            or a transport-level error
     private isolated function performRestCallWithNegotiation(
-            RestOperation op, string path, json? body, map<string> extraHeaders = {}) returns http:Response|A2AError {
+            string httpMethod, string path, json? body, map<string> extraHeaders = {}) returns http:Response|Error {
         map<string> headers = self.buildHeaders();
         foreach [string, string] [k, v] in extraHeaders.entries() {
             headers[k] = v;
         }
-        http:Response resp = check self.rawRestCall(op, path, body, headers);
+        http:Response resp = check self.rawRestCall(httpMethod, path, body, headers);
         if resp.statusCode == 415 && headers["Content-Type"] != "application/json" {
             map<string> legacyHeaders = headers.clone();
             legacyHeaders["Content-Type"] = "application/json";
-            http:Response retryResp = check self.rawRestCall(op, path, body, legacyHeaders);
+            http:Response retryResp = check self.rawRestCall(httpMethod, path, body, legacyHeaders);
             if retryResp.statusCode != 415 {
                 lock {
                     self.useLegacyContentType = true;
@@ -340,7 +293,8 @@ public isolated client class RestClient {
         return resp;
     }
 
-    # Performs one REST call and returns the unwrapped result.
+    # Performs one non-streaming REST call and returns the unwrapped
+    # result.
     #
     # DeleteTaskPushNotificationConfig returns google.protobuf.Empty over
     # the wire, so an absent or unparseable body on a 2xx is an empty
@@ -348,17 +302,15 @@ public isolated client class RestClient {
     # real content fails its own cloneWithType instead, which is the right
     # place for that failure to surface.
     #
-    # + method - the operation name (see REST_OPERATIONS)
-    # + params - the same params map every binding builds
-    # + return - the unwrapped result json; a typed A2AError for a
-    #            non-2xx response (via toA2AErrorFromRest), a param this
-    #            binding can't build a request for (via buildRestRequest),
-    #            or a connection failure or unencodable param value
-    #            (wrapped as A2AInternalError)
-    private isolated function restCall(string method, map<json> params) returns json|A2AError {
-        [string, json?] [path, body] = check buildRestRequest(method, params);
-        RestOperation op = REST_OPERATIONS.get(method);
-        http:Response resp = check self.performRestCallWithNegotiation(op, path, body);
+    # + httpMethod - the HTTP verb to send, e.g. "GET" or "POST"
+    # + path - the full request path, tenant prefix and path params already
+    #          substituted
+    # + body - the request body, or () for a bodiless request
+    # + return - the unwrapped result json, or a typed Error for a non-2xx
+    #            response (via toA2AErrorFromRest) or a connection failure
+    #            (wrapped as InternalError)
+    private isolated function restCall(string httpMethod, string path, json? body) returns json|Error {
+        http:Response resp = check self.performRestCallWithNegotiation(httpMethod, path, body);
         if resp.statusCode >= 200 && resp.statusCode < 300 {
             json|error payload = resp.getJsonPayload();
             if payload is json {
@@ -371,40 +323,22 @@ public isolated client class RestClient {
         return toA2AErrorFromRest(resp.statusCode, errorBody);
     }
 
-    # Opens a REST SSE stream for a streaming operation.
+    # Validates that a REST response is a real SSE stream and decodes it,
+    # shared by both streaming operations (sendStreamingMessage,
+    # subscribeToTask) once each has already issued its own request --
+    # any operation-specific retry (e.g. subscribeToTask's GET-then-POST
+    # fallback) happens before this is called, not inside it.
     #
-    # + method - "SendStreamingMessage" or "SubscribeToTask"
-    # + params - the same params map every binding builds
-    # + return - a stream of StreamResponse values; a typed A2AError for a
-    #            non-streaming error response (via toA2AErrorFromRest) or
-    #            a connection failure (wrapped as A2AInternalError)
-    private isolated function openRestSseStream(string method, map<json> params) returns stream<StreamResponse, error?>|A2AError {
-        [string, json?] [path, body] = check buildRestRequest(method, params);
-        RestOperation op = REST_OPERATIONS.get(method);
-        map<string> extraHeaders = {"Accept": "text/event-stream"};
-        http:Response resp = check self.performRestCallWithNegotiation(op, path, body, extraHeaders);
-        // SubscribeToTask's proto annotation says GET, but a non-reference
-        // server that hand-rolled its REST routes following the reference
-        // *client* (which sends POST) might only have registered POST.
-        // Scoped to exactly this one operation — retrying broadly for
-        // every operation would mask genuine method-not-allowed errors
-        // elsewhere.
-        if method == "SubscribeToTask" && op.httpMethod == "GET"
-                && (resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501) {
-            RestOperation postOp = {
-                httpMethod: "POST",
-                pathTemplate: op.pathTemplate,
-                pathParams: op.pathParams,
-                hasBody: op.hasBody,
-                streaming: op.streaming
-            };
-            resp = check self.performRestCallWithNegotiation(postOp, path, body, extraHeaders);
-        }
+    # + resp - the HTTP response to an SSE request
+    # + mode - the wire dialect this client speaks
+    # + return - a stream of StreamResponse values, or a typed Error for a
+    #            non-streaming error response (via toA2AErrorFromRest)
+    private isolated function finishSseResponse(http:Response resp, ProtocolMode mode) returns stream<StreamResponse, error?>|Error {
         if !resp.getContentType().startsWith("text/event-stream") {
             json|error errBody = resp.getJsonPayload();
             return toA2AErrorFromRest(resp.statusCode, errBody is json ? errBody : ());
         }
-        return readSseStream(resp, self.mode, HTTP_JSON);
+        return readSseStream(resp, mode, HTTP_JSON);
     }
 
     # Opens the raw, unwrapped subscribeToTask stream. See
@@ -414,9 +348,21 @@ public isolated client class RestClient {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or an error
-    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
-        map<json> params = buildSubscribeToTaskParams(taskId, tenant ?: self.tenant, self.mode);
-        return self.openRestSseStream("SubscribeToTask", params);
+    isolated function openTaskSubscriptionStream(string taskId, string? tenant = ()) returns stream<StreamResponse, error?>|Error {
+        string encodedId = check urlEncodeOrWrap(taskId);
+        string path = check prefixTenant(string `/tasks/${encodedId}:subscribe`, tenant ?: self.tenant);
+        map<string> extraHeaders = {"Accept": "text/event-stream"};
+        http:Response resp = check self.performRestCallWithNegotiation("GET", path, (), extraHeaders);
+        // SubscribeToTask's proto annotation says GET, but a non-reference
+        // server that hand-rolled its REST routes following the reference
+        // *client* (which sends POST) might only have registered POST.
+        // Scoped to exactly this one operation — retrying broadly for
+        // every operation would mask genuine method-not-allowed errors
+        // elsewhere.
+        if resp.statusCode == 404 || resp.statusCode == 405 || resp.statusCode == 501 {
+            resp = check self.performRestCallWithNegotiation("POST", path, (), extraHeaders);
+        }
+        return self.finishSseResponse(resp, self.mode);
     }
 
     # The unary sendMessage body, factored out so sendStreamingMessage's
@@ -432,10 +378,12 @@ public isolated client class RestClient {
             Message message,
             SendMessageConfiguration? config,
             string? tenant,
-            map<json>? metadata) returns Task|Message|A2AError {
-        map<json> params = check buildSendMessageParams(
-                message, config, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("SendMessage", params);
+            map<json>? metadata) returns Task|Message|Error {
+        string? effectiveTenant = tenant ?: self.tenant;
+        map<json> body = check buildSendMessageParams(
+                message, config, metadata, effectiveTenant, self.mode);
+        string path = check prefixTenant("/message:send", effectiveTenant);
+        json result = check self.restCall("POST", path, body);
         return decodeSendMessageResult(result, self.mode);
     }
 
@@ -447,12 +395,12 @@ public isolated client class RestClient {
     # + metadata - Optional request-level metadata, per SendMessageRequest
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
-    # + return - A Task or a Message on success, or a typed A2AError on failure
+    # + return - A Task or a Message on success, or a typed Error on failure
     isolated remote function sendMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|A2AError {
+            map<json>? metadata = ()) returns Task|Message|Error {
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
@@ -467,12 +415,12 @@ public isolated client class RestClient {
     # + config - Optional send configuration
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function sendStreamingMessage(
             Message message,
             SendMessageConfiguration? config = (),
             string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|A2AError {
+            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -485,9 +433,12 @@ public isolated client class RestClient {
             return singleEventStream(result);
         }
         string? effectiveTenant = tenant ?: self.tenant;
-        map<json> params = check buildSendMessageParams(
+        map<json> body = check buildSendMessageParams(
                 message, config, metadata, effectiveTenant, self.mode);
-        stream<StreamResponse, error?> rawStream = check self.openRestSseStream("SendStreamingMessage", params);
+        string path = check prefixTenant("/message:stream", effectiveTenant);
+        map<string> extraHeaders = {"Accept": "text/event-stream"};
+        http:Response resp = check self.performRestCallWithNegotiation("POST", path, body, extraHeaders);
+        stream<StreamResponse, error?> rawStream = check self.finishSseResponse(resp, self.mode);
         return wrapReconnecting(rawStream, self, self.maxReconnectAttempts, effectiveTenant);
     }
 
@@ -497,10 +448,14 @@ public isolated client class RestClient {
     # + historyLength - Maximum messages to include in task.history
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
-    #            A2AError) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|A2AError {
-        map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("GetTask", params);
+    #            Error) if unknown
+    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
+        string encodedId = check urlEncodeOrWrap(taskId);
+        string path = check prefixTenant(string `/tasks/${encodedId}`, tenant ?: self.tenant);
+        if historyLength is int {
+            path = path + check buildQueryString({"historyLength": historyLength.toString()});
+        }
+        json result = check self.restCall("GET", path, ());
         return decodeTaskResult(result, self.mode);
     }
 
@@ -510,13 +465,16 @@ public isolated client class RestClient {
     # + metadata - Optional additional context passed to the agent
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
-    #            (or other typed A2AError)
+    #            (or other typed Error)
     isolated remote function cancelTask(
             string taskId,
             map<json>? metadata = (),
-            string? tenant = ()) returns Task|A2AError {
-        map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("CancelTask", params);
+            string? tenant = ()) returns Task|Error {
+        string? effectiveTenant = tenant ?: self.tenant;
+        map<json> body = buildCancelTaskParams(taskId, metadata, effectiveTenant, self.mode);
+        string encodedId = check urlEncodeOrWrap(taskId);
+        string path = check prefixTenant(string `/tasks/${encodedId}:cancel`, effectiveTenant);
+        json result = check self.restCall("POST", path, body);
         return decodeTaskResult(result, self.mode);
     }
 
@@ -529,10 +487,10 @@ public isolated client class RestClient {
     #
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
-    # + return - A stream of StreamResponse values, or a typed A2AError
+    # + return - A stream of StreamResponse values, or a typed Error
     isolated remote function subscribeToTask(
             string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|A2AError {
+            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -558,13 +516,45 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
-    #            or another typed A2AError
+    #            or another typed Error
     isolated remote function listTasks(
             ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|A2AError {
+            string? tenant = ()) returns ListTasksResult|Error {
         check guardListTasksSupported(self.mode);
-        map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("ListTasks", params);
+        map<string> queryParams = {};
+        if filter is ListTasksFilter {
+            string? contextId = filter?.contextId;
+            if contextId is string {
+                queryParams["contextId"] = contextId;
+            }
+            TaskState? status = filter?.status;
+            if status is TaskState {
+                queryParams["status"] = status;
+            }
+            int? pageSize = filter?.pageSize;
+            if pageSize is int {
+                queryParams["pageSize"] = pageSize.toString();
+            }
+            string? pageToken = filter?.pageToken;
+            if pageToken is string {
+                queryParams["pageToken"] = pageToken;
+            }
+            int? historyLength = filter?.historyLength;
+            if historyLength is int {
+                queryParams["historyLength"] = historyLength.toString();
+            }
+            string? statusTimestampAfter = filter?.statusTimestampAfter;
+            if statusTimestampAfter is string {
+                queryParams["statusTimestampAfter"] = statusTimestampAfter;
+            }
+            boolean? includeArtifacts = filter?.includeArtifacts;
+            if includeArtifacts is boolean {
+                queryParams["includeArtifacts"] = includeArtifacts.toString();
+            }
+        }
+        string path = check prefixTenant("/tasks", tenant ?: self.tenant);
+        path = path + check buildQueryString(queryParams);
+        json result = check self.restCall("GET", path, ());
         return decodeListTasksResult(result);
     }
 
@@ -573,10 +563,10 @@ public isolated client class RestClient {
     # + config - The webhook configuration; config.taskId identifies the task
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function createTaskPushNotificationConfig(
             TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -584,9 +574,17 @@ public isolated client class RestClient {
         if denied {
             return pushNotificationsUnsupportedError("createTaskPushNotificationConfig");
         }
-        map<json> params = check buildCreateTaskPushNotificationConfigParams(
-                config, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("CreateTaskPushNotificationConfig", params);
+        string? effectiveTenant = tenant ?: self.tenant;
+        map<json> body = check buildCreateTaskPushNotificationConfigParams(
+                config, effectiveTenant, self.mode);
+        string? taskId = config?.taskId;
+        if taskId is () {
+            return error InternalError(
+                    "REST binding for \"CreateTaskPushNotificationConfig\" requires config.taskId to be set");
+        }
+        string encodedTaskId = check urlEncodeOrWrap(taskId);
+        string path = check prefixTenant(string `/tasks/${encodedTaskId}/pushNotificationConfigs`, effectiveTenant);
+        json result = check self.restCall("POST", path, body);
         return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
@@ -596,11 +594,11 @@ public isolated client class RestClient {
     # + id - The config's identifier, from its creation response
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
-    #            TaskNotFoundError (or other typed A2AError)
+    #            TaskNotFoundError (or other typed Error)
     isolated remote function getTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|A2AError {
+            string? tenant = ()) returns TaskPushNotificationConfig|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -608,9 +606,11 @@ public isolated client class RestClient {
         if denied {
             return pushNotificationsUnsupportedError("getTaskPushNotificationConfig");
         }
-        map<json> params = buildPushNotificationConfigRefParams(
-                taskId, id, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("GetTaskPushNotificationConfig", params);
+        string encodedTaskId = check urlEncodeOrWrap(taskId);
+        string encodedId = check urlEncodeOrWrap(id);
+        string path = check prefixTenant(
+                string `/tasks/${encodedTaskId}/pushNotificationConfigs/${encodedId}`, tenant ?: self.tenant);
+        json result = check self.restCall("GET", path, ());
         return decodeTaskPushNotificationConfig(result, self.mode);
     }
 
@@ -621,12 +621,12 @@ public isolated client class RestClient {
     # + pageToken - Opaque cursor from a previous result's nextPageToken
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
-    #            PushNotificationNotSupportedError (or other typed A2AError)
+    #            PushNotificationNotSupportedError (or other typed Error)
     isolated remote function listTaskPushNotificationConfigs(
             string taskId,
             int? pageSize = (),
             string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|A2AError {
+            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -634,9 +634,17 @@ public isolated client class RestClient {
         if denied {
             return pushNotificationsUnsupportedError("listTaskPushNotificationConfigs");
         }
-        map<json> params = buildListTaskPushNotificationConfigsParams(
-                taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("ListTaskPushNotificationConfigs", params);
+        string encodedTaskId = check urlEncodeOrWrap(taskId);
+        string path = check prefixTenant(string `/tasks/${encodedTaskId}/pushNotificationConfigs`, tenant ?: self.tenant);
+        map<string> queryParams = {};
+        if pageSize is int {
+            queryParams["pageSize"] = pageSize.toString();
+        }
+        if pageToken is string {
+            queryParams["pageToken"] = pageToken;
+        }
+        path = path + check buildQueryString(queryParams);
+        json result = check self.restCall("GET", path, ());
         return decodeListTaskPushNotificationConfigsResult(result, self.mode);
     }
 
@@ -652,30 +660,32 @@ public isolated client class RestClient {
     # + taskId - The task the config was registered against
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
-    # + return - nil on success, or a typed A2AError
+    # + return - nil on success, or a typed Error
     isolated remote function deleteTaskPushNotificationConfig(
             string taskId,
             string id,
-            string? tenant = ()) returns A2AError? {
-        map<json> params = buildPushNotificationConfigRefParams(
-                taskId, id, tenant ?: self.tenant, self.mode);
-        json _ = check self.restCall("DeleteTaskPushNotificationConfig", params);
+            string? tenant = ()) returns Error? {
+        string encodedTaskId = check urlEncodeOrWrap(taskId);
+        string encodedId = check urlEncodeOrWrap(id);
+        string path = check prefixTenant(
+                string `/tasks/${encodedTaskId}/pushNotificationConfigs/${encodedId}`, tenant ?: self.tenant);
+        json _ = check self.restCall("DELETE", path, ());
     }
 
     # Retrieves the agent's extended AgentCard.
     #
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
-    #            card declares no extended-card support, or a typed A2AError
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|A2AError {
+    #            card declares no extended-card support, or a typed Error
+    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
         lock {
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {
                 return held.clone();
             }
         }
-        map<json> params = buildGetExtendedAgentCardParams(tenant ?: self.tenant, self.mode);
-        json result = check self.restCall("GetExtendedAgentCard", params);
+        string path = check prefixTenant("/extendedAgentCard", tenant ?: self.tenant);
+        json result = check self.restCall("GET", path, ());
         AgentCard fetched = check parseAgentCardBody(result);
         lock {
             self.agentCard = fetched.clone();

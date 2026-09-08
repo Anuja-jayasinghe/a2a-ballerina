@@ -121,7 +121,7 @@ isolated function mapV03Role(string role) returns Role|error {
 }
 
 # + role - the outbound v1.0 Role to encode
-# + return - the equivalent v0.3 wire role string, or an A2AInternalError for
+# + return - the equivalent v0.3 wire role string, or an InternalError for
 #            ROLE_UNSPECIFIED (or anything else unrecognized) — a caller-side
 #            mistake, unlike mapV03Role's InvalidAgentResponseError on decode
 isolated function encodeV03Role(Role role) returns string|error {
@@ -134,7 +134,7 @@ isolated function encodeV03Role(Role role) returns string|error {
         }
         _ => {
             string msg = string `Cannot encode v0.3 message: unrecognized or unspecified role ${role}`;
-            return error A2AInternalError(msg, message = msg);
+            return error InternalError(msg, message = msg);
         }
     }
 }
@@ -356,7 +356,7 @@ isolated function parseV03Task(json taskJson) returns Task|error {
 # wire shape, the mirror image of parseV03Part.
 #
 # + part - the outbound Part, in v1.0 field-presence-discriminated shape
-# + return - the equivalent v0.3 Part JSON, or an A2AInternalError — a
+# + return - the equivalent v0.3 Part JSON, or an InternalError — a
 #            caller-side mistake — if it doesn't have exactly one of
 #            text/raw/url/data set (specification section 4.1.6)
 isolated function encodeV03Part(Part part) returns json|error {

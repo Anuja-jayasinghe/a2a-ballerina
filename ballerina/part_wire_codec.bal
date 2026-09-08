@@ -96,10 +96,10 @@ isolated function countSetPartVariants(Part part) returns int {
 # used, for consistency.
 #
 # + count - the actual count, for the message
-# + return - a typed A2AInternalError
+# + return - a typed InternalError
 isolated function outboundPartVariantError(int count) returns error {
     string msg = string `Part must have exactly one of text, raw, url, or data set; found ${count}`;
-    return error A2AInternalError(msg, message = msg);
+    return error InternalError(msg, message = msg);
 }
 
 # An agent that sent a Part with other than exactly one variant set
@@ -124,7 +124,7 @@ isolated function inboundPartVariantError(int count) returns error {
 #
 # Also validates each Part-shaped element per specification section
 # 4.1.6: exactly one of text/raw/url/data must be set, or this returns an
-# A2AInternalError -- a caller building an outbound Part with zero or
+# InternalError -- a caller building an outbound Part with zero or
 # more than one set is a mistake on our side of the wire, never the
 # agent's.
 #
@@ -132,7 +132,7 @@ isolated function inboundPartVariantError(int count) returns error {
 #                json[] of Part-shaped objects, but tolerates other shapes
 #                by returning them unchanged
 # + return - the same array with every Part.raw integer-array rewritten to
-#            a base64 string, or an A2AInternalError if a Part-shaped
+#            a base64 string, or an InternalError if a Part-shaped
 #            element doesn't have exactly one of text/raw/url/data set
 isolated function encodePartsRawField(json partsValue) returns json|error {
     if partsValue !is json[] {
@@ -232,7 +232,7 @@ isolated function decodePartsRawField(json partsValue) returns json|error {
 #
 # + value - a json value (or subtree) to walk
 # + return - the same tree with every Part.raw integer-array rewritten to
-#            a base64 string, or an A2AInternalError if a Part-shaped
+#            a base64 string, or an InternalError if a Part-shaped
 #            element doesn't have exactly one of text/raw/url/data set
 isolated function encodeRawBytesForWire(json value) returns json|error {
     if value is json[] {

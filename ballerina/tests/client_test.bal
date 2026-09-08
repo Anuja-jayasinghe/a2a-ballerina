@@ -59,7 +59,7 @@ function testResolveAgentCardNon200Status() returns error? {
     setWellKnownOverride(());
 
     test:assertTrue(result is error, "a non-200 well-known response should surface as an error");
-    test:assertTrue(result is A2AInternalError, "non-200 well-known response should map to A2AInternalError");
+    test:assertTrue(result is InternalError, "non-200 well-known response should map to InternalError");
 }
 
 @test:Config {}
@@ -1920,7 +1920,7 @@ function testResolveAgentCardCachedFetchesFreshOn200EvenWithPrevious() returns e
 function testResolveAgentCardReturnsErrorOn304() returns error? {
     // Regression test: resolveAgentCard (non-cached) should never panic on 304.
     // If a non-compliant server sends 304 to an unconditional GET, it should
-    // be treated as a non-200 error and return a typed A2AInternalError, not panic.
+    // be treated as a non-200 error and return a typed InternalError, not panic.
     setWellKnownOverride(defaultMockAgentCard(), 304);
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
@@ -1928,7 +1928,7 @@ function testResolveAgentCardReturnsErrorOn304() returns error? {
     setWellKnownOverride(());
 
     test:assertTrue(result is error, "resolveAgentCard should return an error on 304, not panic");
-    test:assertTrue(result is A2AInternalError, "304 should map to A2AInternalError for unconditional requests");
+    test:assertTrue(result is InternalError, "304 should map to InternalError for unconditional requests");
 }
 
 @test:Config {}
