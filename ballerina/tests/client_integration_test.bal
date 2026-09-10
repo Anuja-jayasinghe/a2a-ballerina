@@ -53,7 +53,7 @@ isolated function cardForBinding(TransportBinding binding) returns AgentCard => 
 function testClientSelectsJsonRpcAndSpeaksIt() returns error? {
     Client c = check new (cardForBinding("JSONRPC"));
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "GetTask",
             "a JSONRPC card must produce a client that posts a JSON-RPC envelope");
 }
@@ -62,7 +62,7 @@ function testClientSelectsJsonRpcAndSpeaksIt() returns error? {
 function testClientSelectsRestAndSpeaksIt() returns error? {
     Client c = check new (cardForBinding("HTTP+JSON"));
     setNextRestResponse(defaultTaskJson());
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(getLastRestRequest().path, "/tasks/task-1",
             "an HTTP+JSON card must produce a client that uses REST paths");
 }
@@ -71,7 +71,7 @@ function testClientSelectsRestAndSpeaksIt() returns error? {
 function testClientSelectsGrpcAndSpeaksIt() returns error? {
     Client c = check new (cardForBinding("GRPC"));
     setNextGrpcResponse(<grpcstub:Task>{id: "task-1", status: {state: grpcstub:TASK_STATE_COMPLETED}});
-    Task t = check c->getTask("task-1");
+    Task t = check c->getTask({id: "task-1"});
     test:assertEquals(t.id, "task-1");
     test:assertTrue(getLastGrpcMetadata().hasKey("a2a-version"),
             "a GRPC card must produce a client that calls over gRPC, carrying A2A-Version as metadata");
@@ -89,19 +89,19 @@ function testClientDelegatesEachOperationToItsOwnMethod() returns error? {
     Client c = check new (cardForBinding("JSONRPC"));
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message _ = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     test:assertEquals(check getLastRequestBody().method, "SendMessage");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "GetTask");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->cancelTask("task-1");
+    Task _ = check c->cancelTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "CancelTask");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {tasks: [], nextPageToken: "", pageSize: 0, totalSize: 0}});
-    ListTasksResult _ = check c->listTasks();
+    ListTasksResponse _ = check c->listTasks();
     test:assertEquals(check getLastRequestBody().method, "ListTasks");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {url: "https://hook.example", taskId: "task-1"}});
@@ -110,15 +110,15 @@ function testClientDelegatesEachOperationToItsOwnMethod() returns error? {
     test:assertEquals(check getLastRequestBody().method, "CreateTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {url: "https://hook.example", taskId: "task-1"}});
-    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig("task-1", "cfg-1");
+    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig({taskId: "task-1", id: "cfg-1"});
     test:assertEquals(check getLastRequestBody().method, "GetTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {configs: [], nextPageToken: ""}});
-    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1");
+    ListTaskPushNotificationConfigsResponse _ = check c->listTaskPushNotificationConfigs({taskId: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "ListTaskPushNotificationConfigs");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {}});
-    check c->deleteTaskPushNotificationConfig("task-1", "cfg-1");
+    check c->deleteTaskPushNotificationConfig({taskId: "task-1", id: "cfg-1"});
     test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1",
@@ -137,8 +137,7 @@ function testClientDelegatesStreamingOperations() returns error? {
         {data: taskJson("task-s1")},
         {data: statusUpdateJson("task-s1", "TASK_STATE_COMPLETED")}
     ]);
-    stream<StreamResponse, error?> sent = check c->sendStreamingMessage(
-            {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    stream<StreamResponse, error?> sent = check c->sendStreamingMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     int sentCount = 0;
     check from StreamResponse _ in sent
         do {
@@ -150,7 +149,7 @@ function testClientDelegatesStreamingOperations() returns error? {
     setNextSseResponse([
         {data: statusUpdateJson("task-s2", "TASK_STATE_COMPLETED")}
     ]);
-    stream<StreamResponse, error?> subscribed = check c->subscribeToTask("task-s2");
+    stream<StreamResponse, error?> subscribed = check c->subscribeToTask({id: "task-s2"});
     int subCount = 0;
     check from StreamResponse _ in subscribed
         do {
@@ -169,7 +168,7 @@ function testClientDelegationPassesArgumentsThrough() returns error? {
     Client c = check new (cardForBinding("JSONRPC"));
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->getTask("task-42", historyLength = 7, tenant = "per-call-tenant");
+    Task _ = check c->getTask({id: "task-42", historyLength: 7, tenant: "per-call-tenant"});
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.id, "task-42");
     test:assertEquals(check params.historyLength, 7);
@@ -177,8 +176,7 @@ function testClientDelegationPassesArgumentsThrough() returns error? {
             "a per-call tenant override must survive the delegation");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {configs: [], nextPageToken: ""}});
-    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs(
-            "task-1", pageSize = 5, pageToken = "cursor-abc");
+    ListTaskPushNotificationConfigsResponse _ = check c->listTaskPushNotificationConfigs({taskId: "task-1", pageSize: 5, pageToken: "cursor-abc"});
     params = check getLastRequestBody().params;
     test:assertEquals(check params.pageSize, 5);
     test:assertEquals(check params.pageToken, "cursor-abc");
@@ -244,7 +242,7 @@ function testClientSkipsV03RestInterfaceAndFallsToJsonRpc() returns error? {
         jsonrpc: "2.0", id: "1",
         result: {id: "task-1", kind: "task", status: {state: "completed"}}
     });
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "tasks/get",
             "the v0.3 JSONRPC interface behind the unusable REST one must be selected, and speak v0.3");
 }
@@ -268,7 +266,7 @@ function testClientSkipsV03GrpcInterfaceAndFallsToJsonRpc() returns error? {
         jsonrpc: "2.0", id: "1",
         result: {id: "task-1", kind: "task", status: {state: "completed"}}
     });
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "tasks/get");
 }
 
@@ -306,7 +304,7 @@ function testClientStillTakesFirstServiceableEntry() returns error? {
     };
     Client c = check new (card);
     setNextRestResponse(defaultTaskJson());
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(getLastRestRequest().path, "/tasks/task-1",
             "a serviceable v1.0 REST entry listed first must still win");
 }

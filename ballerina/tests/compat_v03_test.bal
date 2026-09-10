@@ -736,8 +736,8 @@ function testTaskPushNotificationConfigRoundTripsThroughEncodeAndParse() returns
 }
 
 @test:Config {}
-function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
-    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([
+function testParseV03ListTaskPushNotificationConfigsResponse() returns error? {
+    ListTaskPushNotificationConfigsResponse result = check parseV03ListTaskPushNotificationConfigsResponse([
         {
             "taskId": "task-1",
             "pushNotificationConfig": {"url": "https://client.example.com/webhooks/a2a", "id": "webhook-1"}
@@ -750,8 +750,8 @@ function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
 }
 
 @test:Config {}
-function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenWhenAbsent() returns error? {
-    ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([]);
+function testParseV03ListTaskPushNotificationConfigsResponseDefaultsNextPageTokenWhenAbsent() returns error? {
+    ListTaskPushNotificationConfigsResponse result = check parseV03ListTaskPushNotificationConfigsResponse([]);
 
     test:assertEquals((result.configs ?: []).length(), 0);
     test:assertEquals(result.nextPageToken, "");

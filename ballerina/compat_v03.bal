@@ -663,8 +663,8 @@ isolated function encodeV03TaskPushNotificationConfig(TaskPushNotificationConfig
 # nextPageToken is synthesized as "" here rather than read from the wire.
 #
 # + resultJson - the raw v0.3 ListTaskPushNotificationConfigs result JSON (a bare array)
-# + return - the equivalent v1.0 ListTaskPushNotificationConfigsResult, or an error if malformed
-isolated function parseV03ListTaskPushNotificationConfigsResult(json resultJson) returns ListTaskPushNotificationConfigsResult|error {
+# + return - the equivalent v1.0 ListTaskPushNotificationConfigsResponse, or an error if malformed
+isolated function parseV03ListTaskPushNotificationConfigsResponse(json resultJson) returns ListTaskPushNotificationConfigsResponse|error {
     json[] rawConfigs = check resultJson.ensureType();
     TaskPushNotificationConfig[] configs = [];
     foreach json c in rawConfigs {

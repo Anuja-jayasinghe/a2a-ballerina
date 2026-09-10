@@ -29,7 +29,7 @@ import ballerina/test;
 function testJsonRpcClientConstructsFromUrl() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     JsonRpcClient c = check new (getServerBaseUrl());
-    Task|Message result = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message result = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     test:assertTrue(result is Task, "a JsonRpcClient built from a URL should resolve the card and reach the mock");
 }
 
@@ -48,7 +48,7 @@ function testJsonRpcClientConstructsFromAgentCard() returns error? {
     AgentCard card = check resolveAgentCard(getServerBaseUrl());
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     JsonRpcClient c = check new (card);
-    Task|Message result = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message result = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     test:assertTrue(result is Task);
 }
 
@@ -75,7 +75,7 @@ function testJsonRpcClientRejectsCardWithoutJsonRpcInterface() {
 function testJsonRpcClientAutoWiresTenantFromCard() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     JsonRpcClient c = check new (cardWithTenant("acme-corp"));
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message _ = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.tenant, "acme-corp");
 }
@@ -84,7 +84,7 @@ function testJsonRpcClientAutoWiresTenantFromCard() returns error? {
 function testJsonRpcClientExplicitTenantOverridesCard() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     JsonRpcClient c = check new (cardWithTenant("acme-corp"), tenant = "explicit");
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message _ = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.tenant, "explicit");
 }
@@ -97,15 +97,15 @@ function testJsonRpcClientSendsCorrectMethodNamePerOperation() returns error? {
     JsonRpcClient c = check new (getServerBaseUrl());
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "GetTask");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: defaultTaskJson()});
-    Task _ = check c->cancelTask("task-1");
+    Task _ = check c->cancelTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "CancelTask");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {tasks: [], nextPageToken: "", pageSize: 0, totalSize: 0}});
-    ListTasksResult _ = check c->listTasks();
+    ListTasksResponse _ = check c->listTasks();
     test:assertEquals(check getLastRequestBody().method, "ListTasks");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {url: "https://hook.example", taskId: "task-1"}});
@@ -113,15 +113,15 @@ function testJsonRpcClientSendsCorrectMethodNamePerOperation() returns error? {
     test:assertEquals(check getLastRequestBody().method, "CreateTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {url: "https://hook.example", taskId: "task-1"}});
-    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig("task-1", "cfg-1");
+    TaskPushNotificationConfig _ = check c->getTaskPushNotificationConfig({taskId: "task-1", id: "cfg-1"});
     test:assertEquals(check getLastRequestBody().method, "GetTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {configs: [], nextPageToken: ""}});
-    ListTaskPushNotificationConfigsResult _ = check c->listTaskPushNotificationConfigs("task-1");
+    ListTaskPushNotificationConfigsResponse _ = check c->listTaskPushNotificationConfigs({taskId: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "ListTaskPushNotificationConfigs");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {}});
-    check c->deleteTaskPushNotificationConfig("task-1", "cfg-1");
+    check c->deleteTaskPushNotificationConfig({taskId: "task-1", id: "cfg-1"});
     test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig");
 }
 
@@ -129,7 +129,7 @@ function testJsonRpcClientSendsCorrectMethodNamePerOperation() returns error? {
 function testJsonRpcClientMapsErrorCodesToTypedErrors() returns error? {
     JsonRpcClient c = check new (getServerBaseUrl());
     setNextJsonResponse({jsonrpc: "2.0", id: "1", 'error: {code: -32001, message: "Task not found"}});
-    Task|error result = c->getTask("missing");
+    Task|error result = c->getTask({id: "missing"});
     test:assertTrue(result is TaskNotFoundError,
             "the JSON-RPC error code table must map through this class exactly as it did before the split");
 }
@@ -143,8 +143,7 @@ function testJsonRpcClientStreams() returns error? {
         {data: taskJson("task-s1")},
         {data: statusUpdateJson("task-s1", "TASK_STATE_COMPLETED")}
     ]);
-    stream<StreamResponse, error?> s = check c->sendStreamingMessage(
-            {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    stream<StreamResponse, error?> s = check c->sendStreamingMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     int count = 0;
     check from StreamResponse _ in s
         do {
@@ -157,7 +156,7 @@ function testJsonRpcClientStreams() returns error? {
 function testJsonRpcClientAdvertisesRequestedExtensions() returns error? {
     JsonRpcClient c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
-    Task|Message _ = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message _ = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
 
     test:assertEquals(getLastRequestHeaders()["a2a-extensions"], "urn:example:ext-a",
             "requested extensions must be advertised on the request");
@@ -183,7 +182,7 @@ function testJsonRpcClientSpeaksV03Dialect() returns error? {
         jsonrpc: "2.0", id: "1",
         result: {id: "task-1", kind: "task", status: {state: "completed"}}
     });
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
     test:assertEquals(check getLastRequestBody().method, "tasks/get",
             "a v0.3 card must produce v0.3 wire method names through this class");
 }
@@ -194,6 +193,6 @@ function testJsonRpcClientSpeaksV03Dialect() returns error? {
 function testJsonRpcClientSatisfiesClientMethods() returns error? {
     setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {task: defaultTaskJson()}});
     ClientMethods c = check new JsonRpcClient(getServerBaseUrl());
-    Task|Message result = check c->sendMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
+    Task|Message result = check c->sendMessage({message: {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]}});
     test:assertTrue(result is Task, "a JsonRpcClient must be usable through the ClientMethods shape");
 }

@@ -330,11 +330,11 @@ isolated function pushNotificationsUnsupportedError(string operation) returns Pu
 # + mode - the wire dialect this client speaks
 # + return - the parameter map
 isolated function buildListTasksParams(
-        ListTasksFilter? filter,
+        ListTasksRequest? filter,
         string? effectiveTenant,
         ProtocolMode mode) returns map<json> {
     map<json> params = {};
-    if filter is ListTasksFilter {
+    if filter is ListTasksRequest {
         string? contextId = filter?.contextId;
         TaskState? status = filter?.status;
         int? pageSize = filter?.pageSize;
@@ -370,12 +370,12 @@ isolated function buildListTasksParams(
 # + result - the raw result payload
 # + return - the decoded page of tasks, or an InvalidAgentResponseError if
 #            it doesn't match the expected shape
-isolated function decodeListTasksResult(json result) returns ListTasksResult|Error {
+isolated function decodeListTasksResponse(json result) returns ListTasksResponse|Error {
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `ListTasks response could not be decoded: ${rewired.message()}`);
     }
-    ListTasksResult|error decoded = rewired.cloneWithType(ListTasksResult);
+    ListTasksResponse|error decoded = rewired.cloneWithType(ListTasksResponse);
     if decoded is error {
         return invalidAgentResponse(string `ListTasks response did not match the expected shape: ${decoded.message()}`);
     }
@@ -469,13 +469,13 @@ isolated function buildListTaskPushNotificationConfigsParams(
 # + mode - the wire dialect this client speaks
 # + return - the decoded page of configs, or an InvalidAgentResponseError
 #            if it doesn't match the expected shape
-isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode)
-        returns ListTaskPushNotificationConfigsResult|Error {
+isolated function decodeListTaskPushNotificationConfigsResponse(json result, ProtocolMode mode)
+        returns ListTaskPushNotificationConfigsResponse|Error {
     if mode == "V0_3" {
-        ListTaskPushNotificationConfigsResult|error v03Result = parseV03ListTaskPushNotificationConfigsResult(result);
+        ListTaskPushNotificationConfigsResponse|error v03Result = parseV03ListTaskPushNotificationConfigsResponse(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
-    ListTaskPushNotificationConfigsResult|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    ListTaskPushNotificationConfigsResponse|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResponse);
     if decoded is error {
         return invalidAgentResponse(
             string `ListTaskPushNotificationConfigs response did not match the expected shape: ${decoded.message()}`);

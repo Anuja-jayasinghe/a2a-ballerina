@@ -382,11 +382,11 @@ public isolated client class GrpcClient {
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
     # + return - A Task or a Message on success, or a typed Error on failure
-    isolated remote function sendMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|Error {
+    isolated remote function sendMessage(SendMessageRequest request) returns Task|Message|Error {
+        Message message = request.message;
+        SendMessageConfiguration? config = request?.configuration;
+        string? tenant = request?.tenant;
+        map<json>? metadata = request?.metadata;
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
@@ -403,11 +403,12 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function sendStreamingMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
+    isolated remote function sendStreamingMessage(SendMessageRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        Message message = request.message;
+        SendMessageConfiguration? config = request?.configuration;
+        string? tenant = request?.tenant;
+        map<json>? metadata = request?.metadata;
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -433,7 +434,10 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            Error) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
+    isolated remote function getTask(GetTaskRequest request) returns Task|Error {
+        string taskId = request.id;
+        int? historyLength = request?.historyLength;
+        string? tenant = request?.tenant;
         map<json> params = buildGetTaskParams(taskId, historyLength, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("GetTask", params);
         return decodeTaskResult(result, self.mode);
@@ -446,10 +450,10 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
     #            (or other typed Error)
-    isolated remote function cancelTask(
-            string taskId,
-            map<json>? metadata = (),
-            string? tenant = ()) returns Task|Error {
+    isolated remote function cancelTask(CancelTaskRequest request) returns Task|Error {
+        string taskId = request.id;
+        map<json>? metadata = request?.metadata;
+        string? tenant = request?.tenant;
         map<json> params = buildCancelTaskParams(taskId, metadata, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("CancelTask", params);
         return decodeTaskResult(result, self.mode);
@@ -465,9 +469,10 @@ public isolated client class GrpcClient {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function subscribeToTask(
-            string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
+    isolated remote function subscribeToTask(SubscribeToTaskRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        string taskId = request.id;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -494,13 +499,12 @@ public isolated client class GrpcClient {
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
     #            or another typed Error
-    isolated remote function listTasks(
-            ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|Error {
+    isolated remote function listTasks(ListTasksRequest request = {}) returns ListTasksResponse|Error {
+        string? tenant = request?.tenant;
         check guardListTasksSupported(self.mode);
-        map<json> params = buildListTasksParams(filter, tenant ?: self.tenant, self.mode);
+        map<json> params = buildListTasksParams(request, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("ListTasks", params);
-        return decodeListTasksResult(result);
+        return decodeListTasksResponse(result);
     }
 
     # Registers a webhook to receive updates for a task.
@@ -509,9 +513,10 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function createTaskPushNotificationConfig(
-            TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
+    isolated remote function createTaskPushNotificationConfig(TaskPushNotificationConfig request)
+            returns TaskPushNotificationConfig|Error {
+        TaskPushNotificationConfig config = request;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -532,10 +537,11 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
     #            TaskNotFoundError (or other typed Error)
-    isolated remote function getTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
+    isolated remote function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request)
+            returns TaskPushNotificationConfig|Error {
+        string taskId = request.taskId;
+        string id = request.id;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -557,11 +563,12 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function listTaskPushNotificationConfigs(
-            string taskId,
-            int? pageSize = (),
-            string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
+    isolated remote function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request)
+            returns ListTaskPushNotificationConfigsResponse|Error {
+        string taskId = request.taskId;
+        int? pageSize = request?.pageSize;
+        string? pageToken = request?.pageToken;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -572,7 +579,7 @@ public isolated client class GrpcClient {
         map<json> params = buildListTaskPushNotificationConfigsParams(
                 taskId, pageSize, pageToken, tenant ?: self.tenant, self.mode);
         json result = check self.grpcCall("ListTaskPushNotificationConfigs", params);
-        return decodeListTaskPushNotificationConfigsResult(result, self.mode);
+        return decodeListTaskPushNotificationConfigsResponse(result, self.mode);
     }
 
     # Deletes a push-notification webhook config. Idempotent per
@@ -588,10 +595,11 @@ public isolated client class GrpcClient {
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
     # + return - nil on success, or a typed Error
-    isolated remote function deleteTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns Error? {
+    isolated remote function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request)
+            returns Error? {
+        string taskId = request.taskId;
+        string id = request.id;
+        string? tenant = request?.tenant;
         map<json> params = buildPushNotificationConfigRefParams(
                 taskId, id, tenant ?: self.tenant, self.mode);
         json _ = check self.grpcCall("DeleteTaskPushNotificationConfig", params);
@@ -602,7 +610,8 @@ public isolated client class GrpcClient {
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or a typed Error
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
+    isolated remote function getExtendedAgentCard(GetExtendedAgentCardRequest request = {}) returns AgentCard|Error {
+        string? tenant = request?.tenant;
         lock {
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {

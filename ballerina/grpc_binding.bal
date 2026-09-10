@@ -602,8 +602,8 @@ isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns
 }
 
 # + resp - the generated grpcstub:ListTasksResponse to decode
-# + return - the equivalent typed ListTasksResult
-isolated function decodeGrpcListTasksResult(grpcstub:ListTasksResponse resp) returns ListTasksResult|error {
+# + return - the equivalent typed ListTasksResponse
+isolated function decodeGrpcListTasksResponse(grpcstub:ListTasksResponse resp) returns ListTasksResponse|error {
     Task[] tasks = [];
     foreach grpcstub:Task t in resp.tasks {
         tasks.push(check decodeGrpcTask(t));
@@ -617,8 +617,8 @@ isolated function decodeGrpcListTasksResult(grpcstub:ListTasksResponse resp) ret
 }
 
 # + resp - the generated grpcstub:ListTaskPushNotificationConfigsResponse to decode
-# + return - the equivalent typed ListTaskPushNotificationConfigsResult
-isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificationConfigsResponse resp) returns ListTaskPushNotificationConfigsResult|error {
+# + return - the equivalent typed ListTaskPushNotificationConfigsResponse
+isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificationConfigsResponse resp) returns ListTaskPushNotificationConfigsResponse|error {
     TaskPushNotificationConfig[] configs = [];
     foreach grpcstub:TaskPushNotificationConfig c in resp.configs {
         configs.push(check decodeGrpcPushConfig(c));
@@ -1126,7 +1126,7 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
             return task.toJson();
         }
         "ListTasks" => {
-            ListTasksResult result = check decodeGrpcListTasksResult(check response.ensureType(grpcstub:ListTasksResponse));
+            ListTasksResponse result = check decodeGrpcListTasksResponse(check response.ensureType(grpcstub:ListTasksResponse));
             return result.toJson();
         }
         "CreateTaskPushNotificationConfig"|"GetTaskPushNotificationConfig" => {
@@ -1134,7 +1134,7 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
             return config.toJson();
         }
         "ListTaskPushNotificationConfigs" => {
-            ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(check response.ensureType(grpcstub:ListTaskPushNotificationConfigsResponse));
+            ListTaskPushNotificationConfigsResponse result = check decodeGrpcListPushConfigsResult(check response.ensureType(grpcstub:ListTaskPushNotificationConfigsResponse));
             return result.toJson();
         }
         "DeleteTaskPushNotificationConfig" => {

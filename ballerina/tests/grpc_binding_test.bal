@@ -355,12 +355,12 @@ function testDecodeGrpcStreamResponseEachVariant() returns error? {
 }
 
 @test:Config {groups: ["grpc"]}
-function testDecodeGrpcListTasksResult() returns error? {
+function testDecodeGrpcListTasksResponse() returns error? {
     grpcstub:ListTasksResponse resp = {
         tasks: [{id: "t1", status: {state: grpcstub:TASK_STATE_WORKING}}],
         next_page_token: "cursor1", page_size: 10, total_size: 1
     };
-    ListTasksResult result = check decodeGrpcListTasksResult(resp);
+    ListTasksResponse result = check decodeGrpcListTasksResponse(resp);
     test:assertEquals(result.tasks.length(), 1);
     test:assertEquals(result.nextPageToken, "cursor1");
     test:assertEquals(result.pageSize, 10);
@@ -373,7 +373,7 @@ function testDecodeGrpcListPushConfigsResult() returns error? {
         configs: [{url: "https://cb.example.com", task_id: "t1"}],
         next_page_token: "cursor2"
     };
-    ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(resp);
+    ListTaskPushNotificationConfigsResponse result = check decodeGrpcListPushConfigsResult(resp);
     test:assertEquals((result.configs ?: []).length(), 1);
     test:assertEquals(result.nextPageToken, "cursor2");
 }

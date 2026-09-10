@@ -842,8 +842,8 @@ function testSendMessageConfigurationToleratesUnrecognizedField() returns error?
 }
 
 @test:Config {}
-function testListTasksFilterRoundTrip() returns error? {
-    ListTasksFilter original = {
+function testListTasksRequestRoundTrip() returns error? {
+    ListTasksRequest original = {
         contextId: "ctx-1",
         status: TASK_STATE_COMPLETED,
         pageSize: 20,
@@ -852,16 +852,16 @@ function testListTasksFilterRoundTrip() returns error? {
         statusTimestampAfter: "2026-07-29T00:00:00Z",
         includeArtifacts: true
     };
-    ListTasksFilter decoded = check original.toJson().cloneWithType(ListTasksFilter);
+    ListTasksRequest decoded = check original.toJson().cloneWithType(ListTasksRequest);
 
     test:assertEquals(decoded, original);
 }
 
 @test:Config {}
-function testListTasksFilterToleratesUnrecognizedField() returns error? {
+function testListTasksRequestToleratesUnrecognizedField() returns error? {
     json payload = {futureField: "some value from a newer spec revision"};
 
-    ListTasksFilter decoded = check payload.cloneWithType(ListTasksFilter);
+    ListTasksRequest decoded = check payload.cloneWithType(ListTasksRequest);
 
     test:assertTrue(decoded?.contextId is (), "contextId should be nil, not defaulted");
 
@@ -870,8 +870,8 @@ function testListTasksFilterToleratesUnrecognizedField() returns error? {
 }
 
 @test:Config {}
-function testListTasksResultRoundTrip() returns error? {
-    ListTasksResult original = {
+function testListTasksResponseRoundTrip() returns error? {
+    ListTasksResponse original = {
         tasks: [
             {id: "task-1", status: {state: TASK_STATE_COMPLETED}}
         ],
@@ -879,20 +879,20 @@ function testListTasksResultRoundTrip() returns error? {
         pageSize: 20,
         totalSize: 1
     };
-    ListTasksResult decoded = check original.toJson().cloneWithType(ListTasksResult);
+    ListTasksResponse decoded = check original.toJson().cloneWithType(ListTasksResponse);
 
     test:assertEquals(decoded, original);
 }
 
 @test:Config {}
-function testListTaskPushNotificationConfigsResultRoundTrip() returns error? {
-    ListTaskPushNotificationConfigsResult original = {
+function testListTaskPushNotificationConfigsResponseRoundTrip() returns error? {
+    ListTaskPushNotificationConfigsResponse original = {
         configs: [
             {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
         ],
         nextPageToken: "cursor-ghi"
     };
-    ListTaskPushNotificationConfigsResult decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResult);
+    ListTaskPushNotificationConfigsResponse decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResponse);
 
     test:assertEquals(decoded, original);
 }

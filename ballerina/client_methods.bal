@@ -61,116 +61,82 @@ type ClientMethods isolated client object {
 
     # Sends a message to the remote agent.
     #
-    # + message - The message to send; messageId must be set by the caller
-    # + config - Optional send configuration
-    # + tenant - Optional per-call tenant override
-    # + metadata - Optional request-level metadata, per SendMessageRequest
-    #              (specification section 3.2.1) — distinct from
-    #              message.metadata, which is metadata on the Message itself
+    # + request - The message and its send options
     # + return - A Task or a Message on success, or an error on failure
-    isolated remote function sendMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|Error;
+    isolated remote function sendMessage(SendMessageRequest request) returns Task|Message|Error;
 
     # Sends a message and receives updates as they happen.
     #
-    # + message - The message to send
-    # + config - Optional send configuration
-    # + tenant - Optional per-call tenant override
-    # + metadata - Optional request-level metadata
+    # + request - The message and its send options
     # + return - A stream of StreamResponse values, or an error
-    isolated remote function sendStreamingMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error;
+    isolated remote function sendStreamingMessage(SendMessageRequest request)
+        returns stream<StreamResponse, error?>|Error;
 
     # Retrieves the current state of a task.
     #
-    # + taskId - The task identifier returned by a previous sendMessage
-    # + historyLength - Maximum messages to include in task.history
-    # + tenant - Optional per-call tenant override
+    # + request - The task identifier, and optionally how much history to include
     # + return - The current Task, or an error if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error;
+    isolated remote function getTask(GetTaskRequest request) returns Task|Error;
 
     # Requests cancellation of an in-progress task.
     #
-    # + taskId - The task to cancel
-    # + metadata - Optional additional context passed to the agent
-    # + tenant - Optional per-call tenant override
+    # + request - The task identifier, and any additional context for the agent
     # + return - The updated Task, or an error
-    isolated remote function cancelTask(
-            string taskId,
-            map<json>? metadata = (),
-            string? tenant = ()) returns Task|Error;
+    isolated remote function cancelTask(CancelTaskRequest request) returns Task|Error;
 
     # Opens a stream on an existing task.
     #
-    # + taskId - The task to subscribe to
-    # + tenant - Optional per-call tenant override
+    # + request - The task identifier
     # + return - A stream of StreamResponse values, or an error
-    isolated remote function subscribeToTask(
-            string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|Error;
+    isolated remote function subscribeToTask(SubscribeToTaskRequest request)
+        returns stream<StreamResponse, error?>|Error;
 
     # Lists tasks matching an optional filter, with cursor-based pagination.
     #
-    # + filter - Optional filter/pagination parameters
-    # + tenant - Optional per-call tenant override
+    # + request - Optional filter and pagination parameters; every field is
+    #             optional, so this defaults to listing with the server's
+    #             own defaults
     # + return - A page of matching tasks, or an error
-    isolated remote function listTasks(ListTasksFilter? filter = (), string? tenant = ()) returns ListTasksResult|Error;
+    isolated remote function listTasks(ListTasksRequest request = {}) returns ListTasksResponse|Error;
 
     # Registers a webhook to receive updates for a task.
     #
-    # + config - The webhook configuration; config.taskId identifies the task
-    # + tenant - Optional per-call tenant override
+    # Takes the configuration itself rather than a request wrapper: the
+    # specification's CreateTaskPushNotificationConfig RPC is the one
+    # operation with no dedicated request message.
+    #
+    # + request - The webhook configuration; its taskId identifies the task
     # + return - The created config as the server persisted it, or an error
-    isolated remote function createTaskPushNotificationConfig(
-            TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error;
+    isolated remote function createTaskPushNotificationConfig(TaskPushNotificationConfig request)
+        returns TaskPushNotificationConfig|Error;
 
     # Retrieves a previously registered push-notification webhook config.
     #
-    # + taskId - The task the config was registered against
-    # + id - The config's identifier, from its creation response
-    # + tenant - Optional per-call tenant override
+    # + request - The parent task id and the config's own id
     # + return - The config, or an error
-    isolated remote function getTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error;
+    isolated remote function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request)
+        returns TaskPushNotificationConfig|Error;
 
     # Lists all push-notification webhook configs registered for a task.
     #
-    # + taskId - The task to list configs for
-    # + pageSize - Maximum results per page
-    # + pageToken - Opaque cursor from a previous result's nextPageToken
-    # + tenant - Optional per-call tenant override
+    # + request - The parent task id, and optional pagination parameters
     # + return - A page of matching configs, or an error
-    isolated remote function listTaskPushNotificationConfigs(
-            string taskId,
-            int? pageSize = (),
-            string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error;
+    isolated remote function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request)
+        returns ListTaskPushNotificationConfigsResponse|Error;
 
     # Deletes a push-notification webhook config. Idempotent per
     # specification section 3.1.10.
     #
-    # + taskId - The task the config was registered against
-    # + id - The config's identifier
-    # + tenant - Optional per-call tenant override
+    # + request - The parent task id and the config's own id
     # + return - nil on success, or an error
-    isolated remote function deleteTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns Error?;
+    isolated remote function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request)
+        returns Error?;
 
     # Retrieves the agent's extended AgentCard.
     #
-    # + tenant - Optional per-call tenant override
-    # + return - The extended AgentCard, the already-held card when that
-    #            card declares no extended-card support, or an error
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error;
+    # + request - Optional routing parameters; every field is optional, so
+    #             this defaults to an empty request
+    # + return - The extended AgentCard, or an error
+    isolated remote function getExtendedAgentCard(GetExtendedAgentCardRequest request = {})
+        returns AgentCard|Error;
 };

@@ -42,7 +42,7 @@ isolated function grpcTaskResponse(string id) returns grpcstub:Task =>
 function testGrpcClientConstructsFromUrl() returns error? {
     setNextGrpcResponse(grpcTaskResponse("task-1"));
     GrpcClient c = check new (getServerBaseUrl());
-    Task t = check c->getTask("task-1");
+    Task t = check c->getTask({id: "task-1"});
     test:assertEquals(t.id, "task-1");
 }
 
@@ -51,7 +51,7 @@ function testGrpcClientConstructsFromAgentCard() returns error? {
     AgentCard card = check resolveAgentCard(getServerBaseUrl());
     setNextGrpcResponse(grpcTaskResponse("task-1"));
     GrpcClient c = check new (card);
-    Task t = check c->getTask("task-1");
+    Task t = check c->getTask({id: "task-1"});
     test:assertEquals(t.id, "task-1");
 }
 
@@ -107,7 +107,7 @@ function testGrpcClientConnectionFailureWrapsAsA2AInternalError() returns error?
         defaultOutputModes: ["text"]
     };
     GrpcClient c = check new (card);
-    Task|error result = c->getTask("task-1");
+    Task|error result = c->getTask({id: "task-1"});
     test:assertTrue(result is InternalError,
             "a real gRPC connection failure should surface as a typed InternalError, not a bare error");
 }
@@ -117,11 +117,11 @@ function testGrpcClientUnaryOperationsRoundTrip() returns error? {
     GrpcClient c = check new (getServerBaseUrl());
 
     setNextGrpcResponse(grpcTaskResponse("task-1"));
-    Task got = check c->getTask("task-1");
+    Task got = check c->getTask({id: "task-1"});
     test:assertEquals(got.id, "task-1");
 
     setNextGrpcResponse(grpcTaskResponse("task-1"));
-    Task cancelled = check c->cancelTask("task-1");
+    Task cancelled = check c->cancelTask({id: "task-1"});
     test:assertEquals(cancelled.id, "task-1");
 }
 
@@ -132,7 +132,7 @@ function testGrpcClientUnaryOperationsRoundTrip() returns error? {
 function testGrpcClientMapsStatusCodeToTypedError() returns error? {
     GrpcClient c = check new (getServerBaseUrl());
     setNextGrpcError(error grpc:NotFoundError("no such task"));
-    Task|error result = c->getTask("missing");
+    Task|error result = c->getTask({id: "missing"});
     test:assertTrue(result is TaskNotFoundError,
             "a gRPC NOT_FOUND status must map onto TaskNotFoundError");
 }
@@ -143,7 +143,7 @@ function testGrpcClientMapsStatusCodeToTypedError() returns error? {
 function testGrpcClientAdvertisesRequestedExtensionsAsOutboundMetadata() returns error? {
     GrpcClient c = check new (getServerBaseUrl(), requestedExtensions = ["urn:example:ext-a"]);
     setNextGrpcResponse(grpcTaskResponse("task-1"));
-    Task _ = check c->getTask("task-1");
+    Task _ = check c->getTask({id: "task-1"});
 
     map<string|string[]> sent = getLastGrpcMetadata();
     test:assertTrue(sent.hasKey("a2a-extensions"),
@@ -172,7 +172,7 @@ function testGrpcClientConstructsWithOAuth2ClientCredentialsAuth() returns error
     GrpcClient c = check new (getServerBaseUrl(), clientConfig = {
         auth: {tokenUrl: string `${getServerBaseUrl()}/oauth2-token`, clientId: "id", clientSecret: "secret"}
     });
-    Task t = check c->getTask("task-1");
+    Task t = check c->getTask({id: "task-1"});
     test:assertEquals(t.id, "task-1");
 }
 
@@ -180,6 +180,6 @@ function testGrpcClientConstructsWithOAuth2ClientCredentialsAuth() returns error
 function testGrpcClientSatisfiesClientMethods() returns error? {
     setNextGrpcResponse(grpcTaskResponse("task-1"));
     ClientMethods c = check new GrpcClient(getServerBaseUrl());
-    Task t = check c->getTask("task-1");
+    Task t = check c->getTask({id: "task-1"});
     test:assertEquals(t.id, "task-1", "a GrpcClient must be usable through the ClientMethods shape");
 }

@@ -349,27 +349,141 @@ public type SendMessageConfiguration record {|
     json...;
 |};
 
-# Filter and pagination parameters for a listTasks call.
-public type ListTasksFilter record {|
+# The request payload for `sendMessage` and `sendStreamingMessage`.
+#
+# Specification section 10.3 — `SendMessageRequest`. Both operations take
+# this same request; only their responses differ.
+public type SendMessageRequest record {|
+    # The message to send to the agent
+    Message message;
+    # Opaque routing identifier. Must match the `tenant` value from the
+    # selected AgentInterface when that field is set; left unset, the client
+    # supplies the tenant its own selected interface declared.
+    string tenant?;
+    # Per-request options
+    SendMessageConfiguration configuration?;
+    # Free-form context passed through to the agent
+    map<json> metadata?;
+    json...;
+|};
+
+# The request payload for `getTask`.
+#
+# Specification section 10.3 — `GetTaskRequest`.
+public type GetTaskRequest record {|
+    # The resource ID of the task to retrieve
+    string id;
+    # Opaque routing identifier
+    string tenant?;
+    # Maximum recent messages to include in `task.history`. Unset imposes no
+    # limit; zero requests no messages at all.
+    int historyLength?;
+    json...;
+|};
+
+# The request payload for `listTasks`.
+#
+# Specification section 10.3 — `ListTasksRequest`. Every field is optional,
+# so `c->listTasks()` lists with the server's own defaults.
+public type ListTasksRequest record {|
+    # Opaque routing identifier
+    string tenant?;
     # Restrict to tasks in this context
     string contextId?;
     # Restrict to tasks in this lifecycle state
     TaskState status?;
     # Maximum results per page
     int pageSize?;
-    # Opaque cursor from a previous ListTasksResult.nextPageToken
+    # Opaque cursor from a previous ListTasksResponse.nextPageToken
     string pageToken?;
     # Same semantics as getTask's historyLength
     int historyLength?;
-    # ISO 8601 — only tasks whose status changed after this timestamp
+    # RFC 3339 — only tasks whose status changed at or after this timestamp
     string statusTimestampAfter?;
     # Whether to include each task's artifacts in the response
     boolean includeArtifacts?;
     json...;
 |};
 
+# The request payload for `cancelTask`.
+#
+# Specification section 10.3 — `CancelTaskRequest`.
+public type CancelTaskRequest record {|
+    # The resource ID of the task to cancel
+    string id;
+    # Opaque routing identifier
+    string tenant?;
+    # Free-form context passed through to the agent
+    map<json> metadata?;
+    json...;
+|};
+
+# The request payload for `subscribeToTask`.
+#
+# Specification section 10.3 — `SubscribeToTaskRequest`.
+public type SubscribeToTaskRequest record {|
+    # The resource ID of the task to subscribe to
+    string id;
+    # Opaque routing identifier
+    string tenant?;
+    json...;
+|};
+
+# The request payload for `getTaskPushNotificationConfig`.
+#
+# Specification section 10.3 — `GetTaskPushNotificationConfigRequest`. Both
+# identifiers are required and mean different things: `taskId` is the parent
+# task, `id` the configuration itself.
+public type GetTaskPushNotificationConfigRequest record {|
+    # The parent task resource ID
+    string taskId;
+    # The resource ID of the configuration to retrieve
+    string id;
+    # Opaque routing identifier
+    string tenant?;
+    json...;
+|};
+
+# The request payload for `listTaskPushNotificationConfigs`.
+#
+# Specification section 10.3 — `ListTaskPushNotificationConfigsRequest`.
+public type ListTaskPushNotificationConfigsRequest record {|
+    # The parent task resource ID
+    string taskId;
+    # Opaque routing identifier
+    string tenant?;
+    # Maximum results per page
+    int pageSize?;
+    # Opaque cursor from a previous response's nextPageToken
+    string pageToken?;
+    json...;
+|};
+
+# The request payload for `deleteTaskPushNotificationConfig`.
+#
+# Specification section 10.3 — `DeleteTaskPushNotificationConfigRequest`.
+public type DeleteTaskPushNotificationConfigRequest record {|
+    # The parent task resource ID
+    string taskId;
+    # The resource ID of the configuration to delete
+    string id;
+    # Opaque routing identifier
+    string tenant?;
+    json...;
+|};
+
+# The request payload for `getExtendedAgentCard`.
+#
+# Specification section 10.3 — `GetExtendedAgentCardRequest`. Its only field
+# is optional, so `c->getExtendedAgentCard()` works with no argument.
+public type GetExtendedAgentCardRequest record {|
+    # Opaque routing identifier
+    string tenant?;
+    json...;
+|};
+
 # Paginated result of a listTasks call.
-public type ListTasksResult record {|
+public type ListTasksResponse record {|
     # The matching tasks for this page
     Task[] tasks;
     # Opaque cursor for the next page; empty when there are no more results
@@ -382,7 +496,7 @@ public type ListTasksResult record {|
 |};
 
 # Paginated result of a listTaskPushNotificationConfigs call.
-public type ListTaskPushNotificationConfigsResult record {|
+public type ListTaskPushNotificationConfigsResponse record {|
     # The matching configs for this page
     TaskPushNotificationConfig[] configs?;
     # Opaque cursor for the next page; absent when there are no more results
