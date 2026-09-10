@@ -101,6 +101,69 @@ isolated function decodeStreamResponseEnvelope(json envelope) returns StreamResp
     return <StreamResponse>decoded;
 }
 
+# Enforces the specification's non-empty rule for REQUIRED arrays.
+#
+# Specification section 5.7 states it plainly: "Arrays marked as required
+# MUST contain at least one element." That is a blanket rule over every
+# `repeated` field carrying `[(google.api.field_behavior) = REQUIRED]`, and
+# it is validated in both directions -- section 5.7 says implementations
+# "SHOULD validate these requirements and reject messages with missing
+# required fields", which speaks of messages, not only responses. Checking
+# outbound turns a network round trip and whatever error the agent chooses
+# into an immediate, local, precise one.
+#
+# + name - the field's dotted name, for the message
+# + length - the array's actual length
+# + inbound - true when validating what an agent sent us, false for what a
+#             caller is about to send
+# + return - an error when the array is empty, otherwise nil
+isolated function requireNonEmpty(string name, int length, boolean inbound) returns Error? {
+    if length > 0 {
+        return ();
+    }
+    string message = string `${name} is a required array and must contain at least one element `
+        + string `(specification section 5.7)`;
+    // Inbound is the agent's fault; outbound is the caller's. InternalError
+    // is this library's catch-all for a client-side precondition failure --
+    // the specification defines no error for one, since section 3.3.2 and
+    // section 5.4 both describe server behaviour, and the same choice is
+    // already made by outboundPartVariantError.
+    return inbound
+        ? invalidAgentResponse(message)
+        : error InternalError(message, message = message);
+}
+
+# Validates a Message a caller is about to send.
+#
+# + message - the message to check
+# + return - an error when it violates a specification requirement
+isolated function validateOutboundMessage(Message message) returns Error? {
+    check requireNonEmpty("Message.parts", message.parts.length(), false);
+    foreach Part part in message.parts {
+        int variants = countSetPartVariants(part);
+        if variants != 1 {
+            error variantError = outboundPartVariantError(variants);
+            string m = variantError.message();
+            return error InternalError(m, message = m);
+        }
+    }
+    return ();
+}
+
+# Validates a Task an agent sent us, and the artifacts and history it carries.
+#
+# + task - the decoded task
+# + return - an error when it violates a specification requirement
+isolated function validateInboundTask(Task task) returns Error? {
+    foreach Artifact artifact in task.artifacts ?: [] {
+        check requireNonEmpty("Artifact.parts", artifact.parts.length(), true);
+    }
+    foreach Message historyMessage in task.history ?: [] {
+        check requireNonEmpty("Message.parts", historyMessage.parts.length(), true);
+    }
+    return ();
+}
+
 # Adds the tenant routing parameter when one applies.
 #
 # Tenant routing is a v1.0-only concept (per-AgentInterface tenant values).
@@ -130,6 +193,7 @@ isolated function buildSendMessageParams(
         map<json>? metadata,
         string? effectiveTenant,
         ProtocolMode mode) returns map<json>|Error {
+    check validateOutboundMessage(message);
     json|error messageJsonResult = mode == "V0_3"
         ? encodeV03Message(message)
         : encodeRawBytesForWire(message.toJson());
@@ -204,6 +268,7 @@ isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|
     if decoded is error {
         return invalidAgentResponse(string `Task response did not match the expected shape: ${decoded.message()}`);
     }
+    check validateInboundTask(decoded);
     return decoded;
 }
 
@@ -378,6 +443,12 @@ isolated function decodeListTasksResponse(json result) returns ListTasksResponse
     ListTasksResponse|error decoded = rewired.cloneWithType(ListTasksResponse);
     if decoded is error {
         return invalidAgentResponse(string `ListTasks response did not match the expected shape: ${decoded.message()}`);
+    }
+    // No non-empty check on `tasks`: an empty page is a legitimate "no
+    // results matched". See requireNonEmpty for why section 5.7's blanket
+    // sentence is not read literally.
+    foreach Task task in decoded.tasks {
+        check validateInboundTask(task);
     }
     return decoded;
 }

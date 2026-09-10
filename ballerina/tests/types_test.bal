@@ -1282,3 +1282,95 @@ function testDecodeRawBytesFromWireRejectsMultipleVariantsSet() {
     json|error result = decodeRawBytesFromWire(payload);
     test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
 }
+
+// ---- Part variant counting and required-array validation ---------------
+
+# `Part.data` is `google.protobuf.Value`, the one field in the specification
+# where a JSON null is legal. Counting variants by non-nil value read
+# `{"data": null}` as zero variants set and rejected a conformant data part
+# as malformed; counting by member presence -- which is what the
+# specification names as the discriminator -- reads it as the one variant it
+# is.
+@test:Config {}
+function testDataPartHoldingNullCountsAsOneVariant() {
+    Part dataHoldingNull = {data: ()};
+    test:assertEquals(countSetPartVariants(dataHoldingNull), 1,
+            "a data part whose value is JSON null is still a data part");
+
+    map<json> wireForm = {"data": ()};
+    test:assertEquals(countSetPartVariantsJson(wireForm), 1,
+            "and the same holds on the raw wire form");
+}
+
+# Absence and a null value are different states, and only presence counts.
+@test:Config {}
+function testPartWithNoVariantCountsAsZero() {
+    Part noVariant = {mediaType: "text/plain"};
+    test:assertEquals(countSetPartVariants(noVariant), 0);
+    test:assertEquals(countSetPartVariantsJson({"mediaType": "text/plain"}), 0);
+}
+
+# Artifact.parts is the only array the proto itself marks non-empty ("Must
+# contain at least one part"), and a2a-java enforces it too.
+@test:Config {}
+function testEmptyArtifactPartsIsRejected() {
+    Task task = {
+        id: "t1",
+        status: {state: TASK_STATE_COMPLETED},
+        artifacts: [{artifactId: "a1", parts: []}]
+    };
+
+    Error? result = validateInboundTask(task);
+
+    test:assertTrue(result is InvalidAgentResponseError,
+            "an artifact carrying no parts violates specification section 4.1.7");
+}
+
+# Message.parts carries no proto statement, but it is the message's content
+# container and a2a-java enforces it (Message.java:70).
+@test:Config {}
+function testEmptyMessagePartsIsRejectedOutbound() {
+    Message empty = {messageId: "m1", role: ROLE_USER, parts: []};
+
+    Error? result = validateOutboundMessage(empty);
+
+    test:assertTrue(result is InternalError,
+            "a caller's own malformed message is caught before the request is sent");
+}
+
+# An AgentCard with no skills is explicitly valid: the specification's own
+# canonicalization example in section 8.4.1 publishes one and annotates
+# `"skills": []` as "REQUIRED field -> include". Section 5.7's blanket
+# "required arrays MUST contain at least one element" cannot be read
+# literally against that.
+@test:Config {}
+function testAgentCardWithNoSkillsIsAccepted() returns error? {
+    json payload = {
+        name: "Example Agent",
+        description: "",
+        version: "1.0.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        skills: []
+    };
+
+    AgentCard card = check parseAgentCardBody(payload);
+
+    test:assertEquals(card.skills.length(), 0, "an empty skills array is conformant");
+}
+
+# An empty page is a legitimate "no results matched", not a malformed
+# response.
+@test:Config {}
+function testEmptyListTasksPageIsAccepted() returns error? {
+    json payload = {tasks: [], nextPageToken: "", pageSize: 50, totalSize: 0};
+
+    ListTasksResponse decoded = check decodeListTasksResponse(payload);
+
+    test:assertEquals(decoded.tasks.length(), 0);
+    test:assertEquals(decoded.totalSize, 0);
+}
