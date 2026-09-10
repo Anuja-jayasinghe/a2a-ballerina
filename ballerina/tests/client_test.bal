@@ -87,11 +87,13 @@ function testResolveAgentCardSucceedsWithoutLegacyUrl() returns error? {
         version: "1.0.0",
         capabilities: {streaming: true},
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
         skills: [
-            {id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city"}
-        ]
+            {id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city", tags: []}
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     });
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
@@ -115,10 +117,12 @@ function testPrimaryUrlPrefersSupportedInterfaces() returns error? {
         url: "https://legacy.example.com",
         capabilities: {},
         supportedInterfaces: [
-            {url: "https://primary.example.com", protocolBinding: "JSONRPC"},
-            {url: "https://secondary.example.com", protocolBinding: "JSONRPC"}
+            {url: "https://primary.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "https://secondary.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     test:assertEquals(check primaryUrl(card), "https://primary.example.com");
@@ -138,10 +142,12 @@ function testPrimaryUrlSkipsNonJsonRpcInterfaces() returns error? {
         version: "1.0.0",
         capabilities: {},
         supportedInterfaces: [
-            {url: "https://grpc.example.com", protocolBinding: "GRPC"},
-            {url: "https://jsonrpc.example.com", protocolBinding: "JSONRPC"}
+            {url: "https://grpc.example.com", protocolBinding: "GRPC", protocolVersion: "1.0"},
+            {url: "https://jsonrpc.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     test:assertEquals(check primaryUrl(card), "https://jsonrpc.example.com");
@@ -155,7 +161,10 @@ function testPrimaryUrlFallsBackToLegacyUrl() returns error? {
         version: "1.0.0",
         url: "https://legacy.example.com",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
 
     test:assertEquals(check primaryUrl(card), "https://legacy.example.com");
@@ -168,7 +177,10 @@ function testPrimaryUrlErrorsWhenNeitherIsSet() {
         description: "x",
         version: "1.0.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
 
     string|error result = primaryUrl(card);
@@ -181,9 +193,11 @@ function testSelectInterfaceFindsJsonRpcByDefault() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", tenant: "acme"}
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", tenant: "acme", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface iface = check selectInterface(card);
     test:assertEquals(iface.url, "http://jsonrpc.example");
@@ -195,10 +209,12 @@ function testSelectInterfaceFindsHttpJsonWhenPreferred() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"},
-            {url: "http://rest.example", protocolBinding: "HTTP+JSON", tenant: "acme-rest"}
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON", tenant: "acme-rest", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface iface = check selectInterface(card, "HTTP+JSON");
     test:assertEquals(iface.url, "http://rest.example");
@@ -210,9 +226,11 @@ function testSelectInterfaceErrorsWhenNoMatchAndNoLegacyUrl() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface|error result = selectInterface(card, "HTTP+JSON");
     test:assertTrue(result is error, "no HTTP+JSON interface and no legacy url should error, not silently fall back to a JSONRPC endpoint");
@@ -223,10 +241,12 @@ function testPrimaryUrlDefaultsToJsonRpc() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://rest.example", protocolBinding: "HTTP+JSON"},
-            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+            {url: "http://rest.example", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"},
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     string url = check primaryUrl(card);
     test:assertEquals(url, "http://jsonrpc.example", "primaryUrl with no argument must keep resolving JSONRPC, unchanged from today");
@@ -245,7 +265,9 @@ function testPrimaryUrlLegacyFallbackStaysJsonRpcOnly() returns error? {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         url: "http://legacy.example",
         supportedInterfaces: [],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface|error restResult = selectInterface(card, "HTTP+JSON");
     test:assertTrue(restResult is error, "a pre-v1.0 card's legacy url field predates HTTP+JSON entirely and must not be treated as a REST endpoint");
@@ -269,9 +291,11 @@ function testPrimaryUrlLegacyFallbackStaysJsonRpcOnlyAlongsideInterfaces() retur
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         url: "http://legacy.example",
         supportedInterfaces: [
-            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC"}
+            {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     string|error restUrl = primaryUrl(card, "HTTP+JSON");
     test:assertTrue(restUrl is error, "a card declaring only a JSON-RPC interface offers no REST endpoint, and the legacy url is not one");
@@ -285,7 +309,9 @@ function testSelectInterfaceGrpcOnlyCard() returns error? {
         name: "grpc-agent", description: "d", version: "1.0",
         capabilities: {},
         supportedInterfaces: [{url: "http://localhost:9090", protocolBinding: "GRPC", protocolVersion: "1.0"}],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface iface = check selectInterface(card, "GRPC");
     test:assertEquals(iface.url, "http://localhost:9090");
@@ -301,7 +327,9 @@ function testSelectInterfaceMixedCardOrdering() returns error? {
             {url: "http://localhost:8080", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
             {url: "http://localhost:8081", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     test:assertEquals(check primaryUrl(card, "GRPC"), "http://localhost:9090");
     test:assertEquals(check primaryUrl(card, "JSONRPC"), "http://localhost:8080");
@@ -321,7 +349,9 @@ function testSelectInterfaceTakesFirstEntryForBinding() returns error? {
             {url: "http://first.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
             {url: "http://second.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface iface = check selectInterface(card);
     test:assertEquals(iface.url, "http://first.example");
@@ -338,7 +368,9 @@ function testSelectInterfaceHonoursCardOrderOverProtocolVersion() returns error?
             {url: "http://v03.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"},
             {url: "http://v1.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentInterface iface = check selectInterface(card);
     test:assertEquals(iface.url, "http://v03.example",
@@ -352,9 +384,11 @@ isolated function cardWithTenant(string tenant) returns AgentCard => {
     name: "n", description: "d", version: "1.0.0",
     capabilities: {streaming: true},
     supportedInterfaces: [
-        {url: "http://localhost:19199", protocolBinding: "JSONRPC", tenant}
+        {url: "http://localhost:19199", protocolBinding: "JSONRPC", tenant, protocolVersion: "1.0"}
     ],
-    skills: []
+    skills: [],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"]
 };
 
 @test:Config {}
@@ -407,9 +441,11 @@ function testClientInitUsesTheOnlyBindingTheCardOffers() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON"}
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client c = check new (card);
 
@@ -426,10 +462,12 @@ function testClientInitFollowsCardOrderNotLibraryPreference() returns error? {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON"},
-            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"},
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client c = check new (card);
 
@@ -445,9 +483,11 @@ function testClientInitErrorsWhenCardOffersNoSupportedBinding() {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://exotic.example", protocolBinding: "SOMETHING-ELSE"}
+            {url: "http://exotic.example", protocolBinding: "SOMETHING-ELSE", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client|error result = new (card);
     test:assertTrue(result is error,
@@ -481,7 +521,9 @@ function testClientInitRejectsV03PlusGrpc() returns error? {
         supportedInterfaces: [
             {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     GrpcClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
@@ -608,7 +650,7 @@ function testSendMessageHappyPath() returns error? {
     Task task = <Task>result;
     assertValidTask(task);
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
-    test:assertEquals(extractArtifactText(task.artifacts[0]), "29 degrees Celsius and partly cloudy.");
+    test:assertEquals(extractArtifactText((task.artifacts ?: [])[0]), "29 degrees Celsius and partly cloudy.");
 }
 
 # SendMessageRequest.metadata (specification section 3.2.1) is a
@@ -1010,8 +1052,10 @@ function testTenantPropagatesOnEveryMethod() returns error? {
             description: "A scripted mock agent used by Client tests",
             version: "1.0.0",
             capabilities: {extendedAgentCard: true},
-            skills: []
-        }
+            skills: [],
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"]
+        , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]}
     });
     AgentCard|error getExtendedAgentCardResult = c->getExtendedAgentCard();
     check assertLastRequestTenant(tenant, "getExtendedAgentCard");
@@ -1032,7 +1076,10 @@ function testTenantOmittedInV03Mode() returns error? {
         url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     Client c = check new (legacyCard, tenant = "acme-corp");
 
@@ -1070,7 +1117,10 @@ function testV03ModeTranslatesSendMessageMethodName() returns error? {
         url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     Client c = check new (legacyCard);
 
@@ -1112,7 +1162,10 @@ function testV03ModeTranslatesSendMessageStreamRequestBody() returns error? {
         url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {streaming: true},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     Client c = check new (legacyCard);
 
@@ -1239,7 +1292,10 @@ isolated function v03Client(AgentCapabilities capabilities = {}) returns Client|
         url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities,
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     return new (legacyCard);
 }
@@ -1262,7 +1318,7 @@ function testV03SendMessageDecodesUnwrappedTaskResponse() returns error? {
     test:assertTrue(result is Task, "an unwrapped kind:task v0.3 result should decode as a Task");
     Task task = <Task>result;
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
-    test:assertEquals(extractArtifactText(task.artifacts[0]), "100 USD is equal to 87.80 EUR.");
+    test:assertEquals(extractArtifactText((task.artifacts ?: [])[0]), "100 USD is equal to 87.80 EUR.");
 }
 
 @test:Config {}
@@ -1558,8 +1614,8 @@ function testListTaskPushNotificationConfigsHappyPath() returns error? {
     Client c = check new (getServerBaseUrl());
     ListTaskPushNotificationConfigsResult result = check c->listTaskPushNotificationConfigs("task-1");
 
-    test:assertEquals(result.configs.length(), 1);
-    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals((result.configs ?: []).length(), 1);
+    test:assertEquals((result.configs ?: [])[0].url, "https://client.example.com/webhooks/a2a");
     test:assertEquals(result.nextPageToken, "cursor-abc");
 
     json params = check getLastRequestBody().params;
@@ -1615,8 +1671,8 @@ function testV03ListTaskPushNotificationConfigsTranslatesMethodAndDecodesUnwrapp
 
     ListTaskPushNotificationConfigsResult result = check c->listTaskPushNotificationConfigs("task-1");
 
-    test:assertEquals(result.configs.length(), 1);
-    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals((result.configs ?: []).length(), 1);
+    test:assertEquals((result.configs ?: [])[0].url, "https://client.example.com/webhooks/a2a");
     test:assertEquals(result.nextPageToken, "", "v0.3 has no pagination concept for this operation");
     json lastRequest = getLastRequestBody();
     test:assertEquals(check lastRequest.method, "tasks/pushNotificationConfig/list");
@@ -1682,8 +1738,10 @@ function testGetExtendedAgentCardHappyPath() returns error? {
             description: "A scripted mock agent used by Client tests",
             version: "1.0.0",
             capabilities: {extendedAgentCard: true},
-            skills: [{id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city"}]
-        }
+            skills: [{id: "weather-lookup", name: "Weather Lookup", description: "Reports current weather for a city", tags: []}],
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"]
+        , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]}
     });
 
     Client c = check new (getServerBaseUrl());
@@ -1719,8 +1777,10 @@ function testV03GetExtendedAgentCardTranslatesMethodName() returns error? {
             description: "x",
             version: "1.0.0",
             capabilities: {extendedAgentCard: true},
-            skills: []
-        }
+            skills: [],
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"]
+        , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]}
     });
 
     AgentCard card = check c->getExtendedAgentCard();
@@ -1739,7 +1799,7 @@ function testResolveAgentCardParsesRichFieldSetWithTypedSecurity() returns error
         provider: {organization: "Acme Corp", url: "https://acme.example.com"},
         capabilities: {},
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "JSONRPC"}
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
         securitySchemes: {
             "bearerAuth": {"type": "http", "scheme": "bearer"},
@@ -1749,7 +1809,9 @@ function testResolveAgentCardParsesRichFieldSetWithTypedSecurity() returns error
         signatures: [
             {protected: "eyJhbGciOiJSUzI1NiJ9", signature: "dGhpcyBpcyBhIHNpZ25hdHVyZQ"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     });
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
@@ -1757,11 +1819,11 @@ function testResolveAgentCardParsesRichFieldSetWithTypedSecurity() returns error
     setWellKnownOverride(());
 
     AgentCard card = check result;
-    test:assertEquals(card.securitySchemes.length(), 2);
-    test:assertTrue(card.securitySchemes.get("bearerAuth") is HttpAuthSecurityScheme);
-    test:assertTrue(card.securitySchemes.get("apiKeyAuth") is ApiKeySecurityScheme);
+    test:assertEquals((card.securitySchemes ?: {}).length(), 2);
+    test:assertTrue((card.securitySchemes ?: {}).get("bearerAuth") is HttpAuthSecurityScheme);
+    test:assertTrue((card.securitySchemes ?: {}).get("apiKeyAuth") is ApiKeySecurityScheme);
     test:assertEquals(card.securityRequirements, [{"bearerAuth": []}]);
-    test:assertEquals(card.signatures.length(), 1);
+    test:assertEquals((card.signatures ?: []).length(), 1);
     test:assertEquals(card?.provider?.organization, "Acme Corp");
 }
 
@@ -1776,17 +1838,19 @@ function testResolveAgentCardDropsUnrecognizedSecuritySchemeEntry() returns erro
             "bearerAuth": {"type": "http", "scheme": "bearer"},
             "quantumAuth": {"type": "quantumEntanglement", "someField": "value"}
         },
-        skills: []
-    });
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
+    , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]});
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
 
     setWellKnownOverride(());
 
     AgentCard card = check result;
-    test:assertEquals(card.securitySchemes.length(), 1);
-    test:assertTrue(card.securitySchemes.hasKey("bearerAuth"));
-    test:assertFalse(card.securitySchemes.hasKey("quantumAuth"));
+    test:assertEquals((card.securitySchemes ?: {}).length(), 1);
+    test:assertTrue((card.securitySchemes ?: {}).hasKey("bearerAuth"));
+    test:assertFalse((card.securitySchemes ?: {}).hasKey("quantumAuth"));
 }
 
 @test:Config {}
@@ -1798,8 +1862,10 @@ function testResolveAgentCardTranslatesV03SecurityField() returns error? {
         protocolVersion: "0.3.0",
         capabilities: {},
         security: [{"oauth": ["read"]}],
-        skills: []
-    });
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
+    , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]});
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
 
@@ -1833,20 +1899,22 @@ function testResolveAgentCardDropsMalformedSignatureAndSecurityRequirementEntrie
                     {"oauth": ["write"]},
                     {"broken": "not-an-array"}
                 ]
-            }
-        ]
-    });
+            , tags: []}
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
+    , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]});
 
     AgentCard|error result = resolveAgentCard(getServerBaseUrl());
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertEquals(card.securityRequirements.length(), 1);
-    test:assertEquals(card.securityRequirements[0], {"oauth": ["read"]});
-    test:assertEquals(card.signatures.length(), 1);
-    test:assertEquals(card.signatures[0].protected, "eyJhbGciOiJSUzI1NiJ9");
-    test:assertEquals(card.skills[0].securityRequirements.length(), 1);
-    test:assertEquals(card.skills[0].securityRequirements[0], {"oauth": ["write"]});
+    test:assertEquals((card.securityRequirements ?: []).length(), 1);
+    test:assertEquals((card.securityRequirements ?: [])[0], {"oauth": ["read"]});
+    test:assertEquals((card.signatures ?: []).length(), 1);
+    test:assertEquals((card.signatures ?: [])[0].protected, "eyJhbGciOiJSUzI1NiJ9");
+    test:assertEquals((card.skills[0].securityRequirements ?: []).length(), 1);
+    test:assertEquals((card.skills[0].securityRequirements ?: [])[0], {"oauth": ["write"]});
 }
 
 @test:Config {}
@@ -2157,7 +2225,9 @@ function testClientInitRejectsV03WithHttpJsonBinding() returns error? {
         supportedInterfaces: [
             {url: getServerBaseUrl(), protocolBinding: "HTTP+JSON", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     RestClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
@@ -2171,7 +2241,9 @@ function testClientInitAllowsV03WithJsonRpcBinding() returns error? {
         supportedInterfaces: [
             {url: getServerBaseUrl(), protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     // binding defaults to "JSONRPC" — v0.3 + JSONRPC is the existing,
     // already-supported combination and must still construct cleanly.
@@ -2559,7 +2631,7 @@ isolated function setV10SchemeCard(json securitySchemes) {
         "supportedInterfaces": [{"url": "http://localhost:19199", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
         "securitySchemes": securitySchemes,
         "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 }
 
 @test:Config {}
@@ -2575,30 +2647,30 @@ function testResolveAgentCardParsesV10CamelCaseSecuritySchemes() returns error? 
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertEquals(card.securitySchemes.length(), 5, "all five oneof arms must parse");
+    test:assertEquals((card.securitySchemes ?: {}).length(), 5, "all five oneof arms must parse");
 
-    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    SecurityScheme apiKey = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(apiKey is ApiKeySecurityScheme, "apiKeySecurityScheme arm must parse as ApiKeySecurityScheme");
     if apiKey is ApiKeySecurityScheme {
         test:assertEquals(apiKey.'in, "header", "v1.0 `location` must be mapped onto the record's `in` field");
         test:assertEquals(apiKey.name, "X-API-Key");
     }
 
-    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    SecurityScheme bearer = (card.securitySchemes ?: {}).get("bearerAuth");
     test:assertTrue(bearer is HttpAuthSecurityScheme);
     if bearer is HttpAuthSecurityScheme {
         test:assertEquals(bearer.scheme, "bearer");
         test:assertEquals(bearer?.bearerFormat, "JWT");
     }
 
-    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    SecurityScheme oidc = (card.securitySchemes ?: {}).get("oidcAuth");
     test:assertTrue(oidc is OpenIdConnectSecurityScheme);
     if oidc is OpenIdConnectSecurityScheme {
         test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration");
     }
 
-    test:assertTrue(card.securitySchemes.get("oauth2Auth") is OAuth2SecurityScheme);
-    test:assertTrue(card.securitySchemes.get("mtlsAuth") is MutualTlsSecurityScheme);
+    test:assertTrue((card.securitySchemes ?: {}).get("oauth2Auth") is OAuth2SecurityScheme);
+    test:assertTrue((card.securitySchemes ?: {}).get("mtlsAuth") is MutualTlsSecurityScheme);
 }
 
 @test:Config {}
@@ -2615,21 +2687,21 @@ function testResolveAgentCardParsesV10SnakeCaseSecuritySchemes() returns error? 
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertEquals(card.securitySchemes.length(), 4);
+    test:assertEquals((card.securitySchemes ?: {}).length(), 4);
 
-    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    SecurityScheme apiKey = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(apiKey is ApiKeySecurityScheme);
     if apiKey is ApiKeySecurityScheme {
         test:assertEquals(apiKey.'in, "header");
     }
 
-    SecurityScheme bearer = card.securitySchemes.get("bearerAuth");
+    SecurityScheme bearer = (card.securitySchemes ?: {}).get("bearerAuth");
     test:assertTrue(bearer is HttpAuthSecurityScheme);
     if bearer is HttpAuthSecurityScheme {
         test:assertEquals(bearer?.bearerFormat, "JWT", "snake_case bearer_format must be normalized onto bearerFormat");
     }
 
-    SecurityScheme oidc = card.securitySchemes.get("oidcAuth");
+    SecurityScheme oidc = (card.securitySchemes ?: {}).get("oidcAuth");
     test:assertTrue(oidc is OpenIdConnectSecurityScheme);
     if oidc is OpenIdConnectSecurityScheme {
         test:assertEquals(oidc.openIdConnectUrl, "https://auth.example.com/.well-known/openid-configuration",
@@ -2647,13 +2719,13 @@ function testResolveAgentCardParsesV10MixedSpellingSecuritySchemes() returns err
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertEquals(card.securitySchemes.length(), 2, "a card mixing both spellings must parse both");
-    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    test:assertEquals((card.securitySchemes ?: {}).length(), 2, "a card mixing both spellings must parse both");
+    SecurityScheme apiKey = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(apiKey is ApiKeySecurityScheme);
     if apiKey is ApiKeySecurityScheme {
         test:assertEquals(apiKey.'in, "query");
     }
-    test:assertTrue(card.securitySchemes.get("bearerAuth") is HttpAuthSecurityScheme);
+    test:assertTrue((card.securitySchemes ?: {}).get("bearerAuth") is HttpAuthSecurityScheme);
 }
 
 @test:Config {}
@@ -2668,7 +2740,7 @@ function testResolveAgentCardV10ApiKeyLocationIsCaseInsensitive() returns error?
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    SecurityScheme apiKey = card.securitySchemes.get("apiKeyAuth");
+    SecurityScheme apiKey = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(apiKey is ApiKeySecurityScheme, "an uppercase location must still resolve, not be dropped");
     if apiKey is ApiKeySecurityScheme {
         test:assertEquals(apiKey.'in, "header", "location must be normalized to lowercase");
@@ -2688,8 +2760,8 @@ function testResolveAgentCardDropsV10ApiKeyWithInvalidLocation() returns error? 
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertFalse(card.securitySchemes.hasKey("apiKeyAuth"), "an invalid apiKey location must drop that entry");
-    test:assertTrue(card.securitySchemes.hasKey("bearerAuth"), "one bad entry must not cost the rest of the card");
+    test:assertFalse((card.securitySchemes ?: {}).hasKey("apiKeyAuth"), "an invalid apiKey location must drop that entry");
+    test:assertTrue((card.securitySchemes ?: {}).hasKey("bearerAuth"), "one bad entry must not cost the rest of the card");
 }
 
 @test:Config {}
@@ -2705,9 +2777,9 @@ function testResolveAgentCardV10SchemesAreNeverMislabelledAsMutualTls() returns 
     setWellKnownOverride(());
     AgentCard card = check result;
 
-    test:assertFalse(card.securitySchemes.get("apiKeyAuth") is MutualTlsSecurityScheme,
+    test:assertFalse((card.securitySchemes ?: {}).get("apiKeyAuth") is MutualTlsSecurityScheme,
             "a v1.0 apiKey scheme must not be mislabelled as mutual TLS");
-    test:assertFalse(card.securitySchemes.get("bearerAuth") is MutualTlsSecurityScheme,
+    test:assertFalse((card.securitySchemes ?: {}).get("bearerAuth") is MutualTlsSecurityScheme,
             "a v1.0 http auth scheme must not be mislabelled as mutual TLS");
 }
 
@@ -2729,7 +2801,9 @@ isolated function cardWithExtendedSupport(boolean supported, string name = "Held
     version: "1.0.0",
     capabilities: {extendedAgentCard: supported},
     supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
-    skills: []
+    skills: [],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"]
 };
 
 # Sends one getTask so the mock's last-seen request is a known, distinguishable
@@ -2764,8 +2838,10 @@ function testGetExtendedAgentCardCallsOutWhenCapabilityTrue() returns error? {
             description: "d",
             version: "1.0.0",
             capabilities: {extendedAgentCard: true},
-            skills: []
-        }
+            skills: [],
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"]
+        , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]}
     });
 
     AgentCard card = check c->getExtendedAgentCard();
@@ -2787,8 +2863,10 @@ function testGetExtendedAgentCardStoresFetchedCard() returns error? {
             description: "d",
             version: "1.0.0",
             capabilities: {extendedAgentCard: false},
-            skills: []
-        }
+            skills: [],
+            defaultInputModes: ["text"],
+            defaultOutputModes: ["text"]
+        , supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}]}
     });
     AgentCard first = check c->getExtendedAgentCard();
     test:assertEquals(first.name, "Extended Card");
@@ -2817,14 +2895,18 @@ isolated function cardWithStreamingSupport(boolean supported) returns AgentCard 
     name: "n", description: "d", version: "1.0.0",
     capabilities: {streaming: supported},
     supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
-    skills: []
+    skills: [],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"]
 };
 
 isolated function cardWithPushNotificationsSupport(boolean supported) returns AgentCard => {
     name: "n", description: "d", version: "1.0.0",
     capabilities: {pushNotifications: supported},
     supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
-    skills: []
+    skills: [],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"]
 };
 
 @test:Config {}
@@ -2988,7 +3070,7 @@ function testV03CardTransportsNormalizeIntoSupportedInterfaces() returns error? 
             {"url": "http://agent.example/rpc", "transport": "JSONRPC"}
         ],
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     test:assertEquals(card.supportedInterfaces.length(), 3,
             "the preferred transport plus the two non-duplicate additionalInterfaces entries, with the entry repeating the main url collapsed");
@@ -3022,7 +3104,7 @@ function testV03SupportsAuthenticatedExtendedCardMapsToCapabilitiesExtendedAgent
         "url": "http://agent.example/rpc",
         "supportsAuthenticatedExtendedCard": true,
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     test:assertTrue(card.capabilities.extendedAgentCard,
             "a v0.3 card's top-level supportsAuthenticatedExtendedCard=true must map onto capabilities.extendedAgentCard");
@@ -3039,7 +3121,7 @@ function testV03SupportsAuthenticatedExtendedCardFalseLeavesCapabilityUnset() re
         "url": "http://agent.example/rpc",
         "supportsAuthenticatedExtendedCard": false,
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     test:assertFalse(card.capabilities.extendedAgentCard);
 }
@@ -3056,13 +3138,13 @@ function testV03SupportsAuthenticatedExtendedCardReachesTheWireThroughClient() r
         protocolVersion: "0.3.0",
         supportsAuthenticatedExtendedCard: true,
         capabilities: {}, skills: []
-    });
+    , defaultInputModes: ["text"], defaultOutputModes: ["text"]});
     Client c = check new (getServerBaseUrl());
     setWellKnownOverride(()); // restore the default card for later tests
 
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
-        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: []}
+        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: [], supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}], defaultInputModes: ["text"], defaultOutputModes: ["text"]}
     });
     AgentCard extended = check c->getExtendedAgentCard();
 
@@ -3091,7 +3173,7 @@ function testV03GrpcPreferredCardSelectsItsRealJsonRpcEndpoint() returns error? 
             {"url": "http://agent.example/rpc", "transport": "JSONRPC"}
         ],
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     TransportBinding binding = check selectBindingFromCard(card);
     test:assertEquals(binding, "JSONRPC",
@@ -3113,7 +3195,7 @@ function testV03CardWithNoServiceableTransportIsRejected() returns error? {
             {"url": "http://agent.example/rest", "transport": "HTTP+JSON"}
         ],
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     TransportBinding|error binding = selectBindingFromCard(card);
     test:assertTrue(binding is error,
@@ -3131,7 +3213,7 @@ function testV03CardWithoutPreferredTransportDefaultsToJsonRpc() returns error? 
             {"url": "http://agent.example/grpc", "transport": "GRPC"}
         ],
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     test:assertEquals(card.supportedInterfaces[0].protocolBinding, "JSONRPC",
             "an absent preferredTransport means JSONRPC is served at the main url");
@@ -3151,7 +3233,7 @@ function testV10CardSupportedInterfacesAreNeverRewritten() returns error? {
             {"url": "http://agent.example/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
         ],
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
     test:assertEquals(card.supportedInterfaces.length(), 1,
             "a card that already declares supportedInterfaces is v1.0-native; the legacy fields must not be merged in");
@@ -3162,18 +3244,28 @@ function testV10CardSupportedInterfacesAreNeverRewritten() returns error? {
 # existing behaviour exactly: nothing is synthesized, and the legacy-url
 # fallback in primaryUrl still answers for JSON-RPC.
 @test:Config {}
-function testBareLegacyUrlCardIsLeftAlone() returns error? {
+function testBareLegacyUrlCardSynthesisesOneJsonRpcInterface() returns error? {
     AgentCard card = check parseAgentCardBody({
         "name": "legacy", "description": "d", "version": "1.0",
         "protocolVersion": "0.3.0",
         "url": "http://agent.example/rpc",
         "capabilities": {}, "skills": []
-    });
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]});
 
-    test:assertEquals(card.supportedInterfaces.length(), 0,
-            "with no preferredTransport and no additionalInterfaces there is nothing to translate");
+    // Renamed from testBareLegacyUrlCardIsLeftAlone, which asserted a length
+    // of 0. Leaving such a card alone was harmless while supportedInterfaces
+    // carried a `= []` default; now that the specification's REQUIRED marking
+    // is honoured, an absent supportedInterfaces makes the card undecodable
+    // outright. A bare v0.3 card declares exactly one endpoint -- its legacy
+    // top-level `url`, over v0.3's default JSONRPC transport -- so that is
+    // what gets synthesised.
+    test:assertEquals(card.supportedInterfaces.length(), 1,
+            "a bare legacy url implies exactly one JSONRPC interface");
+    test:assertEquals(card.supportedInterfaces[0].url, "http://agent.example/rpc");
+    test:assertEquals(card.supportedInterfaces[0].protocolBinding, "JSONRPC",
+            "v0.3 defaults to JSONRPC when preferredTransport is unstated");
     test:assertEquals(check primaryUrl(card), "http://agent.example/rpc",
-            "and the pre-existing legacy-url fallback still resolves it");
+            "and it still resolves to the same endpoint as before");
     test:assertEquals(detectProtocolModeForBinding(card), "V0_3",
             "dialect detection for such a card must be unchanged");
 }

@@ -124,7 +124,7 @@ function testDecodeRawBytesFromWireLeavesUnrelatedMetadataRawKeyUntouched() retu
     Task task = check decoded.cloneWithType(Task);
 
     test:assertEquals(task?.metadata, {"raw": "arbitrary non-base64 text", "other": 42});
-    test:assertEquals(task.history[0].parts[0]?.raw, "hello".toBytes());
+    test:assertEquals((task.history ?: [])[0].parts[0]?.raw, "hello".toBytes());
 }
 
 @test:Config {}
@@ -193,8 +193,13 @@ function testMessageMinimalRoundTrip() returns error? {
     test:assertTrue(decoded?.contextId is (), "contextId should be nil");
     test:assertTrue(decoded?.taskId is (), "taskId should be nil");
     test:assertTrue(decoded?.metadata is (), "metadata should be nil");
-    test:assertEquals(decoded.referenceTaskIds, []);
-    test:assertEquals(decoded.extensions, []);
+    // Both are optional in the specification, so an absent field decodes to
+    // absent -- not to an empty array. Emitting `"extensions": []` for a
+    // field the sender never set is a value, not a non-statement, and
+    // specification 5.7 relies on that distinction for AgentCard signature
+    // canonicalization.
+    test:assertTrue(decoded?.referenceTaskIds is (), "referenceTaskIds should be absent, not defaulted to []");
+    test:assertTrue(decoded?.extensions is (), "extensions should be absent, not defaulted to []");
 }
 
 @test:Config {}
@@ -338,8 +343,7 @@ function testAgentSkillToleratesUnrecognizedField() returns error? {
         id: "weather-lookup",
         name: "Weather Lookup",
         description: "Reports current weather for a city",
-        futureField: "some value from a newer spec revision"
-    };
+        futureField: "some value from a newer spec revision", tags: []};
 
     AgentSkill decoded = check payload.cloneWithType(AgentSkill);
 
@@ -367,8 +371,7 @@ function testAgentInterfaceToleratesUnrecognizedField() returns error? {
     json payload = {
         url: "https://acme.example.com/a2a",
         protocolBinding: "JSONRPC",
-        futureField: "some value from a newer spec revision"
-    };
+        futureField: "some value from a newer spec revision", protocolVersion: "1.0"};
 
     AgentInterface decoded = check payload.cloneWithType(AgentInterface);
 
@@ -390,8 +393,8 @@ function testAgentCardCompositeRoundTrip() returns error? {
         documentationUrl: "https://weather.example.com/docs",
         capabilities: {streaming: true, pushNotifications: true},
         supportedInterfaces: [
-            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"},
-            {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp", protocolVersion: "1.0"}
         ],
         securitySchemes: {"bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer"}},
         securityRequirements: [{"bearerAuth": []}],
@@ -409,7 +412,9 @@ function testAgentCardCompositeRoundTrip() returns error? {
                 description: "Reports a multi-day forecast for a city",
                 tags: ["weather", "forecast"]
             }
-        ]
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 
@@ -428,9 +433,11 @@ function testAgentCardRoundTripWithoutLegacyUrl() returns error? {
         version: "1.2.0",
         capabilities: {streaming: true},
         supportedInterfaces: [
-            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"}
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 
@@ -446,7 +453,10 @@ function testAgentCardRoundTripWithProtocolVersion() returns error? {
         version: "1.0.0",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
 
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
@@ -464,7 +474,9 @@ function testAgentCardToleratesMissingProtocolVersion() returns error? {
         supportedInterfaces: [
             {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     AgentCard decoded = check payload.cloneWithType(AgentCard);
@@ -480,8 +492,13 @@ function testAgentCardToleratesUnrecognizedField() returns error? {
         version: "1.2.0",
         url: "https://weather.example.com/a2a",
         capabilities: {},
+        supportedInterfaces: [
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
         skills: [],
-        futureField: "some value from a newer spec revision"
+        futureField: "some value from a newer spec revision",
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     AgentCard decoded = check payload.cloneWithType(AgentCard);
@@ -756,7 +773,10 @@ function testSendMessageConfigurationDefaults() returns error? {
 
     SendMessageConfiguration decoded = check payload.cloneWithType(SendMessageConfiguration);
 
-    test:assertEquals(decoded.acceptedOutputModes, ["text"]);
+    // Unset means "no constraint" per the specification, not ["text"]. The
+    // old default silently told every agent to withhold images and files.
+    test:assertTrue(decoded?.acceptedOutputModes is (),
+            "acceptedOutputModes should be absent, imposing no constraint");
     test:assertTrue(decoded?.historyLength is (), "historyLength should be unset by default");
     test:assertEquals(decoded.returnImmediately, false);
     test:assertTrue(decoded?.taskPushNotificationConfig is (), "taskPushNotificationConfig should be unset by default");
@@ -1067,9 +1087,13 @@ function testAgentCardWithTypedSecurityFieldsRoundTrip() returns error? {
                 id: "weather-lookup",
                 name: "Weather Lookup",
                 description: "Reports current weather for a city",
-                securityRequirements: [{"bearerAuth": []}]
+                securityRequirements: [{"bearerAuth": []}],
+                tags: []
             }
-        ]
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 

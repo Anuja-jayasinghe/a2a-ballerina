@@ -60,9 +60,11 @@ function testGrpcClientRejectsCardWithoutGrpcInterface() {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://jsonrpc-only.example", protocolBinding: "JSONRPC"}
+            {url: "http://jsonrpc-only.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     GrpcClient|error result = new (card);
     test:assertTrue(result is error,
@@ -79,7 +81,9 @@ function testGrpcClientRejectsV03Card() {
         supportedInterfaces: [
             {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     GrpcClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,
@@ -96,9 +100,11 @@ function testGrpcClientConnectionFailureWrapsAsA2AInternalError() returns error?
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://localhost:1", protocolBinding: "GRPC"}
+            {url: "http://localhost:1", protocolBinding: "GRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     GrpcClient c = check new (card);
     Task|error result = c->getTask("task-1");

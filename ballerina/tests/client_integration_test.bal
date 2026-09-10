@@ -38,10 +38,13 @@ isolated function cardForBinding(TransportBinding binding) returns AgentCard => 
     supportedInterfaces: [
         {
             url: binding == "GRPC" ? getGrpcMockUrl() : getServerBaseUrl(),
-            protocolBinding: binding
+            protocolBinding: binding,
+            protocolVersion: "1.0"
         }
     ],
-    skills: []
+    skills: [],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"]
 };
 
 // ---- binding selection reaches the right transport --------------------
@@ -119,7 +122,7 @@ function testClientDelegatesEachOperationToItsOwnMethod() returns error? {
     test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig");
 
     setNextJsonResponse({jsonrpc: "2.0", id: "1",
-        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: []}});
+        result: {name: "Extended", description: "d", version: "1.0.0", capabilities: {}, skills: [], supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}], defaultInputModes: ["text"], defaultOutputModes: ["text"]}});
     AgentCard _ = check c->getExtendedAgentCard();
     test:assertEquals(check getLastRequestBody().method, "GetExtendedAgentCard");
 }
@@ -231,7 +234,9 @@ function testClientSkipsV03RestInterfaceAndFallsToJsonRpc() returns error? {
             {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "0.3"},
             {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client c = check new (card);
 
@@ -253,7 +258,9 @@ function testClientSkipsV03GrpcInterfaceAndFallsToJsonRpc() returns error? {
             {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"},
             {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client c = check new (card);
 
@@ -275,7 +282,9 @@ function testClientErrorsWhenEveryInterfaceIsUnserviceable() {
             {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "0.3"},
             {url: getGrpcMockUrl(), protocolBinding: "GRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client|error result = new (card);
     test:assertTrue(result is error,
@@ -291,7 +300,9 @@ function testClientStillTakesFirstServiceableEntry() returns error? {
             {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"},
             {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     Client c = check new (card);
     setNextRestResponse(defaultTaskJson());

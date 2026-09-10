@@ -104,10 +104,12 @@ isolated function cardWithSecurity(map<SecurityScheme> schemes, SecurityRequirem
         description: "x",
         version: "1.0.0",
         capabilities: {},
-        supportedInterfaces: [{url: "https://agent.example.com", protocolBinding: "JSONRPC"}],
+        supportedInterfaces: [{url: "https://agent.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
         skills: [],
         securitySchemes: schemes,
-        securityRequirements: requirements
+        securityRequirements: requirements,
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 }
 

@@ -55,9 +55,11 @@ function testRestClientRejectsCardWithoutRestInterface() {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://jsonrpc-only.example", protocolBinding: "JSONRPC"}
+            {url: "http://jsonrpc-only.example", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     RestClient|error result = new (card);
     test:assertTrue(result is error,
@@ -74,7 +76,9 @@ function testRestClientRejectsV03Card() {
         supportedInterfaces: [
             {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     RestClient|error result = new (card);
     test:assertTrue(result is VersionNotSupportedError,

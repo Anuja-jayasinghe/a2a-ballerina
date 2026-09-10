@@ -442,11 +442,13 @@ isolated function encodeV03Message(Message message) returns json|error {
     if metadata is map<json> {
         result["metadata"] = metadata;
     }
-    if message.referenceTaskIds.length() > 0 {
-        result["referenceTaskIds"] = message.referenceTaskIds.toJson();
+    string[] referenceTaskIds = message.referenceTaskIds ?: [];
+    if referenceTaskIds.length() > 0 {
+        result["referenceTaskIds"] = referenceTaskIds.toJson();
     }
-    if message.extensions.length() > 0 {
-        result["extensions"] = message.extensions.toJson();
+    string[] extensions = message.extensions ?: [];
+    if extensions.length() > 0 {
+        result["extensions"] = extensions.toJson();
     }
     return result;
 }

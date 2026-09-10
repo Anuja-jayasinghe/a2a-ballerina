@@ -48,16 +48,25 @@ import ballerina/http;
 #
 # + cardMap - the raw card map, mutated in place
 isolated function normalizeLegacyInterfaces(map<json> cardMap) {
-    // Only pre-v1.0 cards carry these two fields; v1.0 removed them. Their
-    // absence means there is nothing here to translate, and a card already
-    // declaring supportedInterfaces is v1.0-native and left untouched.
-    boolean hasLegacyTransportFields =
-        cardMap.hasKey("preferredTransport") || cardMap.hasKey("additionalInterfaces");
-    if !hasLegacyTransportFields {
-        return;
-    }
+    // A card already declaring supportedInterfaces is v1.0-native and left
+    // untouched.
     json? existing = cardMap["supportedInterfaces"];
     if existing is json[] && existing.length() > 0 {
+        return;
+    }
+    // preferredTransport/additionalInterfaces are the pre-v1.0 way of
+    // declaring transports; v1.0 removed both. A card carrying neither *and*
+    // no supportedInterfaces still has to be translated, because it declares
+    // its single endpoint in the legacy top-level `url` alone — v0.3's
+    // default transport being JSONRPC when unstated. Such a card used to be
+    // returned as-is, which was harmless while supportedInterfaces carried a
+    // `= []` default; now that the specification's REQUIRED marking is
+    // honoured, leaving it absent makes the card undecodable. Synthesizing
+    // the one interface it implies keeps v0.3 cards working and gives
+    // selection a real entry instead of the legacy-url fallback.
+    boolean hasLegacyTransportFields =
+        cardMap.hasKey("preferredTransport") || cardMap.hasKey("additionalInterfaces");
+    if !hasLegacyTransportFields && !cardMap.hasKey("url") {
         return;
     }
 

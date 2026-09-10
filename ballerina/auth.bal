@@ -261,7 +261,7 @@ isolated function resolveCredentialHeaders(AgentCard card, CredentialProvider? p
     if provider is () {
         return {};
     }
-    foreach SecurityRequirement requirement in card.securityRequirements {
+    foreach SecurityRequirement requirement in card.securityRequirements ?: [] {
         map<string>? headers = credentialHeadersFor(card, requirement, provider);
         if headers is map<string> {
             return headers;

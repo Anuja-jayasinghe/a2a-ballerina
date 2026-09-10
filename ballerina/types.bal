@@ -60,9 +60,9 @@ public type Message record {|
     # Set when continuing an existing task
     string taskId?;
     # Other tasks this message references
-    string[] referenceTaskIds = [];
+    string[] referenceTaskIds?;
     # Extension URIs for this message
-    string[] extensions = [];
+    string[] extensions?;
     # Free-form metadata attached to this message
     map<json> metadata?;
     // newer specification version can have additional fields
@@ -83,7 +83,7 @@ public type AgentProvider record {|
 # A protocol extension an agent supports, identified by URI.
 public type AgentExtension record {|
     # Extension identifier
-    string uri;
+    string uri?;
     # Human-readable summary of what this extension does
     string description?;
     # Whether a client must understand this extension to interact with the agent
@@ -102,7 +102,7 @@ public type AgentCapabilities record {|
     # Whether the extended agent card endpoint is available
     boolean extendedAgentCard = false;
     # Protocol extensions this agent supports
-    AgentExtension[] extensions = [];
+    AgentExtension[] extensions?;
     json...;
 |};
 
@@ -115,15 +115,15 @@ public type AgentSkill record {|
     # Human-readable summary of what this skill does
     string description;
     # Categorization tags
-    string[] tags = [];
-    # Content types this skill accepts
-    string[] inputModes = [];
-    # Content types this skill produces
-    string[] outputModes = [];
+    string[] tags;
     # Example prompts illustrating this skill
-    string[] examples = [];
+    string[] examples?;
+    # Content types this skill accepts
+    string[] inputModes?;
+    # Content types this skill produces
+    string[] outputModes?;
     # Per-skill security override, following the same OR-of-ANDs semantics as AgentCard.securityRequirements
-    SecurityRequirement[] securityRequirements = [];
+    SecurityRequirement[] securityRequirements?;
     json...;
 |};
 
@@ -133,8 +133,8 @@ public type AgentInterface record {|
     string url;
     # e.g. "JSONRPC", "GRPC", "HTTP+JSON"
     string protocolBinding;
-    # Protocol version served on this interface, if it differs from the card's default
-    string protocolVersion?;
+    # Protocol version served on this interface
+    string protocolVersion;
     # When set, must be echoed on every subsequent operation against this interface
     string tenant?;
     json...;
@@ -149,6 +149,31 @@ public type AgentCard record {|
     string description;
     # Agent's own version, not the protocol version
     string version;
+    # Feature flags describing what this agent supports
+    AgentCapabilities capabilities;
+    # Transport bindings this agent is reachable on, in the server's own
+    # preference order — the first entry is the preferred one
+    AgentInterface[] supportedInterfaces;
+    # Content types this agent accepts by default
+    string[] defaultInputModes;
+    # Content types this agent produces by default
+    string[] defaultOutputModes;
+    # Capabilities this agent exposes
+    AgentSkill[] skills;
+    # Organization publishing this agent
+    AgentProvider provider?;
+    # Link to human-readable documentation
+    string documentationUrl?;
+    # Link to an icon representing this agent
+    string iconUrl?;
+    # Security schemes available to authorize requests, keyed by scheme name
+    map<SecurityScheme> securitySchemes?;
+    # Which security schemes apply; a logical OR across the list, each
+    # entry a logical AND of the schemes it names
+    SecurityRequirement[] securityRequirements?;
+    # JWS signatures over this card. This library captures the shape only;
+    # it does not verify signatures — see issue #12.
+    AgentCardSignature[] signatures?;
     # Legacy top-level protocol version field, from before v1.0 moved this
     # into each AgentInterface.protocolVersion. A card with no
     # supportedInterfaces (see url below) is a legacy card; this field
@@ -161,30 +186,6 @@ public type AgentCard record {|
     # instead. Kept optional here only for servers still sending it; use
     # primaryUrl(card) rather than reading this field directly.
     string url?;
-    # Organization publishing this agent
-    AgentProvider provider?;
-    # Link to human-readable documentation
-    string documentationUrl?;
-    # Link to an icon representing this agent
-    string iconUrl?;
-    # Feature flags describing what this agent supports
-    AgentCapabilities capabilities;
-    # Alternative transport bindings this agent supports, beyond `url`
-    AgentInterface[] supportedInterfaces = [];
-    # Security schemes available to authorize requests, keyed by scheme name
-    map<SecurityScheme> securitySchemes = {};
-    # Which security schemes apply; a logical OR across the list, each
-    # entry a logical AND of the schemes it names
-    SecurityRequirement[] securityRequirements = [];
-    # Content types this agent accepts by default
-    string[] defaultInputModes = ["text"];
-    # Content types this agent produces by default
-    string[] defaultOutputModes = ["text"];
-    # Capabilities this agent exposes
-    AgentSkill[] skills;
-    # JWS signatures over this card. This library captures the shape only;
-    # it does not verify signatures — see issue #12.
-    AgentCardSignature[] signatures = [];
     json...;
 |};
 
@@ -228,7 +229,7 @@ public type Artifact record {|
     # Free-form metadata attached to this artifact
     map<json> metadata?;
     # Extension URIs relevant to this artifact
-    string[] extensions = [];
+    string[] extensions?;
     json...;
 |};
 
@@ -240,10 +241,12 @@ public type Task record {|
     string contextId?;
     # Current lifecycle state
     TaskStatus status;
-    # Prior messages exchanged for this task
-    Message[] history = [];
-    # Output produced so far
-    Artifact[] artifacts = [];
+    # Output produced so far. Absent and empty differ: specification section 3
+    # requires this field to be omitted entirely when includeArtifacts is
+    # false, and permits an empty array when it is true but the task has none.
+    Artifact[] artifacts?;
+    # Prior messages exchanged for this task. Omitted when historyLength is 0.
+    Message[] history?;
     # Free-form metadata attached to this task
     map<json> metadata?;
     json...;
@@ -338,8 +341,12 @@ public type TaskPushNotificationConfig record {|
 
 # Per-request options for a sendMessage call.
 public type SendMessageConfiguration record {|
-    # Content types the caller can accept in the response
-    string[] acceptedOutputModes = ["text"];
+    # Content types the caller can accept in the response. Omit to impose no
+    # constraint -- that is the specification's own meaning for unset, and
+    # agents SHOULD tailor their output to whatever this says. It previously
+    # defaulted to ["text"], which quietly told every agent to withhold
+    # images and files unless a caller overrode it.
+    string[] acceptedOutputModes?;
     # Unset imposes no limit; zero omits history entirely; a positive value
     # requests at most that many recent messages
     int historyLength?;
@@ -386,9 +393,9 @@ public type ListTasksResult record {|
 # Paginated result of a listTaskPushNotificationConfigs call.
 public type ListTaskPushNotificationConfigsResult record {|
     # The matching configs for this page
-    TaskPushNotificationConfig[] configs;
-    # Opaque cursor for the next page; empty when there are no more results
-    string nextPageToken;
+    TaskPushNotificationConfig[] configs?;
+    # Opaque cursor for the next page; absent when there are no more results
+    string nextPageToken?;
     json...;
 |};
 
@@ -419,22 +426,22 @@ public type ClientCredentialsOAuthFlow record {|
 # Configuration for one OAuth 2.0 Implicit flow.
 public type ImplicitOAuthFlow record {|
     # The authorization URL for this flow
-    string authorizationUrl;
+    string authorizationUrl?;
     # URL for obtaining refresh tokens
     string refreshUrl?;
     # Scope name to human-readable description
-    map<string> scopes;
+    map<string> scopes?;
     json...;
 |};
 
 # Configuration for one OAuth 2.0 Resource Owner Password flow.
 public type PasswordOAuthFlow record {|
+    # The token URL for this flow
+    string tokenUrl?;
     # URL for obtaining refresh tokens
     string refreshUrl?;
     # Scope name to human-readable description
-    map<string> scopes;
-    # The token URL for this flow
-    string tokenUrl;
+    map<string> scopes?;
     json...;
 |};
 

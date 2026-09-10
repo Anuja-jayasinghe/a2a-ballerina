@@ -60,9 +60,11 @@ function testJsonRpcClientRejectsCardWithoutJsonRpcInterface() {
     AgentCard card = {
         name: "n", description: "d", version: "1.0.0", capabilities: {},
         supportedInterfaces: [
-            {url: "http://rest-only.example", protocolBinding: "HTTP+JSON"}
+            {url: "http://rest-only.example", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     JsonRpcClient|error result = new (card);
     test:assertTrue(result is error,
@@ -171,7 +173,10 @@ function testJsonRpcClientSpeaksV03Dialect() returns error? {
         url: "http://localhost:19199",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     JsonRpcClient c = check new (legacyCard);
     setNextJsonResponse({

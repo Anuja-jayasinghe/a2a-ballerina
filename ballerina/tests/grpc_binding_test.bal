@@ -292,8 +292,8 @@ function testDecodeGrpcTask() returns error? {
     test:assertEquals(task.id, "t1");
     test:assertEquals(task?.contextId, "ctx1");
     test:assertEquals(task.status.state, TASK_STATE_WORKING);
-    test:assertEquals(task.history.length(), 1);
-    test:assertEquals(task.artifacts.length(), 1);
+    test:assertEquals((task.history ?: []).length(), 1);
+    test:assertEquals((task.artifacts ?: []).length(), 1);
 }
 
 @test:Config {groups: ["grpc"]}
@@ -374,7 +374,7 @@ function testDecodeGrpcListPushConfigsResult() returns error? {
         next_page_token: "cursor2"
     };
     ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(resp);
-    test:assertEquals(result.configs.length(), 1);
+    test:assertEquals((result.configs ?: []).length(), 1);
     test:assertEquals(result.nextPageToken, "cursor2");
 }
 
@@ -399,7 +399,7 @@ function testDecodeGrpcAgentCardApiKeyScheme() returns error? {
         security_schemes: [{key: "apiKeyAuth", value: {api_key_security_scheme: {location: "header", name: "X-API-Key"}}}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    SecurityScheme scheme = card.securitySchemes.get("apiKeyAuth");
+    SecurityScheme scheme = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(scheme is ApiKeySecurityScheme);
     if scheme is ApiKeySecurityScheme {
         test:assertEquals(scheme.'in, "header");
@@ -433,7 +433,7 @@ function testDecodeGrpcAgentCardOAuth2AuthorizationCodeFlow() returns error? {
         }}}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    SecurityScheme scheme = card.securitySchemes.get("oauth2");
+    SecurityScheme scheme = (card.securitySchemes ?: {}).get("oauth2");
     test:assertTrue(scheme is OAuth2SecurityScheme);
     if scheme is OAuth2SecurityScheme {
         AuthorizationCodeOAuthFlow? flow = scheme.flows?.authorizationCode;
@@ -452,8 +452,8 @@ function testDecodeGrpcAgentCardSecurityRequirements() returns error? {
         security_requirements: [{schemes: [{key: "apiKeyAuth", value: {list: []}}]}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    test:assertEquals(card.securityRequirements.length(), 1);
-    test:assertEquals(card.securityRequirements[0], {"apiKeyAuth": []});
+    test:assertEquals((card.securityRequirements ?: []).length(), 1);
+    test:assertEquals((card.securityRequirements ?: [])[0], {"apiKeyAuth": []});
 }
 
 @test:Config {groups: ["grpc"]}

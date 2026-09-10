@@ -420,17 +420,20 @@ isolated function defaultMockAgentCard() returns json {
         // that does declare it, so the common fixture stays neutral and
         // every other test's request params are unaffected.
         supportedInterfaces: [
-            {url: "http://localhost:19199", protocolBinding: "JSONRPC"},
-            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON"},
-            {url: string `http://localhost:${GRPC_MOCK_PORT}`, protocolBinding: "GRPC"}
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "http://localhost:19199", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"},
+            {url: string `http://localhost:${GRPC_MOCK_PORT}`, protocolBinding: "GRPC", protocolVersion: "1.0"}
         ],
         skills: [
             {
                 id: "weather-lookup",
                 name: "Weather Lookup",
-                description: "Reports current weather for a city"
+                description: "Reports current weather for a city",
+                tags: []
             }
-        ]
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     return card.toJson();
 }

@@ -23,7 +23,9 @@ function testDetectProtocolModeFromSupportedInterfaces() returns error? {
         name: "x", description: "x", version: "1.0.0",
         capabilities: {},
         supportedInterfaces: [{url: "http://x", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     test:assertEquals(detectProtocolModeForBinding(v1Card), "V1_0");
 
@@ -31,7 +33,9 @@ function testDetectProtocolModeFromSupportedInterfaces() returns error? {
         name: "x", description: "x", version: "1.0.0",
         capabilities: {},
         supportedInterfaces: [{url: "http://x", protocolBinding: "JSONRPC", protocolVersion: "0.3.0"}],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     test:assertEquals(detectProtocolModeForBinding(v03InterfaceCard), "V0_3");
 }
@@ -42,7 +46,10 @@ function testDetectProtocolModeFromLegacyTopLevelField() returns error? {
         name: "x", description: "x", version: "1.0.0",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     test:assertEquals(detectProtocolModeForBinding(legacyV03Card), "V0_3");
 }
@@ -57,7 +64,10 @@ function testDetectProtocolModeDefaultsLegacyCardWithNoProtocolVersionToV03() re
     AgentCard bareLegacyCard = {
         name: "x", description: "x", version: "1.0.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     test:assertEquals(detectProtocolModeForBinding(bareLegacyCard), "V0_3");
 }
@@ -70,7 +80,10 @@ function testDetectProtocolModeLegacyCardWithNonV03ProtocolVersionToV1() returns
         name: "x", description: "x", version: "1.0.0",
         protocolVersion: "1.0.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     test:assertEquals(detectProtocolModeForBinding(legacyV1Card), "V1_0");
 }
@@ -238,10 +251,10 @@ function testParseV03TaskFromRealCurrencyAgentResponse() returns error? {
     test:assertEquals(task.id, "6ea25505-6764-4b29-9932-0227e2cf7e3e");
     test:assertEquals(task?.contextId, "1b4188cb-0bc7-48ea-a3e6-177fa50f1684");
     test:assertEquals(task.status.state, TASK_STATE_COMPLETED);
-    test:assertEquals(task.history.length(), 1);
-    test:assertEquals(task.history[0].role, ROLE_USER);
-    test:assertEquals(task.artifacts.length(), 1);
-    test:assertEquals(task.artifacts[0].parts[0]?.text, "100 USD is equal to 87.80 EUR.");
+    test:assertEquals((task.history ?: []).length(), 1);
+    test:assertEquals((task.history ?: [])[0].role, ROLE_USER);
+    test:assertEquals((task.artifacts ?: []).length(), 1);
+    test:assertEquals((task.artifacts ?: [])[0].parts[0]?.text, "100 USD is equal to 87.80 EUR.");
 }
 
 @test:Config {}
@@ -496,14 +509,18 @@ function testMessageReferenceTaskIdsAndExtensionsRoundTrip() returns error? {
 }
 
 @test:Config {}
-function testParseV03MessageDefaultsReferenceTaskIdsAndExtensionsWhenAbsent() returns error? {
+function testParseV03MessageLeavesReferenceTaskIdsAndExtensionsAbsentWhenAbsent() returns error? {
     Message msg = check parseV03Message({
         "messageId": "msg-7",
         "role": "user",
         "parts": [{"kind": "text", "text": "hi"}]
     });
-    test:assertEquals(msg.referenceTaskIds, []);
-    test:assertEquals(msg.extensions, []);
+    // Both fields are optional in the specification, so a wire value that
+    // omits them decodes to absent -- not to an empty array. Renamed from
+    // ...DefaultsReferenceTaskIdsAndExtensionsWhenAbsent, which asserted the
+    // old defaulting behaviour.
+    test:assertTrue(msg?.referenceTaskIds is (), "referenceTaskIds should stay absent, not become []");
+    test:assertTrue(msg?.extensions is (), "extensions should stay absent, not become []");
 }
 
 @test:Config {}
@@ -727,8 +744,8 @@ function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
         }
     ]);
 
-    test:assertEquals(result.configs.length(), 1);
-    test:assertEquals(result.configs[0].url, "https://client.example.com/webhooks/a2a");
+    test:assertEquals((result.configs ?: []).length(), 1);
+    test:assertEquals((result.configs ?: [])[0].url, "https://client.example.com/webhooks/a2a");
     test:assertEquals(result.nextPageToken, "", "v0.3 has no pagination concept for this operation, so nextPageToken is always synthesized empty");
 }
 
@@ -736,7 +753,7 @@ function testParseV03ListTaskPushNotificationConfigsResult() returns error? {
 function testParseV03ListTaskPushNotificationConfigsResultDefaultsNextPageTokenWhenAbsent() returns error? {
     ListTaskPushNotificationConfigsResult result = check parseV03ListTaskPushNotificationConfigsResult([]);
 
-    test:assertEquals(result.configs.length(), 0);
+    test:assertEquals((result.configs ?: []).length(), 0);
     test:assertEquals(result.nextPageToken, "");
 }
 
@@ -773,9 +790,9 @@ function testRenameV03SecurityFieldRenamesTopLevelAndSkillLevel() returns error?
                 name: "Skill One",
                 description: "Does a thing",
                 security: [{"apiKey": []}]
-            }
+            , tags: []}
         ]
-    };
+    , capabilities: {}, supportedInterfaces: [{url: "http://agent.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}], defaultInputModes: ["text"], defaultOutputModes: ["text"]};
 
     json renamed = renameV03SecurityField(v03Card);
     map<json> renamedMap = check renamed.ensureType();
@@ -797,13 +814,13 @@ function testRenameV03SecurityFieldIsNoOpWhenV1FieldAlreadyPresent() returns err
         version: "1.0.0",
         securityRequirements: [{"bearerAuth": []}],
         skills: []
-    };
+    , capabilities: {}, supportedInterfaces: [{url: "http://agent.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}], defaultInputModes: ["text"], defaultOutputModes: ["text"]};
 
     json renamed = renameV03SecurityField(v1Card);
     map<json> renamedMap = check renamed.ensureType();
 
     test:assertFalse(renamedMap.hasKey("security"), "no stray security key should appear");
-    json[] requirements = check renamedMap.securityRequirements.ensureType();
+    json[] requirements = check (renamedMap.securityRequirements ?: []).ensureType();
     test:assertEquals(requirements.length(), 1);
 }
 
@@ -814,7 +831,7 @@ function testRenameV03SecurityFieldIsNoOpWhenNeitherKeyPresent() returns error? 
         description: "No security fields at all",
         version: "1.0.0",
         skills: []
-    };
+    , capabilities: {}, supportedInterfaces: [{url: "http://agent.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}], defaultInputModes: ["text"], defaultOutputModes: ["text"]};
 
     json renamed = renameV03SecurityField(card);
     map<json> renamedMap = check renamed.ensureType();
@@ -831,7 +848,9 @@ function testDetectProtocolModeForBindingReadsSelectedInterfaceNotIndexZero() re
             {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"},
             {url: "http://rest.example", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     // Index 0 is v0.3, but the HTTP+JSON entry (index 1) is v1.0 — a
     // caller resolving the REST binding must get V1_0, not the V0_3 an
@@ -847,7 +866,9 @@ function testDetectProtocolModeStillDelegatesToJsonRpcByDefault() returns error?
         supportedInterfaces: [
             {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     // The one-arg form must keep behaving exactly as
     // it does today for a single-binding card.
@@ -862,7 +883,9 @@ function testDetectProtocolModeForBindingFallsBackWhenNoMatchingInterface() retu
         supportedInterfaces: [
             {url: "http://jsonrpc.example", protocolBinding: "JSONRPC", protocolVersion: "0.3"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     // No HTTP+JSON interface at all — falls back to the existing
     // index-0/legacy behavior rather than erroring, since this function

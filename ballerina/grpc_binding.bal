@@ -263,8 +263,8 @@ isolated function encodeGrpcMessage(Message m) returns grpcstub:Message|error {
         message_id: m.messageId,
         role: <grpcstub:Role>m.role,
         parts: parts,
-        reference_task_ids: m.referenceTaskIds,
-        extensions: m.extensions,
+        reference_task_ids: m.referenceTaskIds ?: [],
+        extensions: m.extensions ?: [],
         metadata: jsonToGrpcStruct(m?.metadata)
     };
     string? contextId = m?.contextId;
@@ -316,7 +316,7 @@ isolated function decodeGrpcMessage(grpcstub:Message m) returns Message|error {
 # + return - the equivalent grpcstub:SendMessageConfiguration
 isolated function encodeGrpcSendConfiguration(SendMessageConfiguration c) returns grpcstub:SendMessageConfiguration|error {
     grpcstub:SendMessageConfiguration result = {
-        accepted_output_modes: c.acceptedOutputModes,
+        accepted_output_modes: c.acceptedOutputModes ?: [],
         return_immediately: c.returnImmediately
     };
     int? historyLength = c?.historyLength;
@@ -785,7 +785,14 @@ isolated function decodeGrpcAgentSkill(grpcstub:AgentSkill s) returns AgentSkill
 # + i - the generated grpcstub:AgentInterface to decode
 # + return - the equivalent typed AgentInterface
 isolated function decodeGrpcAgentInterface(grpcstub:AgentInterface i) returns AgentInterface {
-    AgentInterface result = {url: i.url, protocolBinding: i.protocol_binding};
+    // protocolVersion is REQUIRED on AgentInterface per the specification, so
+    // it is carried through rather than left for the optional-field branch
+    // below; grpcstub defaults it to "" when the wire omitted it.
+    AgentInterface result = {
+        url: i.url,
+        protocolBinding: i.protocol_binding,
+        protocolVersion: i.protocol_version
+    };
     string? tenant = emptyGrpcStringToNil(i.tenant);
     if tenant is string {
         result.tenant = tenant;
