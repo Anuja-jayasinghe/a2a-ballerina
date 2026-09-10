@@ -698,12 +698,11 @@ isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns Se
     );
 }
 
-# + f - the generated grpcstub:OAuthFlows oneof to decode. Per design spec
-#       Known limitation 5, a device_code arm is dropped: types.bal's
-#       OAuthFlows has no DeviceCodeOAuthFlow member, and (unlike the JSON
-#       bindings' open records) the generated OAuthFlows record is closed,
-#       so there is no escape-hatch field to preserve it in. Also, per the
-#       proto's own [deprecated = true] annotations, `implicit` and
+# + f - the generated grpcstub:OAuthFlows oneof to decode. All five arms are
+#       decoded. The device_code arm used to be dropped -- design spec Known
+#       limitation 5 -- purely because types.bal had no DeviceCodeOAuthFlow
+#       member to put it in; it has one now, so the limitation is closed.
+#       Per the proto's own [deprecated = true] annotations, `implicit` and
 #       `password` are decoded for completeness even though upstream flags
 #       them deprecated.
 # + return - the equivalent typed OAuthFlows
@@ -720,6 +719,7 @@ isolated function decodeGrpcOAuthFlows(grpcstub:OAuthFlows f) returns OAuthFlows
         if refreshUrl is string {
             flow.refreshUrl = refreshUrl;
         }
+        flow.pkceRequired = authCode.pkce_required;
         result.authorizationCode = flow;
     }
     grpcstub:ClientCredentialsOAuthFlow? clientCreds = f?.client_credentials;
@@ -749,8 +749,19 @@ isolated function decodeGrpcOAuthFlows(grpcstub:OAuthFlows f) returns OAuthFlows
         }
         result.password = flow;
     }
-    // device_code (f?.device_code) is intentionally not read into result:
-    // types.bal's OAuthFlows has no field to put it in. See doc comment.
+    grpcstub:DeviceCodeOAuthFlow? deviceCode = f?.device_code;
+    if deviceCode is grpcstub:DeviceCodeOAuthFlow {
+        DeviceCodeOAuthFlow flow = {
+            deviceAuthorizationUrl: deviceCode.device_authorization_url,
+            tokenUrl: deviceCode.token_url,
+            scopes: grpcKvToMap(deviceCode.scopes)
+        };
+        string? refreshUrl = emptyGrpcStringToNil(deviceCode.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.deviceCode = flow;
+    }
     return result;
 }
 

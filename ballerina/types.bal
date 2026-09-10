@@ -199,8 +199,8 @@ public enum TaskState {
     TASK_STATE_COMPLETED,
     TASK_STATE_FAILED,
     TASK_STATE_CANCELED,
-    TASK_STATE_REJECTED,
     TASK_STATE_INPUT_REQUIRED,
+    TASK_STATE_REJECTED,
     TASK_STATE_AUTH_REQUIRED
 }
 
@@ -409,6 +409,8 @@ public type AuthorizationCodeOAuthFlow record {|
     map<string> scopes;
     # The token URL for this flow
     string tokenUrl;
+    # Whether the authorization server requires PKCE (RFC 7636) for this flow
+    boolean pkceRequired = false;
     json...;
 |};
 
@@ -445,16 +447,41 @@ public type PasswordOAuthFlow record {|
     json...;
 |};
 
-# The set of OAuth 2.0 flows an OAuth2SecurityScheme supports. Each is
-# independently optional; a scheme may support one or several.
+# Configuration for one OAuth 2.0 Device Authorization Grant flow (RFC 8628).
+public type DeviceCodeOAuthFlow record {|
+    # The device authorization URL for this flow
+    string deviceAuthorizationUrl;
+    # The token URL for this flow
+    string tokenUrl;
+    # URL for obtaining refresh tokens
+    string refreshUrl?;
+    # Scope name to human-readable description
+    map<string> scopes;
+    json...;
+|};
+
+# The set of OAuth 2.0 flows an OAuth2SecurityScheme supports.
+#
+# The specification models this as a `oneof`, so exactly one arm is set. It
+# is kept as a record rather than a Ballerina union because the arm types are
+# not mutually distinguishable by `is`: with the two deprecated flows' fields
+# all optional (as the specification marks them), a PasswordOAuthFlow value
+# satisfies ClientCredentialsOAuthFlow exactly, and a DeviceCodeOAuthFlow
+# value satisfies it too once its extra field falls into the rest field.
+# Verified. Here the *field name* is the discriminator, which is unambiguous
+# where structural typing is not.
 public type OAuthFlows record {|
     # Configuration for the Authorization Code flow
     AuthorizationCodeOAuthFlow authorizationCode?;
     # Configuration for the Client Credentials flow
     ClientCredentialsOAuthFlow clientCredentials?;
-    # Configuration for the Implicit flow
+    # Configuration for the Device Authorization Grant flow
+    DeviceCodeOAuthFlow deviceCode?;
+    # Configuration for the Implicit flow. Deprecated in the specification;
+    # use Authorization Code with PKCE instead.
     ImplicitOAuthFlow implicit?;
-    # Configuration for the Resource Owner Password flow
+    # Configuration for the Resource Owner Password flow. Deprecated in the
+    # specification; use Authorization Code with PKCE, or Device Code.
     PasswordOAuthFlow password?;
     json...;
 |};
