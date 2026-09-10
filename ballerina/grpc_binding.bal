@@ -1094,7 +1094,14 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
     match operation {
         "SendMessage" => {
             Task|Message result = check decodeGrpcSendResult(check response.ensureType(grpcstub:SendMessageResponse));
-            return {task: result is Task ? result : (), message: result is Message ? result : ()}.toJson();
+            // Set only the arm that is actually present. This used to build
+            // both keys and leave the unset one nil, which `toJson()` renders
+            // as an explicit `"message": null` -- a shape the specification
+            // never produces (it has no nullable fields; SendMessageResponse
+            // is a oneof, so exactly one arm exists). It decoded only because
+            // the envelope type was nilable on our side; once the types stopped
+            // accepting nulls, this internally-manufactured null was rejected.
+            return result is Task ? {task: result.toJson()} : {message: result.toJson()};
         }
         "GetTask"|"CancelTask" => {
             Task task = check decodeGrpcTask(check response.ensureType(grpcstub:Task));

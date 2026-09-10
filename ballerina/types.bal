@@ -30,19 +30,19 @@ public enum Role {
 # field is non-nil, not by a tag.
 public type Part record {|
     # Text content
-    string? text?;
+    string text?;
     # Inline file bytes; base64 on the wire
-    byte[]? raw?;
+    byte[] raw?;
     # File by reference
-    string? url?;
+    string url?;
     # Arbitrary structured data
-    json? data?;
+    json data?;
     # Applies to file variants (raw/url)
-    string? filename?;
+    string filename?;
     # MIME type; applies to all variants
-    string? mediaType?;
+    string mediaType?;
     # Free-form metadata attached to this part
-    map<json>? metadata?;
+    map<json> metadata?;
     // newer specification version can have additional fields
     json...;
 |};
@@ -56,15 +56,15 @@ public type Message record {|
     # Content of this message
     Part[] parts;
     # Groups related tasks and messages
-    string? contextId?;
+    string contextId?;
     # Set when continuing an existing task
-    string? taskId?;
+    string taskId?;
     # Other tasks this message references
     string[] referenceTaskIds = [];
     # Extension URIs for this message
     string[] extensions = [];
     # Free-form metadata attached to this message
-    map<json>? metadata?;
+    map<json> metadata?;
     // newer specification version can have additional fields
     json...;
 |};
@@ -76,7 +76,7 @@ public type AgentProvider record {|
     # Publisher URL
     string url;
     # Publisher contact email
-    string? contactEmail?;
+    string contactEmail?;
     json...;
 |};
 
@@ -85,11 +85,11 @@ public type AgentExtension record {|
     # Extension identifier
     string uri;
     # Human-readable summary of what this extension does
-    string? description?;
+    string description?;
     # Whether a client must understand this extension to interact with the agent
     boolean required = false;
     # Extension-specific configuration; shape is defined by the extension itself
-    map<json>? params?;
+    map<json> params?;
     json...;
 |};
 
@@ -134,9 +134,9 @@ public type AgentInterface record {|
     # e.g. "JSONRPC", "GRPC", "HTTP+JSON"
     string protocolBinding;
     # Protocol version served on this interface, if it differs from the card's default
-    string? protocolVersion?;
+    string protocolVersion?;
     # When set, must be echoed on every subsequent operation against this interface
-    string? tenant?;
+    string tenant?;
     json...;
 |};
 
@@ -155,18 +155,18 @@ public type AgentCard record {|
     # helps detectProtocolModeForBinding (compat_v03.bal) confirm which dialect it
     # declares. v1.0-native cards omit this and set
     # supportedInterfaces[0].protocolVersion instead.
-    string? protocolVersion?;
+    string protocolVersion?;
     # Legacy primary service URL. Removed as a required field in v1.0 —
     # servers now publish the primary endpoint as supportedInterfaces[0].url
     # instead. Kept optional here only for servers still sending it; use
     # primaryUrl(card) rather than reading this field directly.
-    string? url?;
+    string url?;
     # Organization publishing this agent
-    AgentProvider? provider?;
+    AgentProvider provider?;
     # Link to human-readable documentation
-    string? documentationUrl?;
+    string documentationUrl?;
     # Link to an icon representing this agent
-    string? iconUrl?;
+    string iconUrl?;
     # Feature flags describing what this agent supports
     AgentCapabilities capabilities;
     # Alternative transport bindings this agent supports, beyond `url`
@@ -209,9 +209,9 @@ public type TaskStatus record {|
     TaskState state;
     # A rich message, not a plain string — lets an agent entering
     # TASK_STATE_INPUT_REQUIRED attach a structured prompt
-    Message? message?;
+    Message message?;
     # ISO 8601, e.g. "2023-10-27T10:00:00Z"
-    string? timestamp?;
+    string timestamp?;
     json...;
 |};
 
@@ -220,13 +220,13 @@ public type Artifact record {|
     # Unique within the task; this is the identifier
     string artifactId;
     # Human-readable label, not an identifier
-    string? name?;
+    string name?;
     # Human-readable summary of this artifact
-    string? description?;
+    string description?;
     # Must contain at least one part
     Part[] parts;
     # Free-form metadata attached to this artifact
-    map<json>? metadata?;
+    map<json> metadata?;
     # Extension URIs relevant to this artifact
     string[] extensions = [];
     json...;
@@ -237,7 +237,7 @@ public type Task record {|
     # Server-generated; clients never create this
     string id;
     # Groups related tasks and messages
-    string? contextId?;
+    string contextId?;
     # Current lifecycle state
     TaskStatus status;
     # Prior messages exchanged for this task
@@ -245,7 +245,7 @@ public type Task record {|
     # Output produced so far
     Artifact[] artifacts = [];
     # Free-form metadata attached to this task
-    map<json>? metadata?;
+    map<json> metadata?;
     json...;
 |};
 
@@ -258,7 +258,7 @@ public type TaskStatusUpdateEvent record {|
     # New lifecycle state
     TaskStatus status;
     # Free-form metadata attached to this event
-    map<json>? metadata?;
+    map<json> metadata?;
     json...;
 |};
 
@@ -276,7 +276,7 @@ public type TaskArtifactUpdateEvent record {|
     # Final chunk of this artifact
     boolean lastChunk = false;
     # Free-form metadata attached to this event
-    map<json>? metadata?;
+    map<json> metadata?;
     json...;
 |};
 
@@ -285,13 +285,13 @@ public type TaskArtifactUpdateEvent record {|
 # Exactly one field is non-nil per event, per specification section 3.2.3.
 public type StreamResponse record {|
     # Present when a task is first created
-    Task? task?;
+    Task task?;
     # Present for a plain conversational reply with no task
-    Message? message?;
+    Message message?;
     # Present on a lifecycle transition
-    TaskStatusUpdateEvent? statusUpdate?;
+    TaskStatusUpdateEvent statusUpdate?;
     # Present on delivered output content
-    TaskArtifactUpdateEvent? artifactUpdate?;
+    TaskArtifactUpdateEvent artifactUpdate?;
     json...;
 |};
 
@@ -303,9 +303,9 @@ public type StreamResponse record {|
 # Exactly one field is non-nil, per specification section 3.1.1.
 public type SendMessageResult record {|
     # Present when the agent creates or continues a tracked task
-    Task? task?;
+    Task task?;
     # Present for a plain conversational reply with no task
-    Message? message?;
+    Message message?;
     json...;
 |};
 
@@ -314,7 +314,7 @@ public type AuthenticationInfo record {|
     # IANA HTTP auth scheme, e.g. "Bearer"
     string scheme;
     # Credential value matching `scheme`
-    string? credentials?;
+    string credentials?;
     json...;
 |};
 
@@ -323,16 +323,16 @@ public type TaskPushNotificationConfig record {|
     # Webhook URL the server will POST to
     string url;
     # Identifier for this push notification config
-    string? id?;
+    string id?;
     # Leave unset in a sendMessage request
-    string? taskId?;
+    string taskId?;
     # Opaque token the server echoes back on each push, for correlation
-    string? token?;
+    string token?;
     # How the server should authenticate to this webhook
-    AuthenticationInfo? authentication?;
+    AuthenticationInfo authentication?;
     # Must match the tenant value from the selected AgentInterface, when
     # that field is set
-    string? tenant?;
+    string tenant?;
     json...;
 |};
 
@@ -342,31 +342,31 @@ public type SendMessageConfiguration record {|
     string[] acceptedOutputModes = ["text"];
     # Unset imposes no limit; zero omits history entirely; a positive value
     # requests at most that many recent messages
-    int? historyLength = ();
+    int historyLength?;
     # False (default) blocks until the task reaches a terminal or
     # interrupted state; true returns as soon as the task is created
     boolean returnImmediately = false;
     # Webhook to register for this task's updates
-    TaskPushNotificationConfig? taskPushNotificationConfig = ();
+    TaskPushNotificationConfig taskPushNotificationConfig?;
     json...;
 |};
 
 # Filter and pagination parameters for a listTasks call.
 public type ListTasksFilter record {|
     # Restrict to tasks in this context
-    string? contextId?;
+    string contextId?;
     # Restrict to tasks in this lifecycle state
-    TaskState? status?;
+    TaskState status?;
     # Maximum results per page
-    int? pageSize?;
+    int pageSize?;
     # Opaque cursor from a previous ListTasksResult.nextPageToken
-    string? pageToken?;
+    string pageToken?;
     # Same semantics as getTask's historyLength
-    int? historyLength?;
+    int historyLength?;
     # ISO 8601 — only tasks whose status changed after this timestamp
-    string? statusTimestampAfter?;
+    string statusTimestampAfter?;
     # Whether to include each task's artifacts in the response
-    boolean? includeArtifacts?;
+    boolean includeArtifacts?;
     json...;
 |};
 
@@ -397,7 +397,7 @@ public type AuthorizationCodeOAuthFlow record {|
     # The authorization URL for this flow
     string authorizationUrl;
     # URL for obtaining refresh tokens
-    string? refreshUrl?;
+    string refreshUrl?;
     # Scope name to human-readable description
     map<string> scopes;
     # The token URL for this flow
@@ -408,7 +408,7 @@ public type AuthorizationCodeOAuthFlow record {|
 # Configuration for one OAuth 2.0 Client Credentials flow.
 public type ClientCredentialsOAuthFlow record {|
     # URL for obtaining refresh tokens
-    string? refreshUrl?;
+    string refreshUrl?;
     # Scope name to human-readable description
     map<string> scopes;
     # The token URL for this flow
@@ -421,7 +421,7 @@ public type ImplicitOAuthFlow record {|
     # The authorization URL for this flow
     string authorizationUrl;
     # URL for obtaining refresh tokens
-    string? refreshUrl?;
+    string refreshUrl?;
     # Scope name to human-readable description
     map<string> scopes;
     json...;
@@ -430,7 +430,7 @@ public type ImplicitOAuthFlow record {|
 # Configuration for one OAuth 2.0 Resource Owner Password flow.
 public type PasswordOAuthFlow record {|
     # URL for obtaining refresh tokens
-    string? refreshUrl?;
+    string refreshUrl?;
     # Scope name to human-readable description
     map<string> scopes;
     # The token URL for this flow
@@ -442,13 +442,13 @@ public type PasswordOAuthFlow record {|
 # independently optional; a scheme may support one or several.
 public type OAuthFlows record {|
     # Configuration for the Authorization Code flow
-    AuthorizationCodeOAuthFlow? authorizationCode?;
+    AuthorizationCodeOAuthFlow authorizationCode?;
     # Configuration for the Client Credentials flow
-    ClientCredentialsOAuthFlow? clientCredentials?;
+    ClientCredentialsOAuthFlow clientCredentials?;
     # Configuration for the Implicit flow
-    ImplicitOAuthFlow? implicit?;
+    ImplicitOAuthFlow implicit?;
     # Configuration for the Resource Owner Password flow
-    PasswordOAuthFlow? password?;
+    PasswordOAuthFlow password?;
     json...;
 |};
 
@@ -456,7 +456,7 @@ public type OAuthFlows record {|
 # Object.
 public type ApiKeySecurityScheme record {|
     # Human-readable summary of this scheme
-    string? description?;
+    string description?;
     # Where the API key is sent
     "query"|"header"|"cookie" 'in;
     # The header, query, or cookie parameter name
@@ -470,11 +470,11 @@ public type ApiKeySecurityScheme record {|
 # OpenAPI 3.0's Security Scheme Object.
 public type HttpAuthSecurityScheme record {|
     # Human-readable summary of this scheme
-    string? description?;
+    string description?;
     # The IANA HTTP Authentication Scheme name, e.g. "Bearer"
     string scheme;
     # Hint for how the bearer token is formatted, e.g. "JWT"
-    string? bearerFormat?;
+    string bearerFormat?;
     # Discriminator; always "http"
     "http" 'type = "http";
     json...;
@@ -484,11 +484,11 @@ public type HttpAuthSecurityScheme record {|
 # Object.
 public type OAuth2SecurityScheme record {|
     # Human-readable summary of this scheme
-    string? description?;
+    string description?;
     # The OAuth 2.0 flows this scheme supports
     OAuthFlows flows;
     # URL to the OAuth2 authorization server's RFC 8414 metadata
-    string? oauth2MetadataUrl?;
+    string oauth2MetadataUrl?;
     # Discriminator; always "oauth2"
     "oauth2" 'type = "oauth2";
     json...;
@@ -498,7 +498,7 @@ public type OAuth2SecurityScheme record {|
 # Scheme Object.
 public type OpenIdConnectSecurityScheme record {|
     # Human-readable summary of this scheme
-    string? description?;
+    string description?;
     # The OpenID Connect Discovery URL for the provider's metadata
     string openIdConnectUrl;
     # Discriminator; always "openIdConnect"
@@ -510,7 +510,7 @@ public type OpenIdConnectSecurityScheme record {|
 # Security Scheme Object.
 public type MutualTlsSecurityScheme record {|
     # Human-readable summary of this scheme
-    string? description?;
+    string description?;
     # Discriminator; always "mutualTLS"
     "mutualTLS" 'type = "mutualTLS";
     json...;
@@ -540,7 +540,7 @@ public type SecurityRequirement map<string[]>;
 # verification must do it out-of-band for now. See issue #12.
 public type AgentCardSignature record {|
     # Unprotected JWS header values
-    map<json>? header?;
+    map<json> header?;
     # Base64url-encoded protected JWS header
     string protected;
     # Base64url-encoded computed signature
