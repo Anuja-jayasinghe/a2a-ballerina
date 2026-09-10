@@ -534,11 +534,11 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
     match kind {
         "task" => {
             Task t = check parseV03Task(result);
-            return {task: t};
+            return t;
         }
         "message" => {
             Message msg = check parseV03Message(result);
-            return {message: msg};
+            return msg;
         }
         "status-update" => {
             TaskStatus status = check parseV03TaskStatus(m["status"]);
@@ -554,7 +554,7 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
             // the design spec's evidence that it's pure derived redundancy
             // and testDecodeV03StreamEventIgnoresFinalField above.
             TaskStatusUpdateEvent event = check v1Shape.cloneWithType(TaskStatusUpdateEvent);
-            return {statusUpdate: event};
+            return event;
         }
         "artifact-update" => {
             Artifact artifact = check parseV03Artifact(m["artifact"]);
@@ -573,7 +573,7 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
                 v1Shape["metadata"] = m["metadata"];
             }
             TaskArtifactUpdateEvent event = check v1Shape.cloneWithType(TaskArtifactUpdateEvent);
-            return {artifactUpdate: event};
+            return event;
         }
         _ => {
             string msg = string `Unrecognized v0.3 stream event kind: ${kind}`;

@@ -27,6 +27,80 @@
 // client class hold only its own marshaling: the eleven operations are
 // written once, not once per binding.
 
+# Unwraps a protobuf `oneof` envelope into the single arm it carries.
+#
+# Several specification messages are `oneof`s whose arms serialize as a
+# wrapper object keyed by the arm's own name — `SendMessageResponse` is
+# `{"task": {...}}` or `{"message": {...}}`, `StreamResponse` adds
+# `statusUpdate` and `artifactUpdate`. Exactly one arm is set in a
+# conformant payload.
+#
+# Presence is decided by member presence, not by a non-nil value, because
+# that is what the specification says the discriminator is
+# (`specification.md`, "member presence acts as discriminator"). Testing for
+# a non-nil value instead would misread a legitimately-null arm as absent.
+#
+# + envelope - the raw envelope object
+# + arms - the arm names this caller understands, in specification order
+# + return - the matched arm's name and payload; `()` when the envelope
+#            carries no arm this caller recognizes, which a newer
+#            specification revision can legitimately produce; or an
+#            InvalidAgentResponseError when more than one arm is set
+isolated function oneofArm(json envelope, string[] arms) returns [string, json]?|Error {
+    map<json>|error asMap = envelope.ensureType();
+    if asMap is error {
+        return invalidAgentResponse(
+                string `expected a oneof envelope object, found ${(typeof envelope).toString()}`);
+    }
+    string[] present = from string arm in arms
+        where asMap.hasKey(arm)
+        select arm;
+    if present.length() > 1 {
+        return invalidAgentResponse(
+                string `oneof envelope set more than one arm: ${string:'join(", ", ...present)}`);
+    }
+    if present.length() == 0 {
+        return ();
+    }
+    return [present[0], asMap.get(present[0])];
+}
+
+# Decodes one v1.0 StreamResponse envelope into its single arm.
+#
+# + envelope - the raw `{"task": {...}}` / `{"statusUpdate": {...}}` object
+# + return - the decoded arm; `()` when the envelope carries no arm this
+#            client recognizes, so the caller can skip the event and read
+#            on; or an InvalidAgentResponseError if the arm's payload does
+#            not match its type
+isolated function decodeStreamResponseEnvelope(json envelope) returns StreamResponse?|Error {
+    [string, json]? arm = check oneofArm(
+            envelope, ["task", "message", "statusUpdate", "artifactUpdate"]);
+    if arm is () {
+        return ();
+    }
+    [string, json] [name, payload] = arm;
+    anydata|error decoded;
+    match name {
+        "task" => {
+            decoded = payload.cloneWithType(Task);
+        }
+        "message" => {
+            decoded = payload.cloneWithType(Message);
+        }
+        "statusUpdate" => {
+            decoded = payload.cloneWithType(TaskStatusUpdateEvent);
+        }
+        _ => {
+            decoded = payload.cloneWithType(TaskArtifactUpdateEvent);
+        }
+    }
+    if decoded is error {
+        return invalidAgentResponse(
+                string `stream event "${name}" did not match the expected shape: ${decoded.message()}`);
+    }
+    return <StreamResponse>decoded;
+}
+
 # Adds the tenant routing parameter when one applies.
 #
 # Tenant routing is a v1.0-only concept (per-AgentInterface tenant values).
@@ -87,35 +161,27 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
 
-    // The wire response wraps the payload — {"task": {...}} or
-    // {"message": {...}} — rather than returning either one flat.
+    // The wire response wraps the payload -- {"task": {...}} or
+    // {"message": {...}} -- rather than returning either one flat.
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `sendMessage response could not be decoded: ${rewired.message()}`);
     }
-    SendMessageResult|error wrapped = rewired.cloneWithType(SendMessageResult);
-    if wrapped is error {
-        return invalidAgentResponse(string `sendMessage response did not match the expected shape: ${wrapped.message()}`);
+    [string, json]? arm = check oneofArm(rewired, ["task", "message"]);
+    if arm is () {
+        return invalidAgentResponse("Response contained neither a task nor a message");
     }
-    Task? maybeTask = wrapped?.task;
-    Message? maybeMessage = wrapped?.message;
-
-    // A conforming server can't produce this — task/message form a real
-    // protobuf oneof upstream, which makes both being set structurally
-    // impossible in a well-formed response. But SendMessageResult is a
-    // plain open record on our side, not an actual oneof, so nothing
-    // stops a non-conforming server from sending both. Rather than
-    // silently preferring one, treat it as the malformed response it is.
-    if maybeTask is Task && maybeMessage is Message {
-        return invalidAgentResponse("Response contained both a task and a message");
+    [string, json] [name, payload] = arm;
+    if name == "task" {
+        Task|error task = payload.cloneWithType(Task);
+        return task is error
+            ? invalidAgentResponse(string `sendMessage response did not match the expected shape: ${task.message()}`)
+            : task;
     }
-    if maybeTask is Task {
-        return maybeTask;
-    }
-    if maybeMessage is Message {
-        return maybeMessage;
-    }
-    return invalidAgentResponse("Response contained neither a task nor a message");
+    Message|error message = payload.cloneWithType(Message);
+    return message is error
+        ? invalidAgentResponse(string `sendMessage response did not match the expected shape: ${message.message()}`)
+        : message;
 }
 
 # Decodes a response whose payload is a bare Task. Shared by getTask and

@@ -834,14 +834,14 @@ function testSendMessageStreamHappyPath() returns error? {
     stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(events.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(events.next());
-    TaskArtifactUpdateEvent artifactEvent = <TaskArtifactUpdateEvent>second?.artifactUpdate;
+    TaskArtifactUpdateEvent artifactEvent = <TaskArtifactUpdateEvent>second;
     test:assertEquals(extractArtifactText(artifactEvent.artifact), "29 degrees Celsius and partly cloudy.");
 
     StreamResponse third = check expectValue(events.next());
-    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>third).status.state, TASK_STATE_COMPLETED);
 
     record {| StreamResponse value; |}|error? fourth = events.next();
     test:assertTrue(fourth is (), "stream should close after the terminal status");
@@ -864,10 +864,10 @@ function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? 
     stream<StreamResponse, error?> firstStream = check c->sendStreamingMessage(turn1);
 
     StreamResponse working = check expectValue(firstStream.next());
-    test:assertEquals((<TaskStatusUpdateEvent>working?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>working).status.state, TASK_STATE_WORKING);
 
     StreamResponse inputRequired = check expectValue(firstStream.next());
-    TaskStatusUpdateEvent inputRequiredEvent = <TaskStatusUpdateEvent>inputRequired?.statusUpdate;
+    TaskStatusUpdateEvent inputRequiredEvent = <TaskStatusUpdateEvent>inputRequired;
     test:assertEquals(inputRequiredEvent.status.state, TASK_STATE_INPUT_REQUIRED);
 
     record {| StreamResponse value; |}|error? afterPause = firstStream.next();
@@ -890,10 +890,10 @@ function testSendMessageStreamPausesAtInputRequiredThenResumes() returns error? 
     stream<StreamResponse, error?> secondStream = check c->sendStreamingMessage(turn2);
 
     StreamResponse resumedWorking = check expectValue(secondStream.next());
-    test:assertEquals((<TaskStatusUpdateEvent>resumedWorking?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>resumedWorking).status.state, TASK_STATE_WORKING);
 
     StreamResponse completed = check expectValue(secondStream.next());
-    TaskStatusUpdateEvent completedEvent = <TaskStatusUpdateEvent>completed?.statusUpdate;
+    TaskStatusUpdateEvent completedEvent = <TaskStatusUpdateEvent>completed;
     test:assertEquals(completedEvent.status.state, TASK_STATE_COMPLETED);
     test:assertEquals(completedEvent.taskId, "task-3");
     test:assertEquals(completedEvent.contextId, "ctx-3");
@@ -1378,13 +1378,13 @@ function testV03SendMessageStreamDecodesStatusAndArtifactUpdates() returns error
     stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(events.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(events.next());
-    test:assertEquals(extractArtifactText((<TaskArtifactUpdateEvent>second?.artifactUpdate).artifact), "100 USD is equal to 87.80 EUR.");
+    test:assertEquals(extractArtifactText((<TaskArtifactUpdateEvent>second).artifact), "100 USD is equal to 87.80 EUR.");
 
     StreamResponse third = check expectValue(events.next());
-    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>third).status.state, TASK_STATE_COMPLETED);
 }
 
 @test:Config {}
@@ -2018,10 +2018,10 @@ function testSendMessageStreamReconnectsOnDrop() returns error? {
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+    test:assertTrue(first is Task, "first event should be the initial task/message");
 
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
 
     // Script the reconnect's response (what subscribeToTask will receive)
     // before pulling the next value — the drop happens on this next() call.
@@ -2029,7 +2029,7 @@ function testSendMessageStreamReconnectsOnDrop() returns error? {
         {'event: "message", data: statusUpdateJson("task-1", "TASK_STATE_COMPLETED")}
     ]);
     StreamResponse third = check expectValue(s.next());
-    test:assertEquals(third?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>third).status.state, TASK_STATE_COMPLETED);
 }
 
 # Regression guard: maxReconnectAttempts defaults to 0, which must preserve
@@ -2047,10 +2047,10 @@ function testSendMessageStreamDoesNotReconnectByDefault() returns error? {
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+    test:assertTrue(first is Task, "first event should be the initial task/message");
 
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
 
     // Script what a reconnect *would* receive, to prove it is never called:
     // if a reconnect happened despite maxReconnectAttempts being 0, this
@@ -2078,7 +2078,7 @@ function testSendMessageStreamDoesNotReconnectAfterBareMessage() returns error? 
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.message is Message, "first event should be the bare Message reply");
+    test:assertTrue(first is Message, "first event should be the bare Message reply");
 
     // Script what a reconnect *would* receive, to prove it is never
     // called: if a reconnect were attempted despite there being no taskId
@@ -2105,14 +2105,14 @@ function testSubscribeToTaskReconnectsOnDrop() returns error? {
     stream<StreamResponse, error?> s = check c->subscribeToTask("task-7");
 
     StreamResponse first = check expectValue(s.next());
-    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     // Script the reconnect's response — the drop happens on this next() call.
     setNextSseResponse([
         {'event: "message", data: statusUpdateJson("task-7", "TASK_STATE_COMPLETED")}
     ]);
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 }
 
 # Regression test for a real bug caught during review: on reconnect,
@@ -2136,14 +2136,14 @@ function testSubscribeToTaskReconnectPreservesPerCallTenant() returns error? {
     stream<StreamResponse, error?> s = check c->subscribeToTask("task-10", tenant = "acme-corp");
 
     StreamResponse first = check expectValue(s.next());
-    test:assertEquals(first?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     // Script the reconnect's response — the drop happens on this next() call.
     setNextSseResponse([
         {'event: "message", data: statusUpdateJson("task-10", "TASK_STATE_COMPLETED")}
     ]);
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 
     json params = check getLastRequestBody().params;
     test:assertEquals(check params.tenant, "acme-corp", "reconnect must resubscribe using the originating call's per-call tenant override, not the client-level default (or no tenant)");
@@ -2165,10 +2165,10 @@ function testSendMessageStreamGivesUpAfterExhaustingReconnectAttempts() returns 
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+    test:assertTrue(first is Task, "first event should be the initial task/message");
 
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
 
     // Script the resubscribe's response to fail immediately (no events at
     // all before the drop) — the single reconnect attempt succeeds in
@@ -2204,10 +2204,10 @@ function testSendMessageStreamGivesUpWhenEveryReconnectAttemptFails() returns er
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.task is Task, "first event should be the initial task/message");
+    test:assertTrue(first is Task, "first event should be the initial task/message");
 
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
 
     // From here on the mock keeps replaying this same "drop immediately"
     // script for every subsequent request — including both reconnect
@@ -2445,7 +2445,7 @@ function testRestSendMessageStreamDecodesBareStreamResponseNoEnvelope() returns 
     Message msg = {messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]};
     stream<StreamResponse, error?> s = check c->sendStreamingMessage(msg);
     StreamResponse first = check expectValue(s.next());
-    test:assertEquals(first?.task?.id, "task-1");
+    test:assertEquals((<Task>first).id, "task-1");
 }
 
 @test:Config {}
@@ -2471,7 +2471,7 @@ function testRestSubscribeToTaskRetriesWithPostOn405() returns error? {
     RestClient c = check new (getServerBaseUrl());
     stream<StreamResponse, error?> s = check c->subscribeToTask("task-1");
     StreamResponse first = check expectValue(s.next());
-    test:assertEquals(first?.statusUpdate?.taskId, "task-1");
+    test:assertEquals((<TaskStatusUpdateEvent>first).taskId, "task-1");
     record {| string method; string path; map<string> queryParams; |} req = getLastRestRequest();
     test:assertEquals(req.method, "POST", "after the 405, the retry must have actually used POST");
     test:assertEquals(req.path, "/tasks/task-1:subscribe", "the retried request must hit the same SubscribeToTask path, not some other operation's path");
@@ -2605,9 +2605,9 @@ function testClientGrpcSendMessageStreamEndToEnd() returns error? {
     GrpcClient grpcClient = check new (getServerBaseUrl());
     stream<StreamResponse, error?> s = check grpcClient->sendStreamingMessage({messageId: "m1", role: ROLE_USER, parts: [{text: "hi"}]});
     StreamResponse first = check expectValue(s.next());
-    test:assertTrue(first?.task is Task);
+    test:assertTrue(first is Task);
     StreamResponse second = check expectValue(s.next());
-    test:assertEquals(second?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 }
 
 // ---------------------------------------------------------------------------
@@ -2921,7 +2921,7 @@ function testSendStreamingMessageFallsBackToUnaryWhenStreamingDenied() returns e
             "a card declaring streaming=false must fall back to a unary call, not open a streaming one");
 
     StreamResponse first = check expectValue(events.next());
-    assertValidTask(<Task>first?.task);
+    assertValidTask(<Task>first);
 
     record {| StreamResponse value; |}|error? second = events.next();
     test:assertTrue(second is (), "the fallback stream must yield exactly one event, then close");
@@ -2942,7 +2942,7 @@ function testSendStreamingMessageFallbackWrapsMessageReply() returns error? {
     stream<StreamResponse, error?> events = check c->sendStreamingMessage(msg);
 
     StreamResponse first = check expectValue(events.next());
-    Message? reply = first?.message;
+    Message? reply = first is Message ? first : ();
     test:assertTrue(reply is Message, "the wrapped fallback event should carry the Message reply");
     test:assertEquals((<Message>reply).messageId, "reply-1");
 }
@@ -3046,7 +3046,7 @@ function testV03SendStreamingMessageFallsBackWhenStreamingDenied() returns error
     test:assertEquals(check getLastRequestBody().method, "message/send",
             "a v0.3 card declaring streaming=false must fall back to the translated unary method");
     StreamResponse first = check expectValue(events.next());
-    assertValidTask(<Task>first?.task);
+    assertValidTask(<Task>first);
 }
 
 // ---- v0.3 multi-transport card normalization -------------------------

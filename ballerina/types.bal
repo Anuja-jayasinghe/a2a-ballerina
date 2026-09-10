@@ -283,34 +283,25 @@ public type TaskArtifactUpdateEvent record {|
     json...;
 |};
 
-# The wrapper delivered by streaming operations.
+# One event delivered by a streaming operation.
 #
-# Exactly one field is non-nil per event, per specification section 3.2.3.
-public type StreamResponse record {|
-    # Present when a task is first created
-    Task task?;
-    # Present for a plain conversational reply with no task
-    Message message?;
-    # Present on a lifecycle transition
-    TaskStatusUpdateEvent statusUpdate?;
-    # Present on delivered output content
-    TaskArtifactUpdateEvent artifactUpdate?;
-    json...;
-|};
-
-# The wrapper returned by a unary sendMessage call. A narrower sibling of
-# StreamResponse: a non-streaming reply can only ever be a Task or a
-# Message, never a status or artifact update, so those two fields are
-# omitted here rather than left perpetually nil.
+# The specification models this as a `oneof` of exactly four arms
+# (section 3.2.3), so a union is its exact analogue: an event *is* a Task,
+# a Message, a status update, or an artifact update — never a wrapper that
+# might hold two of them, or none.
 #
-# Exactly one field is non-nil, per specification section 3.1.1.
-public type SendMessageResult record {|
-    # Present when the agent creates or continues a tracked task
-    Task task?;
-    # Present for a plain conversational reply with no task
-    Message message?;
-    json...;
-|};
+# The four arms are mutually distinguishable by `is`, which is what makes
+# the union viable here: `Task` carries `id`, `Message` carries `messageId`,
+# and the two update events carry `taskId` with `contextId`. (`OAuthFlows`
+# is also a specification `oneof` but stays a record, precisely because its
+# arms are *not* distinguishable that way.)
+#
+# The wire form is a wrapper keyed by the arm name — `{"task": {...}}` — so
+# decoding unwraps it with `oneofArm` before typing the payload. An arm no
+# recognized name matches is skipped rather than failing the stream, so a
+# newer specification revision adding an event type cannot break an existing
+# client mid-stream.
+public type StreamResponse Task|Message|TaskStatusUpdateEvent|TaskArtifactUpdateEvent;
 
 # Credentials the client presents to a push-notification webhook it registers.
 public type AuthenticationInfo record {|

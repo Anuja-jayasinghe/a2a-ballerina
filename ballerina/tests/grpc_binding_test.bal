@@ -345,13 +345,13 @@ function testDecodeGrpcSendResultNeitherIsInvalidAgentResponse() {
 @test:Config {groups: ["grpc"]}
 function testDecodeGrpcStreamResponseEachVariant() returns error? {
     StreamResponse r1 = check decodeGrpcStreamResponse({task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}});
-    test:assertTrue(r1?.task is Task);
+    test:assertTrue(r1 is Task);
     StreamResponse r2 = check decodeGrpcStreamResponse({message: {message_id: "m1", role: grpcstub:ROLE_AGENT, parts: [{text: "hi"}]}});
-    test:assertTrue(r2?.message is Message);
+    test:assertTrue(r2 is Message);
     StreamResponse r3 = check decodeGrpcStreamResponse({status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_WORKING}}});
-    test:assertTrue(r3?.statusUpdate is TaskStatusUpdateEvent);
+    test:assertTrue(r3 is TaskStatusUpdateEvent);
     StreamResponse r4 = check decodeGrpcStreamResponse({artifact_update: {task_id: "t1", context_id: "c1", artifact: {artifact_id: "a1", parts: [{text: "x"}]}}});
-    test:assertTrue(r4?.artifactUpdate is TaskArtifactUpdateEvent);
+    test:assertTrue(r4 is TaskArtifactUpdateEvent);
 }
 
 @test:Config {groups: ["grpc"]}

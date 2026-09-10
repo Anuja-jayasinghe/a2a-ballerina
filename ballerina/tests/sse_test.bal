@@ -48,10 +48,10 @@ function testReadSseStreamOverRealHttpResponse() returns error? {
     stream<StreamResponse, error?> result = check readSseStream(resp);
 
     StreamResponse first = check expectValue(result.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(result.next());
-    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 
     record {| StreamResponse value; |}|error? third = result.next();
     test:assertTrue(third is (), "stream should be closed after the terminal status delivered over real HTTP");
@@ -94,13 +94,13 @@ function testA2aStreamGeneratorClosesOnTerminalStatus() returns error? {
     ]);
 
     StreamResponse first = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(generator.next());
-    test:assertTrue(second?.artifactUpdate is TaskArtifactUpdateEvent, "artifact event should be delivered");
+    test:assertTrue(second is TaskArtifactUpdateEvent, "artifact event should be delivered");
 
     StreamResponse third = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>third?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>third).status.state, TASK_STATE_COMPLETED);
 
     record {| StreamResponse value; |}|error? fourth = generator.next();
     test:assertTrue(fourth is (), "stream should be closed after the terminal event, regardless of remaining source events");
@@ -125,7 +125,7 @@ function testA2aStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns 
             {data: string `{"jsonrpc":"2.0","id":"1","result":{"statusUpdate":{"taskId":"task-1","contextId":"ctx-1","status":{"state":"TASK_STATE_WORKING"}}}}`}
         ]);
         StreamResponse first = check expectValue(generator.next());
-        test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, <TaskState>state);
+        test:assertEquals((<TaskStatusUpdateEvent>first).status.state, <TaskState>state);
 
         record {| StreamResponse value; |}|error? second = generator.next();
         test:assertTrue(second is (),
@@ -145,7 +145,7 @@ function testA2aStreamGeneratorClosesOnEveryTerminalStateAndOnlyThose() returns 
         ]);
         _ = check expectValue(generator.next());
         StreamResponse second = check expectValue(generator.next());
-        test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED,
+        test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED,
                 string `${state} is not terminal and must leave the stream open`);
     }
 }
@@ -158,11 +158,11 @@ function testA2aStreamGeneratorDoesNotCloseOnInputRequired() returns error? {
     ]);
 
     StreamResponse first = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_INPUT_REQUIRED);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_INPUT_REQUIRED);
 
     // If INPUT_REQUIRED had closed the stream, this would fail instead of returning the next event.
     StreamResponse second = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
 }
 
 // ---- reconnection policy, tested without a server ---------------------
@@ -294,7 +294,7 @@ function testA2aStreamGeneratorSkipsCommentFrames() returns error? {
     ]);
 
     StreamResponse result = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>result?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>result).status.state, TASK_STATE_WORKING);
 }
 
 @test:Config {}
@@ -306,10 +306,10 @@ function testA2aStreamGeneratorPropagatesUnderlyingStreamErrorBeforeTerminal() r
     ]);
 
     StreamResponse first = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(generator.next());
-    test:assertTrue(second?.artifactUpdate is TaskArtifactUpdateEvent, "artifact event should be delivered");
+    test:assertTrue(second is TaskArtifactUpdateEvent, "artifact event should be delivered");
 
     record {| StreamResponse value; |}|error? third = generator.next();
     test:assertTrue(third is error, "an underlying stream error before a terminal status should propagate to the caller, not be swallowed");
@@ -344,10 +344,10 @@ function testA2aStreamGeneratorDecodesV03StatusUpdate() returns error? {
     ], "V0_3");
 
     StreamResponse first = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     StreamResponse second = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 
     record {| StreamResponse value; |}|error? third = generator.next();
     test:assertTrue(third is (), "stream should close after the v0.3 terminal status, same as v1.0");
@@ -366,10 +366,10 @@ function testA2aStreamGeneratorIgnoresV03FinalFieldOnNonTerminalState() returns 
     ], "V0_3");
 
     StreamResponse first = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>first?.statusUpdate).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>first).status.state, TASK_STATE_WORKING);
 
     // If final:true had closed the stream despite the non-terminal state,
     // this would return () instead of the second event.
     StreamResponse second = check expectValue(generator.next());
-    test:assertEquals((<TaskStatusUpdateEvent>second?.statusUpdate).status.state, TASK_STATE_COMPLETED);
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_COMPLETED);
 }

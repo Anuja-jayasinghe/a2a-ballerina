@@ -289,7 +289,7 @@ function testDecodeV03StreamEventStatusUpdate() returns error? {
         "status": {"state": "working"},
         "final": false
     });
-    TaskStatusUpdateEvent? update = event?.statusUpdate;
+    TaskStatusUpdateEvent? update = event is TaskStatusUpdateEvent ? event : ();
     test:assertTrue(update is TaskStatusUpdateEvent, "status-update should decode into StreamResponse.statusUpdate");
     test:assertEquals((<TaskStatusUpdateEvent>update).status.state, TASK_STATE_WORKING);
 }
@@ -302,7 +302,7 @@ function testDecodeV03StreamEventArtifactUpdate() returns error? {
         "artifact": {"artifactId": "art-1", "parts": [{"kind": "text", "text": "partial"}]},
         "lastChunk": true
     });
-    TaskArtifactUpdateEvent? update = event?.artifactUpdate;
+    TaskArtifactUpdateEvent? update = event is TaskArtifactUpdateEvent ? event : ();
     test:assertTrue(update is TaskArtifactUpdateEvent, "artifact-update should decode into StreamResponse.artifactUpdate");
     test:assertEquals((<TaskArtifactUpdateEvent>update).lastChunk, true);
 }
@@ -322,7 +322,7 @@ function testDecodeV03StreamEventIgnoresFinalField() returns error? {
         "status": {"state": "working"},
         "final": true
     });
-    TaskStatusUpdateEvent update = <TaskStatusUpdateEvent>event?.statusUpdate;
+    TaskStatusUpdateEvent update = <TaskStatusUpdateEvent>event;
     test:assertEquals(update.status.state, TASK_STATE_WORKING, "final:true on a non-terminal state must not change the decoded TaskState");
 }
 
@@ -333,7 +333,7 @@ function testDecodeV03StreamEventTask() returns error? {
         "id": "task-1",
         "status": {"state": "completed"}
     });
-    Task? task = event?.task;
+    Task? task = event is Task ? event : ();
     test:assertTrue(task is Task, "kind:task should decode into StreamResponse.task");
     test:assertEquals((<Task>task).id, "task-1");
     test:assertEquals((<Task>task).status.state, TASK_STATE_COMPLETED);
@@ -346,7 +346,7 @@ function testDecodeV03StreamEventMessage() returns error? {
         "messageId": "msg-1", "role": "agent",
         "parts": [{"kind": "text", "text": "hi"}]
     });
-    Message? message = event?.message;
+    Message? message = event is Message ? event : ();
     test:assertTrue(message is Message, "kind:message should decode into StreamResponse.message");
     test:assertEquals((<Message>message).role, ROLE_AGENT);
 }

@@ -673,32 +673,79 @@ function testTaskArtifactUpdateEventToleratesUnrecognizedField() returns error? 
     test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
 }
 
+# StreamResponse is a union of the four arms, so an event *is* one of them
+# rather than a wrapper holding one. The wire form is still the keyed
+# envelope, which decodeStreamResponseEnvelope unwraps.
+#
+# + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testStreamResponseRoundTrip() returns error? {
-    StreamResponse original = {
+function testStreamResponseEnvelopeDecodesToItsArm() returns error? {
+    json envelope = {
         statusUpdate: {taskId: "task-1", contextId: "ctx-1", status: {state: TASK_STATE_COMPLETED}}
     };
-    StreamResponse decoded = check original.toJson().cloneWithType(StreamResponse);
 
-    test:assertEquals(decoded, original);
-    test:assertTrue(decoded?.task is (), "task should be nil");
-    test:assertTrue(decoded?.message is (), "message should be nil");
-    test:assertTrue(decoded?.artifactUpdate is (), "artifactUpdate should be nil");
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is TaskStatusUpdateEvent, "the statusUpdate arm should decode to its own type");
+    if decoded is TaskStatusUpdateEvent {
+        test:assertEquals(decoded.taskId, "task-1");
+        test:assertEquals(decoded.status.state, TASK_STATE_COMPLETED);
+    }
+    test:assertFalse(decoded is Task, "and must not also satisfy another arm");
+    test:assertFalse(decoded is TaskArtifactUpdateEvent);
 }
 
+# An arm's own unrecognized fields still round-trip, since every arm type is
+# an open record.
+#
+# + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testStreamResponseToleratesUnrecognizedField() returns error? {
-    json payload = {
-        message: {messageId: "msg-1", role: "ROLE_AGENT", parts: [{text: "Hello"}]},
-        futureField: "some value from a newer spec revision"
+function testStreamResponseArmToleratesUnrecognizedField() returns error? {
+    json envelope = {
+        message: {
+            messageId: "msg-1",
+            role: "ROLE_AGENT",
+            parts: [{text: "Hello"}],
+            futureField: "some value from a newer spec revision"
+        }
     };
 
-    StreamResponse decoded = check payload.cloneWithType(StreamResponse);
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
 
-    test:assertTrue(decoded?.message is Message, "message should decode");
+    test:assertTrue(decoded is Message, "message should decode");
+    if decoded is Message {
+        json reserialized = decoded.toJson();
+        test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+    }
+}
 
-    json reserialized = decoded.toJson();
-    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+# An envelope naming an arm this client does not know is skipped, not
+# rejected: StreamResponse is a specification oneof, and a later revision may
+# add an arm. Failing the stream on the first such event would break every
+# existing client the moment that happened.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testStreamResponseEnvelopeSkipsUnknownArm() returns error? {
+    json envelope = {futureEvent: {someField: 1}};
+
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is (), "an unrecognized arm yields () so the caller can skip the event");
+}
+
+# A conformant oneof sets exactly one arm; two is malformed, and silently
+# picking the first would hide a broken agent.
+@test:Config {}
+function testStreamResponseEnvelopeRejectsTwoArms() {
+    json envelope = {
+        task: {id: "t1", status: {state: TASK_STATE_WORKING}},
+        message: {messageId: "m1", role: "ROLE_AGENT", parts: []}
+    };
+
+    StreamResponse?|Error decoded = decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is InvalidAgentResponseError, "two arms set must be rejected");
 }
 
 @test:Config {}

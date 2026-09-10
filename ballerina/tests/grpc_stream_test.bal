@@ -34,7 +34,7 @@ function testGrpcStreamAdapterDecodesAndClosesOnTerminal() returns error? {
     record {|StreamResponse value;|}? r3 = check adapter.next();
     test:assertTrue(r3 is record {|StreamResponse value;|});
     if r3 is record {|StreamResponse value;|} {
-        test:assertEquals(r3.value?.statusUpdate?.status?.state, TASK_STATE_COMPLETED);
+        test:assertEquals((<TaskStatusUpdateEvent>r3.value).status.state, TASK_STATE_COMPLETED);
     }
     // Terminal event reached — a well-behaved upstream would end here too,
     // but assert the adapter itself also treats this as closed:

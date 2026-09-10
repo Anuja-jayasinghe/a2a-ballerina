@@ -575,24 +575,24 @@ isolated function decodeGrpcSendResult(grpcstub:SendMessageResponse resp) return
 # per field is correct here too.
 #
 # + resp - the generated grpcstub:StreamResponse to decode
-# + return - the equivalent typed StreamResponse, with exactly the one
-#            field set that the oneof carried
+# + return - the equivalent typed StreamResponse -- the single arm the
+#            oneof carried, since StreamResponse is itself a union
 isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns StreamResponse|error {
     grpcstub:Task? t = resp?.task;
     if t is grpcstub:Task {
-        return {task: check decodeGrpcTask(t)};
+        return check decodeGrpcTask(t);
     }
     grpcstub:Message? m = resp?.message;
     if m is grpcstub:Message {
-        return {message: check decodeGrpcMessage(m)};
+        return check decodeGrpcMessage(m);
     }
     grpcstub:TaskStatusUpdateEvent? su = resp?.status_update;
     if su is grpcstub:TaskStatusUpdateEvent {
-        return {statusUpdate: check decodeGrpcStatusUpdate(su)};
+        return check decodeGrpcStatusUpdate(su);
     }
     grpcstub:TaskArtifactUpdateEvent? au = resp?.artifact_update;
     if au is grpcstub:TaskArtifactUpdateEvent {
-        return {artifactUpdate: check decodeGrpcArtifactUpdate(au)};
+        return check decodeGrpcArtifactUpdate(au);
     }
     return error InvalidAgentResponseError(
         "gRPC StreamResponse contained none of task/message/status_update/artifact_update",
