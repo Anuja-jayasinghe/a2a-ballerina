@@ -171,8 +171,12 @@ public type AgentCard record {|
     # Which security schemes apply; a logical OR across the list, each
     # entry a logical AND of the schemes it names
     SecurityRequirement[] securityRequirements?;
-    # JWS signatures over this card. This library captures the shape only;
-    # it does not verify signatures — see issue #12.
+    # JWS signatures over this card, per specification section 8.4.
+    #
+    # Verification is not automatic — a caller supplies the public key, so it
+    # cannot be. Pass the raw card body and a key provider to
+    # `verifyAgentCardSignature`, which performs the RFC 8785 canonicalization
+    # section 8.4.3 requires and checks RS256 or ES256.
     AgentCardSignature[] signatures?;
     # Legacy top-level protocol version field, from before v1.0 moved this
     # into each AgentInterface.protocolVersion. A card with no

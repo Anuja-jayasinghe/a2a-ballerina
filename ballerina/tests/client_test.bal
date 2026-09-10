@@ -3289,3 +3289,112 @@ function testBareLegacyUrlCardSynthesisesOneJsonRpcInterface() returns error? {
     test:assertEquals(detectProtocolModeForBinding(card), "V0_3",
             "dialect detection for such a card must be unchanged");
 }
+
+
+// ---- specification 8.6.2: Agent Card caching --------------------------
+
+# max-age parsing has to survive the directives that travel with it.
+@test:Config {}
+function testParseMaxAgeReadsTheDirectiveAmongOthers() {
+    test:assertEquals(parseMaxAge("max-age=120"), 120);
+    test:assertEquals(parseMaxAge("public, max-age=3600, must-revalidate"), 3600);
+    test:assertEquals(parseMaxAge("no-cache"), ());
+    test:assertEquals(parseMaxAge("max-age=notanumber"), ());
+    test:assertEquals(parseMaxAge("max-age="), ());
+}
+
+# A card with no freshness deadline is never fresh: specification section
+# 8.6.2 only *permits* an implementation-specific default duration ("MAY"),
+# and inventing one is the single behaviour here that could serve a stale
+# card.
+@test:Config {}
+function testCardWithoutCacheControlIsNeverFresh() {
+    CachedAgentCard noDeadline = {
+        card: {
+            name: "x", description: "d", version: "1.0.0", capabilities: {},
+            supportedInterfaces: [{url: "http://x", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+            defaultInputModes: ["text"], defaultOutputModes: ["text"], skills: []
+        },
+        etag: (),
+        lastModified: (),
+        freshUntil: ()
+    };
+
+    test:assertFalse(isStillFresh(noDeadline),
+            "with no usable max-age every follow-up must revalidate");
+}
+
+# While a card is inside its Cache-Control lifetime, section 8.6.2 scopes
+# conditional requests to "when a cached Agent Card has expired" -- so a
+# fresh card must produce no request at all, not merely a cheap one.
+#
+# Observed rather than counted: the served card is swapped between calls, so
+# a request that actually went out would come back with the new name.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testFreshCachedCardIsReusedWithoutRefetching() returns error? {
+    setWellKnownOverride({
+        name: "Original", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+        defaultInputModes: ["text"], defaultOutputModes: ["text"], skills: []
+    });
+    CachedAgentCard fetched = check resolveAgentCardCached(getServerBaseUrl());
+    test:assertEquals(fetched.card.name, "Original");
+
+    // Same card, but marked fresh for another minute.
+    CachedAgentCard stillFresh = {
+        card: fetched.card,
+        etag: fetched.etag,
+        lastModified: fetched.lastModified,
+        freshUntil: time:utcAddSeconds(time:utcNow(), 60)
+    };
+    test:assertTrue(isStillFresh(stillFresh));
+
+    // If a request went out, this is what it would return instead.
+    setWellKnownOverride({
+        name: "Replaced", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+        defaultInputModes: ["text"], defaultOutputModes: ["text"], skills: []
+    });
+
+    CachedAgentCard reused = check resolveAgentCardCached(getServerBaseUrl(), previous = stillFresh);
+
+    test:assertEquals(reused.card.name, "Original",
+            "a card still within max-age must be reused without contacting the server");
+    setWellKnownOverride(());
+}
+
+# An expired card does go back to the server, and picks up what changed.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testExpiredCachedCardRevalidates() returns error? {
+    setWellKnownOverride({
+        name: "Original", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+        defaultInputModes: ["text"], defaultOutputModes: ["text"], skills: []
+    });
+    CachedAgentCard fetched = check resolveAgentCardCached(getServerBaseUrl());
+
+    // Deadline already in the past.
+    CachedAgentCard expired = {
+        card: fetched.card,
+        etag: (),
+        lastModified: (),
+        freshUntil: time:utcAddSeconds(time:utcNow(), -60)
+    };
+    test:assertFalse(isStillFresh(expired));
+
+    setWellKnownOverride({
+        name: "Replaced", description: "d", version: "1.0.0", capabilities: {},
+        supportedInterfaces: [{url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
+        defaultInputModes: ["text"], defaultOutputModes: ["text"], skills: []
+    });
+
+    CachedAgentCard refetched = check resolveAgentCardCached(getServerBaseUrl(), previous = expired);
+
+    test:assertEquals(refetched.card.name, "Replaced",
+            "an expired card must revalidate and pick up the change");
+    setWellKnownOverride(());
+}
