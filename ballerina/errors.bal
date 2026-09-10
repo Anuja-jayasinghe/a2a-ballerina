@@ -55,6 +55,27 @@ public type ExtendedAgentCardNotConfiguredError distinct Error;
 
 public type ExtensionSupportRequiredError distinct Error;
 
+# This library's catch-all, for failures that map to no A2A error type.
+#
+# Specification section 5.4 lists the canonical A2A error types and their
+# bindings; there are nine, and the other nine types in this file are exactly
+# those. `InternalError` is not one of them — it shares a name with
+# JSON-RPC's standard `-32603`, but it is not that specifically, and its
+# `code` here is whatever the failure carried: an HTTP status with no A2A
+# error code behind it, a JSON-RPC standard code, or none at all.
+#
+# It covers three kinds of failure the specification's own taxonomy has no
+# entry for:
+#
+# - a transport-level failure carrying no A2A error code
+# - a malformed envelope that never reached an operation
+# - a client-side precondition failure, caught before any request is sent —
+#   the specification defines no error for these at all, since sections
+#   3.3.2 and 5.4 both describe *server* behaviour
+#
+# A caller matching on a specific protocol condition should match one of the
+# nine typed errors above; this one means "something failed that the protocol
+# does not name".
 public type InternalError distinct Error;
 
 # Builds a client-side InvalidAgentResponseError with the same JSON-RPC

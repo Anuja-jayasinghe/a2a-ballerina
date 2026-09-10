@@ -1708,7 +1708,10 @@ function testV03ListTaskPushNotificationConfigsOmitsPaginationFields() returns e
 
 @test:Config {}
 function testV03DeleteTaskPushNotificationConfigTranslatesMethod() returns error? {
-    Client c = check v03Client();
+    // pushNotifications must be declared: this test is about v0.3 method-name
+    // translation, and delete is gated on the capability like the other three
+    // config operations (specification section 3.3.4).
+    Client c = check v03Client({pushNotifications: true});
     setNextJsonResponse({
         jsonrpc: "2.0", id: "1",
         result: {}
@@ -2816,16 +2819,24 @@ isolated function primeLastRequest(Client c) returns string|error {
 }
 
 @test:Config {}
-function testGetExtendedAgentCardShortCircuitsWhenCapabilityFalse() returns error? {
+function testGetExtendedAgentCardRejectsWhenCapabilityFalse() returns error? {
+    // Renamed from ...ShortCircuitsWhenCapabilityFalse, which asserted that
+    // the held public card was returned instead. Specification section 3.3.4
+    // requires the opposite, and says so again in sections 3.1.11 and 13.3:
+    // when capabilities.extendedAgentCard is false or not present, this
+    // operation MUST return UnsupportedOperationError. Handing back the
+    // public card gave the caller something other than what they asked for,
+    // with no way to tell.
     Client c = check new (cardWithExtendedSupport(false, "Public Card"));
     string primedMethod = check primeLastRequest(c);
     test:assertEquals(primedMethod, "GetTask");
 
-    AgentCard card = check c->getExtendedAgentCard();
+    AgentCard|Error card = c->getExtendedAgentCard();
 
-    test:assertEquals(card.name, "Public Card", "the held card should be returned as-is");
+    test:assertTrue(card is UnsupportedOperationError,
+            "specification section 3.3.4 requires UnsupportedOperationError, not the public card");
     test:assertEquals(check getLastRequestBody().method, "GetTask",
-            "a card declaring extendedAgentCard=false must not produce a GetExtendedAgentCard request at all");
+            "and the rejection is client-side: no GetExtendedAgentCard request is produced");
 }
 
 @test:Config {}
@@ -2874,11 +2885,17 @@ function testGetExtendedAgentCardStoresFetchedCard() returns error? {
     string primedMethod = check primeLastRequest(c);
     test:assertEquals(primedMethod, "GetTask");
 
-    AgentCard second = check c->getExtendedAgentCard();
+    AgentCard|Error second = c->getExtendedAgentCard();
 
-    test:assertEquals(second.name, "Extended Card", "the second call should return the stored extended card");
+    // The fetched card was stored, and it declares extendedAgentCard=false,
+    // so the second call is now rejected on that stored card rather than
+    // returning it. That the rejection happens at all is the proof the
+    // fetched card replaced the held one -- the original card declared
+    // extendedAgentCard=true and would not have been rejected.
+    test:assertTrue(second is UnsupportedOperationError,
+            "the stored extended card declares extendedAgentCard=false, so a second call is rejected");
     test:assertEquals(check getLastRequestBody().method, "GetTask",
-            "the stored card declares extendedAgentCard=false, so the second call must short-circuit");
+            "and the rejection is client-side: no second GetExtendedAgentCard request is produced");
 }
 
 // ---- issue #11: client-side capability gating -------------------------
@@ -3018,18 +3035,21 @@ function testListTaskPushNotificationConfigsRejectsClientSideWhenDenied() return
 }
 
 @test:Config {}
-function testDeleteTaskPushNotificationConfigStillSendsWhenDenied() returns error? {
-    // The one deliberate exception: deletion is idempotent per
-    // specification section 3.1.10, so a card denying pushNotifications
-    // must not block what's a legitimate no-op either way.
+function testDeleteTaskPushNotificationConfigIsGatedLikeTheOtherThree() returns error? {
+    // Renamed from ...StillSendsWhenDenied, which asserted that delete was
+    // deliberately ungated on the grounds that deletion is idempotent per
+    // specification section 3.1.10. That conflated two rules: 3.1.10 is
+    // about repeated deletes of the same config having the same effect, and
+    // says nothing about capability gating. Section 3.3.4 names this
+    // operation explicitly among the four that MUST return
+    // PushNotificationNotSupportedError when the capability is false or not
+    // present.
     Client c = check new (cardWithPushNotificationsSupport(false));
-    setNextJsonResponse({jsonrpc: "2.0", id: "1", result: {}});
 
     error? result = c->deleteTaskPushNotificationConfig({taskId: "task-1", id: "webhook-1"});
 
-    test:assertTrue(result is (), "deleteTaskPushNotificationConfig must succeed even when the card denies pushNotifications");
-    test:assertEquals(check getLastRequestBody().method, "DeleteTaskPushNotificationConfig",
-            "deleteTaskPushNotificationConfig must still reach the wire - it is deliberately not gated");
+    test:assertTrue(result is PushNotificationNotSupportedError,
+            "specification section 3.3.4 lists Delete among the gated config operations");
 }
 
 @test:Config {}

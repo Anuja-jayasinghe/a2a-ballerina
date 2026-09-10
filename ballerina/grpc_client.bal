@@ -585,11 +585,17 @@ public isolated client class GrpcClient {
     # Deletes a push-notification webhook config. Idempotent per
     # specification section 3.1.10.
     #
-    # deleteTaskPushNotificationConfig is deliberately NOT gated on
-    # capabilities.pushNotifications - deletion is idempotent per
-    # specification section 3.1.10, so a card that (perhaps stale-ly)
-    # denies the capability shouldn't block a call that's a legitimate
-    # no-op either way. See issue #11.
+    # Gated on capabilities.pushNotifications like the other three config
+    # operations. This used to be deliberately ungated, on the grounds that
+    # deletion is idempotent per specification section 3.1.10 so a stale
+    # card should not block a legitimate no-op. That conflated two separate
+    # rules: section 3.1.10's idempotency is about *repeated deletes of the
+    # same config* having the same effect, and says nothing about capability
+    # gating. Section 3.3.4 names this operation explicitly -- "operations
+    # related to push notification configuration (Create, Get, List, Delete)
+    # MUST return PushNotificationNotSupportedError" when the capability is
+    # false or not present. An agent that never supported push notifications
+    # has no config to idempotently delete.
     #
     # + taskId - The task the config was registered against
     # + id - The config's identifier
@@ -597,6 +603,13 @@ public isolated client class GrpcClient {
     # + return - nil on success, or a typed Error
     isolated remote function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request)
             returns Error? {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("deleteTaskPushNotificationConfig");
+        }
         string taskId = request.taskId;
         string id = request.id;
         string? tenant = request?.tenant;
@@ -613,9 +626,15 @@ public isolated client class GrpcClient {
     isolated remote function getExtendedAgentCard(GetExtendedAgentCardRequest request = {}) returns AgentCard|Error {
         string? tenant = request?.tenant;
         lock {
+            // Specification section 3.3.4: when the held card says the agent
+            // does not support extended cards, this MUST fail rather than
+            // silently hand back the public card the caller already had.
+            // With no card held there is nothing to validate against, so the
+            // request goes out and the server -- which owns the MUST --
+            // decides; its error maps back through the usual path.
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {
-                return held.clone();
+                return extendedCardUnsupportedError();
             }
         }
         map<json> params = buildGetExtendedAgentCardParams(tenant ?: self.tenant, self.mode);

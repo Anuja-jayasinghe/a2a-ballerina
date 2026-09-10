@@ -101,16 +101,33 @@ isolated function decodeStreamResponseEnvelope(json envelope) returns StreamResp
     return <StreamResponse>decoded;
 }
 
-# Enforces the specification's non-empty rule for REQUIRED arrays.
+# Enforces non-emptiness on the two arrays the specification actually
+# requires it for.
 #
-# Specification section 5.7 states it plainly: "Arrays marked as required
-# MUST contain at least one element." That is a blanket rule over every
-# `repeated` field carrying `[(google.api.field_behavior) = REQUIRED]`, and
-# it is validated in both directions -- section 5.7 says implementations
-# "SHOULD validate these requirements and reject messages with missing
-# required fields", which speaks of messages, not only responses. Checking
-# outbound turns a network round trip and whatever error the agent chooses
-# into an immediate, local, precise one.
+# Section 5.7 contains a blanket sentence -- "Arrays marked as required MUST
+# contain at least one element" -- which cannot be read literally. The
+# specification's own canonicalization example in section 8.4.1 publishes a
+# conformant AgentCard carrying `"skills": []` and annotates it "REQUIRED
+# field -> include", with a canonical output that keeps the empty array. A
+# rule the specification's own example violates is not the rule: REQUIRED
+# means the field must be *present*, which the type system already enforces.
+#
+# Non-emptiness is enforced only where the specification says so per field,
+# or where the reference implementation corroborates it:
+#
+#   Artifact.parts  - the proto states "Must contain at least one part", the
+#                     only such statement in the whole file; a2a-java
+#                     enforces it (Artifact.java:52)
+#   Message.parts   - no proto statement, but it is the message's content
+#                     container and a2a-java enforces it (Message.java:70)
+#
+# a2a-java has no non-empty check on AgentCard or AgentSkill at all, which
+# matches the section 8.4.1 example.
+#
+# Validated in both directions: section 5.7 asks implementations to "reject
+# messages with missing required fields" -- messages, not only responses --
+# and checking outbound turns a network round trip and whatever error the
+# agent chooses into an immediate, local, precise one.
 #
 # + name - the field's dotted name, for the message
 # + length - the array's actual length
@@ -377,6 +394,24 @@ isolated function cardDeniesPushNotifications(AgentCard? card) returns boolean {
 # + return - a typed, client-side UnsupportedOperationError
 isolated function streamingUnsupportedError(string operation) returns UnsupportedOperationError {
     string message = string `${operation}: AgentCard.capabilities.streaming is false - rejected client-side, no request sent`;
+    return error UnsupportedOperationError(message, message = message, code = -32004);
+}
+
+# Builds the client-side rejection for a getExtendedAgentCard call the held
+# AgentCard says the agent does not support.
+#
+# Specification section 3.3.4 requires exactly this: "If
+# AgentCard.capabilities.extendedAgentCard is false or not present, attempts
+# to call the Get Extended Agent Card operation MUST return
+# UnsupportedOperationError." Sections 3.1.11 and 13.3 say the same, and
+# nowhere does the specification sanction returning the public card instead
+# -- section 3.1.11 defines the output as the extended card *when the
+# operation is available*, not a substitute when it is not.
+#
+# + return - the typed rejection
+isolated function extendedCardUnsupportedError() returns UnsupportedOperationError {
+    string message = "getExtendedAgentCard: AgentCard.capabilities.extendedAgentCard is false "
+        + "or not present - rejected client-side, no request sent";
     return error UnsupportedOperationError(message, message = message, code = -32004);
 }
 
