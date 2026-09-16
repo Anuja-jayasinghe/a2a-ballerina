@@ -16,18 +16,17 @@
 
 // What a developer implements to serve an A2A agent.
 //
-// Two shapes, the same split `ballerina/mcp` draws between `Service` and
-// `AdvancedService`, and the same split the reference SDKs draw between an
-// `AgentExecutor` and a `RequestHandler`:
+// One shape: `a2a:Service`, implementing a single method, `onMessage`. The
+// library runs the task lifecycle, listTasks, the push-config store, and the
+// extended card around it -- the same split the reference SDKs draw between
+// an `AgentExecutor` and a `RequestHandler`.
 //
-//   `a2a:Service`         - implement one method, `onMessage`; the library
-//                           runs the task lifecycle, listTasks, the push-config
-//                           store, and the extended card around it.
-//   `a2a:AdvancedService` - implement all eleven operations directly, for an
-//                           agent that owns its own storage.
-//
-// Only `a2a:Service` is wired in this release; `a2a:AdvancedService` is
-// declared so the shape is fixed, and gains its dispatch in a later change.
+// `ballerina/mcp` also exposes an `AdvancedService` escape hatch, for a
+// developer who needs to bypass the library's own tool/resource handling.
+// A2A has no equivalent need to bypass: the eleven operations are a fixed
+// protocol surface around one piece of real business logic (`onMessage`),
+// not a registry of developer-defined tools a library might get in the way
+// of. Not planned.
 
 # An A2A agent that implements the single message entry point and lets the
 # library run everything else.
@@ -46,38 +45,6 @@ public type Service distinct isolated service object {
     #            through `updater` instead, or an `a2a:Error`
     remote isolated function onMessage(RequestContext context, TaskUpdater updater)
         returns Message|Error?;
-};
-
-# An A2A agent that implements every operation itself.
-#
-# For agents that keep their own task storage and want no lifecycle
-# management from the library. Declared now so the contract is stable;
-# dispatch to it arrives in a later release.
-public type AdvancedService distinct isolated service object {
-
-    # Sends a message to the agent.
-    #
-    # + request - The message and its send options
-    # + return - A `a2a:Task` or a `a2a:Message`, or an `a2a:Error`
-    remote isolated function onSendMessage(SendMessageRequest request) returns Task|Message|Error;
-
-    # Retrieves a task by id.
-    #
-    # + request - The task identifier and optional history length
-    # + return - The task, or an `a2a:Error`
-    remote isolated function onGetTask(GetTaskRequest request) returns Task|Error;
-
-    # Requests cancellation of a task.
-    #
-    # + request - The task identifier and any additional context
-    # + return - The updated task, or an `a2a:Error`
-    remote isolated function onCancelTask(CancelTaskRequest request) returns Task|Error;
-
-    # Lists tasks matching a filter.
-    #
-    # + request - The filter and pagination parameters
-    # + return - A page of tasks, or an `a2a:Error`
-    remote isolated function onListTasks(ListTasksRequest request) returns ListTasksResponse|Error;
 };
 
 # The inbound message and the context of the request that delivered it.
