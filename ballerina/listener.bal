@@ -157,8 +157,8 @@ public isolated class Listener {
 # `supportedInterfaces` to a single HTTP+JSON v1.0 entry — the only binding and
 # version this server speaks — and sets the capability flags to what is
 # implemented, so the card never claims a capability the server lacks. In this
-# release that is: streaming off, push notifications off (config is stored but
-# not delivered), extended card off.
+# release that is: streaming on (sendStreamingMessage/subscribeToTask), push
+# notifications off (config is stored but not delivered), extended card off.
 #
 # + supplied - The card the developer passed
 # + return - The card to serve
@@ -168,7 +168,7 @@ isolated function deriveServedCard(AgentCard supplied) returns AgentCard {
         {url: "", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
     ];
     card.capabilities = {
-        streaming: false,
+        streaming: true,
         pushNotifications: false,
         extendedAgentCard: false
     };

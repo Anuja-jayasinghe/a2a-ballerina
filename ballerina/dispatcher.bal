@@ -41,15 +41,18 @@ isolated service class DispatcherService {
         self.handler = handler;
     }
 
-    isolated resource function get [string... path](http:Request req) returns http:Response {
+    isolated resource function get [string... path](http:Request req)
+            returns http:Response|stream<http:SseEvent, error?> {
         return self.dispatch("GET", "/" + string:'join("/", ...path), req);
     }
 
-    isolated resource function post [string... path](http:Request req) returns http:Response {
+    isolated resource function post [string... path](http:Request req)
+            returns http:Response|stream<http:SseEvent, error?> {
         return self.dispatch("POST", "/" + string:'join("/", ...path), req);
     }
 
-    isolated resource function delete [string... path](http:Request req) returns http:Response {
+    isolated resource function delete [string... path](http:Request req)
+            returns http:Response|stream<http:SseEvent, error?> {
         return self.dispatch("DELETE", "/" + string:'join("/", ...path), req);
     }
 
@@ -60,7 +63,8 @@ isolated service class DispatcherService {
     # + rawPath - The request path with a leading slash, tenant prefix intact
     # + req - The HTTP request
     # + return - The response to send
-    private isolated function dispatch(string method, string rawPath, http:Request req) returns http:Response {
+    private isolated function dispatch(string method, string rawPath, http:Request req)
+            returns http:Response|stream<http:SseEvent, error?> {
         // Discovery is unversioned and untenanted. The served card's
         // interface URL is filled from the Host the client reached us on —
         // the server knows its port but not its externally-visible host, so
@@ -85,8 +89,11 @@ isolated service class DispatcherService {
         }
         [string, string?] [path, tenant] = routed;
 
-        http:Response|Error result = self.route(method, path, tenant, req);
-        return result is http:Response ? result : toRestErrorResponse(result);
+        http:Response|stream<http:SseEvent, error?>|Error result = self.route(method, path, tenant, req);
+        if result is Error {
+            return toRestErrorResponse(result);
+        }
+        return result;
     }
 
     # The served card with its HTTP+JSON interface URL filled from the
@@ -167,9 +174,9 @@ isolated service class DispatcherService {
 
     # Dispatches a tenant-stripped path to its operation.
     #
-    # Only the unary operations are wired in this release; streaming, the
-    # push-config store, and the extended card are added in later changes,
-    # and an unmatched path is a 404-shaped InternalError.
+    # The unary operations and the two streaming ones are wired in this
+    # release; the push-config store and the extended card are added in
+    # later changes, and an unmatched path is a 404-shaped InternalError.
     #
     # + method - The HTTP method
     # + path - The path with no tenant prefix
@@ -177,13 +184,28 @@ isolated service class DispatcherService {
     # + req - The HTTP request
     # + return - The response, or an error to serialise
     private isolated function route(string method, string path, string? tenant, http:Request req)
-            returns http:Response|Error {
+            returns http:Response|stream<http:SseEvent, error?>|Error {
         if method == "POST" && path == "/message:send" {
             return self.onSendMessage(tenant, req);
+        }
+        if method == "POST" && path == "/message:stream" {
+            return self.onSendStreamingMessage(tenant, req);
         }
         if method == "POST" && path.startsWith("/tasks/") && path.endsWith(":cancel") {
             string id = path.substring("/tasks/".length(), path.length() - ":cancel".length());
             return jsonResponse((check self.handler.cancelTask({id})).toJson());
+        }
+        // The proto's own annotation is GET, but the client falls back to
+        // POST on a 404 -- a compat workaround for a non-reference server
+        // that only registered POST here (mirroring the reference *client*,
+        // which sends POST) -- and 404 is also what a genuinely-unknown
+        // task's TaskNotFoundError carries. Accepting POST here too means
+        // that fallback still reaches the real handler and surfaces the
+        // correct typed error, rather than a second, unrelated 404 for "no
+        // such route" masking the first.
+        if (method == "GET" || method == "POST") && path.startsWith("/tasks/") && path.endsWith(":subscribe") {
+            string id = path.substring("/tasks/".length(), path.length() - ":subscribe".length());
+            return self.onSubscribeToTask(id);
         }
         if method == "GET" && path == "/tasks" {
             ListTasksRequest filter = queryToListFilter(req);
@@ -224,6 +246,103 @@ isolated service class DispatcherService {
             return wrapTransportError(wired);
         }
         return jsonResponse({[arm]: wired});
+    }
+
+    # Handles POST /message:stream: decode the request, run onMessage through
+    # the default handler, and frame every event it produced as SSE.
+    #
+    # + tenant - The matched tenant, or `()`
+    # + req - The HTTP request
+    # + return - The SSE stream, or an error
+    private isolated function onSendStreamingMessage(string? tenant, http:Request req)
+            returns stream<http:SseEvent, error?>|Error {
+        if !self.card.capabilities.streaming {
+            return serverStreamingUnsupportedError("sendStreamingMessage");
+        }
+        json|error payload = req.getJsonPayload();
+        if payload is error {
+            return invalidAgentResponse(string `request body is not valid JSON: ${payload.message()}`);
+        }
+        SendMessageRequest|error request = payload.cloneWithType(SendMessageRequest);
+        if request is error {
+            return invalidAgentResponse(
+                    string `request body did not match SendMessageRequest: ${request.message()}`);
+        }
+        StreamResponse[] events = check self.handler.sendStreamingMessage(request, tenant);
+        stream<http:SseEvent, error?> sseStream = new (new StreamResponseEventGenerator(events));
+        return sseStream;
+    }
+
+    # Handles GET /tasks/{id}:subscribe: the task's current state, as a
+    # one-event SSE stream. See `DefaultHandler.subscribeToTask` for why this
+    # release's stream is always exactly that one event.
+    #
+    # + id - The task id
+    # + return - The SSE stream, or an error
+    private isolated function onSubscribeToTask(string id) returns stream<http:SseEvent, error?>|Error {
+        if !self.card.capabilities.streaming {
+            return serverStreamingUnsupportedError("subscribeToTask");
+        }
+        StreamResponse[] events = check self.handler.subscribeToTask({id});
+        stream<http:SseEvent, error?> sseStream = new (new StreamResponseEventGenerator(events));
+        return sseStream;
+    }
+}
+
+# Builds the server-side rejection for a streaming operation called against
+# a card that does not declare `capabilities.streaming`. Distinct from
+# `operations.bal`'s client-side `streamingUnsupportedError`, which rejects
+# before a request is even sent; this one is what a client sees on the wire
+# when it sends one anyway.
+#
+# + operation - The operation name, for the message
+# + return - The typed error
+isolated function serverStreamingUnsupportedError(string operation) returns UnsupportedOperationError {
+    string msg = string `${operation}: this agent's capabilities.streaming is false`;
+    return error UnsupportedOperationError(msg, message = msg, code = -32004);
+}
+
+# Wraps one already-computed `StreamResponse` value into the oneof-envelope
+# JSON shape the client's `decodeStreamResponseEnvelope` reads:
+# `{"task": ...}`, `{"message": ...}`, `{"statusUpdate": ...}`, or
+# `{"artifactUpdate": ...}`.
+#
+# + value - The event to wire-encode
+# + return - The enveloped JSON, or an error if `encodeRawBytesForWire` failed
+isolated function wireEnvelopeFor(StreamResponse value) returns json|error {
+    string arm;
+    if value is Task {
+        arm = "task";
+    } else if value is Message {
+        arm = "message";
+    } else if value is TaskStatusUpdateEvent {
+        arm = "statusUpdate";
+    } else {
+        arm = "artifactUpdate";
+    }
+    json wired = check encodeRawBytesForWire(value.toJson());
+    return {[arm]: wired};
+}
+
+# Yields one pre-computed `StreamResponse` list as SSE events, in order, then
+# ends the stream cleanly. Used by both `sendStreamingMessage` and
+# `subscribeToTask` -- this release computes the whole event sequence before
+# the SSE response opens (see `DefaultHandler.sendStreamingMessage`), so
+# framing it is the only thing left for this class to do.
+class StreamResponseEventGenerator {
+    private StreamResponse[] remaining;
+
+    isolated function init(StreamResponse[] events) {
+        self.remaining = events;
+    }
+
+    public isolated function next() returns record {| http:SseEvent value; |}|error? {
+        if self.remaining.length() == 0 {
+            return ();
+        }
+        StreamResponse next = self.remaining.shift();
+        json envelope = check wireEnvelopeFor(next);
+        return {value: {data: envelope.toJsonString()}};
     }
 }
 

@@ -77,8 +77,8 @@ function testServerServesAgentCardForClientDiscovery() returns error? {
     test:assertEquals(card.supportedInterfaces[0].protocolBinding, "HTTP+JSON",
             "the served card must declare the HTTP+JSON interface");
     test:assertEquals(card.supportedInterfaces[0].protocolVersion, "1.0");
-    test:assertFalse(card.capabilities.streaming,
-            "streaming is not wired yet, so the derived card must not claim it");
+    test:assertTrue(card.capabilities.streaming,
+            "streaming is wired, so the derived card must claim it");
 }
 
 @test:Config {}
@@ -135,6 +135,89 @@ function testServerRoundTripCancelTask() returns error? {
     Task|Error canceled = c->cancelTask({id: created.id});
     test:assertTrue(canceled is TaskNotCancelableError,
             "a completed task cannot be canceled; the server must say so");
+}
+
+@test:Config {}
+function testServerRoundTripSendStreamingMessage() returns error? {
+    Client c = check echoClient();
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage({
+        message: {messageId: "m1", role: ROLE_USER, parts: [{text: "stream me"}]}
+    });
+
+    StreamResponse first = check expectStreamValue(events);
+    test:assertTrue(first is Task, "the first event must be the newly created task");
+    test:assertEquals((<Task>first).status.state, TASK_STATE_SUBMITTED);
+    string taskId = (<Task>first).id;
+
+    StreamResponse second = check expectStreamValue(events);
+    test:assertTrue(second is TaskStatusUpdateEvent, "the second event must be the WORKING status");
+    test:assertEquals((<TaskStatusUpdateEvent>second).status.state, TASK_STATE_WORKING);
+    test:assertEquals((<TaskStatusUpdateEvent>second).taskId, taskId);
+
+    StreamResponse third = check expectStreamValue(events);
+    test:assertTrue(third is TaskArtifactUpdateEvent, "the third event must be the echoed artifact");
+    test:assertEquals((<TaskArtifactUpdateEvent>third).artifact.parts[0]?.text, "echo: stream me");
+    test:assertTrue((<TaskArtifactUpdateEvent>third).lastChunk, "a whole-artifact addArtifact call is its own last chunk");
+
+    StreamResponse fourth = check expectStreamValue(events);
+    test:assertTrue(fourth is TaskStatusUpdateEvent, "the fourth event must be the COMPLETED status");
+    test:assertEquals((<TaskStatusUpdateEvent>fourth).status.state, TASK_STATE_COMPLETED);
+
+    record {| StreamResponse value; |}|error? fifth = events.next();
+    test:assertTrue(fifth is (), "the stream must close after the terminal status");
+}
+
+@test:Config {}
+function testServerRoundTripSendStreamingMessageDirectReply() returns error? {
+    Client c = check echoClient();
+    stream<StreamResponse, error?> events = check c->sendStreamingMessage({
+        message: {messageId: "m1", role: ROLE_USER, parts: [{text: "ping"}]}
+    });
+
+    StreamResponse first = check expectStreamValue(events);
+    test:assertTrue(first is Message, "a direct reply must be the stream's one and only event");
+    test:assertEquals((<Message>first).parts[0]?.text, "pong");
+
+    record {| StreamResponse value; |}|error? second = events.next();
+    test:assertTrue(second is (), "the stream must close immediately after the one Message event");
+}
+
+@test:Config {}
+function testServerRoundTripSubscribeToTask() returns error? {
+    Client c = check echoClient();
+    Task created = <Task>check c->sendMessage({
+        message: {messageId: "m1", role: ROLE_USER, parts: [{text: "subscribe me"}]}
+    });
+
+    stream<StreamResponse, error?> events = check c->subscribeToTask({id: created.id});
+    StreamResponse first = check expectStreamValue(events);
+    test:assertTrue(first is Task, "subscribeToTask's first event must be the task's current state");
+    test:assertEquals((<Task>first).id, created.id);
+    test:assertEquals((<Task>first).status.state, TASK_STATE_COMPLETED);
+
+    record {| StreamResponse value; |}|error? second = events.next();
+    test:assertTrue(second is (),
+            "the echo agent always finishes inside its own sendMessage call, so a subsequent " +
+            "subscribeToTask only ever sees a terminal snapshot and the stream closes immediately");
+}
+
+@test:Config {}
+function testServerRoundTripSubscribeToUnknownTaskIsTyped() returns error? {
+    Client c = check echoClient();
+    stream<StreamResponse, error?>|Error result = c->subscribeToTask({id: "does-not-exist"});
+    test:assertTrue(result is TaskNotFoundError,
+            "an unknown task must round-trip as a2a:TaskNotFoundError through the google.rpc.Status body");
+}
+
+isolated function expectStreamValue(stream<StreamResponse, error?> events) returns StreamResponse|error {
+    record {| StreamResponse value; |}|error? result = events.next();
+    if result is error {
+        return result;
+    }
+    if result is () {
+        return error("expected a value but the stream ended");
+    }
+    return result.value;
 }
 
 @test:Config {}

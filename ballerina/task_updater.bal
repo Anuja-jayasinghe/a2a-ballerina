@@ -33,6 +33,12 @@ public isolated client class TaskUpdater {
     private final string contextId;
     private final TaskStore store;
     private Artifact[] artifacts = [];
+    // Every transition and artifact, in call order -- what
+    // `sendStreamingMessage` replays as the stream body once `onMessage`
+    // returns. Recorded regardless of whether this call turns out to be
+    // streaming; the unary path simply never reads it. Package-private:
+    // an `onMessage` author drives the updater, they don't read its history.
+    private StreamResponse[] events = [];
 
     # Binds an updater to a task. Called by the library, not by agent code.
     #
@@ -74,8 +80,20 @@ public isolated client class TaskUpdater {
         if name is string {
             artifact.name = name;
         }
+        // Delivered whole, not chunked -- this API takes the complete parts
+        // array in one call, so every artifact is its own first-and-last
+        // chunk. A future incremental-append API would set append/lastChunk
+        // per call instead.
+        TaskArtifactUpdateEvent event = {
+            taskId: self.taskId,
+            contextId: self.contextId,
+            artifact: artifact.clone(),
+            append: false,
+            lastChunk: true
+        };
         lock {
             self.artifacts.push(artifact.clone());
+            self.events.push(event.clone());
         }
         return ();
     }
@@ -121,7 +139,8 @@ public isolated client class TaskUpdater {
     }
 
     # Writes the task at the given state, carrying the artifacts accumulated
-    # so far, and stamps the status timestamp.
+    # so far, and stamps the status timestamp. Also records a
+    # `TaskStatusUpdateEvent` for `sendStreamingMessage` to replay.
     #
     # + state - The state to move to
     # + message - An optional status message
@@ -132,13 +151,30 @@ public isolated client class TaskUpdater {
             status.message = message;
         }
         Task task = {id: self.taskId, contextId: self.contextId, status};
+        TaskStatusUpdateEvent event = {taskId: self.taskId, contextId: self.contextId, status};
         Artifact[] accumulated;
         lock {
             accumulated = self.artifacts.clone();
+            self.events.push(event.clone());
         }
         if accumulated.length() > 0 {
             task.artifacts = accumulated;
         }
         return self.store.put(task);
+    }
+
+    # The events recorded so far, in call order: one `TaskArtifactUpdateEvent`
+    # per `addArtifact` call and one `TaskStatusUpdateEvent` per transition
+    # call, interleaved exactly as the `onMessage` author made them.
+    #
+    # Package-private -- `sendStreamingMessage` reads this after `onMessage`
+    # returns to build the stream body; an `onMessage` author has no reason
+    # to read their own updater's history back.
+    #
+    # + return - The recorded events
+    isolated function drainEvents() returns StreamResponse[] {
+        lock {
+            return self.events.clone();
+        }
     }
 }

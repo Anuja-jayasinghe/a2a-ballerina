@@ -86,6 +86,84 @@ isolated class DefaultHandler {
         return finished;
     }
 
+    # Handles sendStreamingMessage: like `sendMessage`, but returns every
+    # event `onMessage` produced, in generation order, for the caller to
+    # frame as SSE.
+    #
+    # `onMessage` runs to completion before this returns -- there is no
+    # concurrent task execution in this release, so the stream this produces
+    # is a replay of what already happened, not a live feed. What the client
+    # sees on the wire is identical either way: per specification 3.1.2, the
+    # stream begins with the Task object (here, its just-seeded SUBMITTED
+    # state) followed by the status/artifact events `onMessage` drove the
+    # task through, or -- for a direct reply -- exactly one Message event.
+    #
+    # + request - The decoded send request
+    # + tenant - The tenant the request was routed under, or `()`
+    # + return - The events to stream, in order, or an error
+    isolated function sendStreamingMessage(SendMessageRequest request, string? tenant) returns StreamResponse[]|Error {
+        check validateOutboundMessage(request.message);
+
+        string contextId = request.message?.contextId ?: uuid:createType4AsString();
+        string taskId = uuid:createType4AsString();
+
+        Task seed = {
+            id: taskId,
+            contextId,
+            status: {state: TASK_STATE_SUBMITTED, timestamp: time:utcToString(time:utcNow())}
+        };
+        check self.store.put(seed);
+
+        RequestContext context = {
+            message: request.message,
+            tenant,
+            configuration: request?.configuration
+        };
+        TaskUpdater updater = new (taskId, contextId, self.store);
+
+        Message|Error? direct = self.agentService->onMessage(context, updater);
+        if direct is Error {
+            return direct;
+        }
+        if direct is Message {
+            check self.store.remove(taskId);
+            return [direct];
+        }
+
+        StreamResponse[] events = [seed];
+        events.push(...updater.drainEvents());
+        if events.length() == 1 {
+            return invalidAgentResponse(
+                    string `onMessage returned without driving the task to a state for ${taskId}`);
+        }
+        return events;
+    }
+
+    # Handles subscribeToTask: the task's current state, as a one-event
+    # stream.
+    #
+    # Per specification 3.1.6, the first event on a genuine subscribe is the
+    # task's current state. This release has no live cross-request following
+    # of a task still being driven by another in-flight call -- `onMessage`
+    # always finishes inside the request that started it (see
+    # `sendStreamingMessage`), so by the time a separate subscribeToTask
+    # request can reach the server the task is already in the state that
+    # request's own `sendMessage`/`sendStreamingMessage` call left it in, and
+    # that snapshot is all there ever will be to see. The stream is therefore
+    # always exactly one event, closing immediately after -- correct for a
+    # task already terminal, and a documented scope boundary (not a bug) for
+    # one still notionally in progress on another connection.
+    #
+    # + request - The task identifier
+    # + return - The one-event stream, or a TaskNotFoundError
+    isolated function subscribeToTask(SubscribeToTaskRequest request) returns StreamResponse[]|Error {
+        Task? task = check self.store.get(request.id);
+        if task is () {
+            return taskNotFound(request.id);
+        }
+        return [task];
+    }
+
     # Handles getTask.
     #
     # + request - The task identifier and optional history length
