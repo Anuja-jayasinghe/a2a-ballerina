@@ -21,6 +21,7 @@
 // One listener for the whole suite (a port cannot host two), started in
 // @test:BeforeSuite and stopped in @test:AfterSuite.
 
+import ballerina/http;
 import ballerina/test;
 
 const int SERVER_TEST_PORT = 19234;
@@ -34,6 +35,37 @@ listener Listener echoListener = new (SERVER_TEST_PORT, agentCard = {
     defaultInputModes: ["text"],
     defaultOutputModes: ["text"],
     // Placeholders: the listener derives both from what it serves.
+    capabilities: {},
+    supportedInterfaces: []
+});
+
+// A second listener, on its own port, configured with an extended card --
+// separate from echoListener so that one's own extendedAgentCard:false
+// round trip (the common case: no extended card configured) stays
+// unambiguous. Both listeners are attached to instances of the same
+// EchoAgent; only the configuration differs.
+const int EXTENDED_CARD_TEST_PORT = 19235;
+final string extendedCardServerUrl = string `http://localhost:${EXTENDED_CARD_TEST_PORT}`;
+
+listener Listener extendedCardListener = new (EXTENDED_CARD_TEST_PORT, agentCard = {
+    name: "Echo Agent",
+    description: "Echoes its input",
+    version: "1.0.0",
+    skills: [{id: "echo", name: "Echo", description: "Echoes text", tags: ["echo"]}],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"],
+    capabilities: {},
+    supportedInterfaces: []
+}, extendedAgentCard = {
+    name: "Echo Agent (extended)",
+    description: "Echoes its input -- extended card reveals an internal-only skill",
+    version: "1.0.0",
+    skills: [
+        {id: "echo", name: "Echo", description: "Echoes text", tags: ["echo"]},
+        {id: "debug", name: "Debug", description: "Internal-only diagnostics", tags: ["internal"]}
+    ],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"],
     capabilities: {},
     supportedInterfaces: []
 });
@@ -65,6 +97,7 @@ isolated service class EchoAgent {
 @test:BeforeSuite
 function startEchoServer() returns error? {
     check echoListener.attach(new EchoAgent());
+    check extendedCardListener.attach(new EchoAgent());
 }
 
 isolated function echoClient() returns Client|error => new (serverUrl);
@@ -234,7 +267,125 @@ function testServerRoundTripListTasks() returns error? {
     test:assertEquals(page.nextPageToken, "", "a full page must end with an empty nextPageToken");
 }
 
+// ---- extended Agent Card ------------------------------------------------
+
+@test:Config {}
+function testServerRoundTripGetExtendedAgentCardWhenNotConfigured() returns error? {
+    // echoListener has no extendedAgentCard configured, so its served card
+    // declares capabilities.extendedAgentCard: false, and the Client refuses
+    // client-side rather than sending a request the server would also
+    // refuse -- specification section 3.3.4's MUST-fail is honoured on both
+    // sides of the wire, just at different points.
+    Client c = check echoClient();
+    AgentCard|Error result = c->getExtendedAgentCard();
+    test:assertTrue(result is UnsupportedOperationError,
+            "a card declaring no extended-card support must refuse client-side, not send a doomed request");
+}
+
+@test:Config {}
+function testServerRoundTripGetExtendedAgentCardWhenConfigured() returns error? {
+    Client c = check new (extendedCardServerUrl);
+    AgentCard extended = check c->getExtendedAgentCard();
+    test:assertEquals(extended.name, "Echo Agent (extended)");
+    test:assertEquals(extended.skills.length(), 2, "the extended card reveals the internal-only skill too");
+}
+
+@test:Config {}
+function testDefaultHandlerGetExtendedAgentCardFailsWhenNoneConfigured() returns error? {
+    // Direct unit test, not a wire round trip: deriveServedCard ties
+    // capabilities.extendedAgentCard to whether a card was configured, so
+    // this error can never actually reach a Client through echoListener's
+    // own wiring (the capability would already be false, and the Client
+    // would have refused client-side, per the test above). The branch is
+    // still real code for a future server built directly against
+    // DefaultHandler without that same coupling, so it is exercised
+    // directly here rather than left untested.
+    TaskStore store = new InMemoryTaskStore();
+    DefaultHandler handler = new (new EchoAgent(), store, ());
+    AgentCard|Error result = handler.getExtendedAgentCard();
+    test:assertTrue(result is ExtendedAgentCardNotConfiguredError,
+            "no extended card configured must fail this specific way, not just any error");
+}
+
+// ---- push-notification config CRUD --------------------------------------
+//
+// capabilities.pushNotifications is always false in this release (config is
+// stored, never delivered -- see deriveServedCard), so Client/RestClient
+// refuse these four operations client-side, the same self-gate exercised
+// above for the extended card. That is exactly the point of the capability
+// staying false: a caller using this library's own client cannot even try
+// to rely on delivery that will never happen. Proving the operations
+// genuinely work server-side -- which they do, for any caller willing to
+// speak the wire directly -- needs a plain http:Client instead.
+
+isolated function pushConfigHttpClient() returns http:Client|error => new (serverUrl);
+
+@test:Config {}
+function testServerRoundTripPushNotificationConfigCrud() returns error? {
+    http:Client raw = check pushConfigHttpClient();
+    Client c = check echoClient();
+    Task created = <Task>check c->sendMessage({
+        message: {messageId: "m1", role: ROLE_USER, parts: [{text: "needs a webhook"}]}
+    });
+
+    map<string> headers = {"A2A-Version": "1.0", "Content-Type": "application/json"};
+
+    // Create.
+    json createBody = {"url": "https://example.com/webhook", "token": "corr-1"};
+    json createResult = check raw->post(
+            string `/tasks/${created.id}/pushNotificationConfigs`, createBody, headers);
+    TaskPushNotificationConfig config = check createResult.cloneWithType(TaskPushNotificationConfig);
+    test:assertEquals(config.url, "https://example.com/webhook");
+    string? configId = config?.id;
+    test:assertTrue(configId is string, "the server must assign a config id on create");
+    string id = <string>configId;
+
+    // Get.
+    json getResult = check raw->get(
+            string `/tasks/${created.id}/pushNotificationConfigs/${id}`, headers);
+    TaskPushNotificationConfig fetched = check getResult.cloneWithType(TaskPushNotificationConfig);
+    test:assertEquals(fetched.id, id);
+    test:assertEquals(fetched.token, "corr-1");
+
+    // List.
+    json listResult = check raw->get(
+            string `/tasks/${created.id}/pushNotificationConfigs`, headers);
+    ListTaskPushNotificationConfigsResponse page =
+        check listResult.cloneWithType(ListTaskPushNotificationConfigsResponse);
+    TaskPushNotificationConfig[] configs = page.configs ?: [];
+    test:assertEquals(configs.length(), 1, "the config just created must show up in the list");
+    test:assertEquals(configs[0].id, id);
+
+    // Delete.
+    json _ = check raw->delete(
+            string `/tasks/${created.id}/pushNotificationConfigs/${id}`, headers = headers);
+
+    // Get after delete: gone.
+    http:Response afterDelete = check raw->get(
+            string `/tasks/${created.id}/pushNotificationConfigs/${id}`, headers);
+    test:assertEquals(afterDelete.statusCode, http:STATUS_NOT_FOUND,
+            "the config must genuinely be gone after delete");
+
+    // Delete again: idempotent, not an error, per specification 3.1.10.
+    http:Response secondDelete = check raw->delete(
+            string `/tasks/${created.id}/pushNotificationConfigs/${id}`, headers = headers);
+    test:assertEquals(secondDelete.statusCode, http:STATUS_OK,
+            "deleting an already-deleted config must succeed, not error");
+}
+
+@test:Config {}
+function testServerRoundTripCreatePushNotificationConfigForUnknownTaskIsTyped() returns error? {
+    http:Client raw = check pushConfigHttpClient();
+    map<string> headers = {"A2A-Version": "1.0", "Content-Type": "application/json"};
+    json body = {"url": "https://example.com/webhook"};
+    http:Response resp = check raw->post(
+            "/tasks/does-not-exist/pushNotificationConfigs", body, headers);
+    test:assertEquals(resp.statusCode, http:STATUS_NOT_FOUND,
+            "registering a config against an unknown task must be rejected, not silently accepted");
+}
+
 @test:AfterSuite
 function stopEchoServer() returns error? {
     check echoListener.gracefulStop();
+    check extendedCardListener.gracefulStop();
 }

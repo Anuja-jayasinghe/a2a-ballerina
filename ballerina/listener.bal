@@ -25,6 +25,11 @@ public type ListenerConfiguration record {|
     # that does not survive a restart; supply an `a2a:TaskStore` of your own
     # for durable storage.
     TaskStore taskStore = new InMemoryTaskStore();
+    # The richer card `getExtendedAgentCard` returns to callers who request
+    # it. Unset means the agent does not implement the operation: the
+    # derived card declares `capabilities.extendedAgentCard` false, and a
+    # request for it fails with `a2a:ExtendedAgentCardNotConfiguredError`.
+    AgentCard? extendedAgentCard = ();
 |};
 
 # Serves an A2A agent over the HTTP+JSON binding.
@@ -55,6 +60,7 @@ public isolated class Listener {
     private final http:Listener httpListener;
     private final AgentCard & readonly card;
     private final TaskStore store;
+    private final (AgentCard & readonly)? extendedCard;
     private DispatcherService? dispatcher = ();
 
     # Creates a Listener.
@@ -63,7 +69,8 @@ public isolated class Listener {
     # + agentCard - The agent's card; `supportedInterfaces` and `capabilities`
     #               are derived, so a caller supplies identity, skills, and I/O
     #               modes
-    # + config - Listener configuration, including the task store
+    # + config - Listener configuration, including the task store and the
+    #            extended card
     # + return - An `a2a:Error` if the card is invalid or the HTTP listener
     #            cannot be created
     public isolated function init(int|http:Listener listenTo, AgentCard agentCard,
@@ -79,7 +86,9 @@ public isolated class Listener {
             self.httpListener = created;
         }
         self.store = config.taskStore;
-        self.card = deriveServedCard(agentCard).cloneReadOnly();
+        AgentCard? extended = config.extendedAgentCard;
+        self.extendedCard = extended is AgentCard ? extended.cloneReadOnly() : ();
+        self.card = deriveServedCard(agentCard, self.extendedCard is AgentCard).cloneReadOnly();
     }
 
     # Attaches an `a2a:Service` to serve.
@@ -91,7 +100,7 @@ public isolated class Listener {
     # + name - Ignored; the A2A paths are fixed by the specification
     # + return - An `a2a:Error` if attachment fails
     public isolated function attach(Service a2aService, string[]|string? name = ()) returns error? {
-        DefaultHandler handler = new (a2aService, self.store);
+        DefaultHandler handler = new (a2aService, self.store, self.extendedCard);
         DispatcherService dispatcherService = new (self.card, handler);
         lock {
             self.dispatcher = dispatcherService;
@@ -157,12 +166,17 @@ public isolated class Listener {
 # `supportedInterfaces` to a single HTTP+JSON v1.0 entry — the only binding and
 # version this server speaks — and sets the capability flags to what is
 # implemented, so the card never claims a capability the server lacks. In this
-# release that is: streaming on (sendStreamingMessage/subscribeToTask), push
-# notifications off (config is stored but not delivered), extended card off.
+# release that is: streaming on (sendStreamingMessage/subscribeToTask); push
+# notifications off always -- the four config CRUD operations work, but
+# outbound webhook delivery is a later release, and a card that claimed the
+# capability without ever delivering would be worse than not claiming it;
+# extended card on only when the developer configured one.
 #
 # + supplied - The card the developer passed
+# + extendedCardConfigured - Whether `ListenerConfiguration.extendedAgentCard`
+#                            was set
 # + return - The card to serve
-isolated function deriveServedCard(AgentCard supplied) returns AgentCard {
+isolated function deriveServedCard(AgentCard supplied, boolean extendedCardConfigured) returns AgentCard {
     AgentCard card = supplied.clone();
     card.supportedInterfaces = [
         {url: "", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
@@ -170,7 +184,7 @@ isolated function deriveServedCard(AgentCard supplied) returns AgentCard {
     card.capabilities = {
         streaming: true,
         pushNotifications: false,
-        extendedAgentCard: false
+        extendedAgentCard: extendedCardConfigured
     };
     return card;
 }

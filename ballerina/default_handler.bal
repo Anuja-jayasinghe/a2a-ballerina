@@ -28,10 +28,23 @@ import ballerina/uuid;
 isolated class DefaultHandler {
     private final Service agentService;
     private final TaskStore store;
+    // Push-notification config storage: registered, never delivered to (see
+    // decision in the server plan -- outbound webhook delivery is a later
+    // release). Keyed by taskId, then by the config's own server-generated
+    // id. In-memory only, like InMemoryTaskStore; not pluggable in this
+    // release since there is no delivery mechanism yet for a durable store
+    // to matter to.
+    private map<map<TaskPushNotificationConfig>> pushConfigs = {};
+    // The richer card `getExtendedAgentCard` returns, if the developer
+    // configured one. `()` means the operation always answers
+    // ExtendedAgentCardNotConfiguredError -- deriveServedCard already
+    // reflects this in capabilities.extendedAgentCard.
+    private final (AgentCard & readonly)? extendedCard;
 
-    isolated function init(Service agentService, TaskStore store) {
+    isolated function init(Service agentService, TaskStore store, (AgentCard & readonly)? extendedCard) {
         self.agentService = agentService;
         self.store = store;
+        self.extendedCard = extendedCard;
     }
 
     # Handles sendMessage: create a task, run the developer's `onMessage`
@@ -213,6 +226,89 @@ isolated class DefaultHandler {
     isolated function listTasks(ListTasksRequest request) returns ListTasksResponse|Error {
         return self.store.list(request);
     }
+
+    # Handles createTaskPushNotificationConfig: registers a webhook config
+    # against an existing task, assigning it a server-generated id.
+    #
+    # + request - The config to register; `taskId` must be set and name an
+    #             existing task
+    # + return - The stored config, with `id` filled in, or a
+    #            TaskNotFoundError if `taskId` names no task
+    isolated function createTaskPushNotificationConfig(TaskPushNotificationConfig request) returns TaskPushNotificationConfig|Error {
+        string? taskId = request?.taskId;
+        if taskId is () {
+            string msg = "TaskPushNotificationConfig.taskId is required to register a config";
+            return invalidAgentResponse(msg);
+        }
+        Task? task = check self.store.get(taskId);
+        if task is () {
+            return taskNotFound(taskId);
+        }
+        TaskPushNotificationConfig config = request.clone();
+        config.id = uuid:createType4AsString();
+        lock {
+            map<TaskPushNotificationConfig> forTask = self.pushConfigs[taskId] ?: {};
+            forTask[<string>config.id] = config.clone();
+            self.pushConfigs[taskId] = forTask;
+        }
+        return config;
+    }
+
+    # Handles getTaskPushNotificationConfig.
+    #
+    # + request - The parent task id and the config's own id
+    # + return - The config, or a TaskNotFoundError if either id is unknown
+    isolated function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request) returns TaskPushNotificationConfig|Error {
+        lock {
+            map<TaskPushNotificationConfig>? forTask = self.pushConfigs[request.taskId];
+            TaskPushNotificationConfig? config = forTask is map<TaskPushNotificationConfig>
+                ? forTask[request.id] : ();
+            if config is () {
+                return taskPushNotificationConfigNotFound(request.taskId, request.id);
+            }
+            return config.clone();
+        }
+    }
+
+    # Handles listTaskPushNotificationConfigs. No pagination cursor is
+    # actually needed at realistic per-task config counts, so every result
+    # is returned as one page.
+    #
+    # + request - The parent task id
+    # + return - Every config registered for the task
+    isolated function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request) returns ListTaskPushNotificationConfigsResponse|Error {
+        TaskPushNotificationConfig[] configs;
+        lock {
+            configs = (self.pushConfigs[request.taskId] ?: {}).toArray().clone();
+        }
+        return {configs, nextPageToken: ""};
+    }
+
+    # Handles deleteTaskPushNotificationConfig. Idempotent per specification
+    # section 3.1.10: deleting an unknown config is not an error.
+    #
+    # + request - The parent task id and the config's own id
+    # + return - Nil; always succeeds
+    isolated function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request) returns Error? {
+        lock {
+            map<TaskPushNotificationConfig>? forTask = self.pushConfigs[request.taskId];
+            if forTask is map<TaskPushNotificationConfig> {
+                _ = forTask.removeIfHasKey(request.id);
+            }
+        }
+    }
+
+    # Handles getExtendedAgentCard.
+    #
+    # + return - The configured extended card, or
+    #            ExtendedAgentCardNotConfiguredError if none was set up
+    isolated function getExtendedAgentCard() returns AgentCard|Error {
+        if self.extendedCard is AgentCard {
+            return <AgentCard>self.extendedCard;
+        }
+        string msg = "no extended AgentCard is configured for this agent";
+        return error ExtendedAgentCardNotConfiguredError(msg, message = msg, code = -32007);
+    }
 }
 
 # Builds a TaskNotFoundError for an unknown task id.
@@ -221,5 +317,19 @@ isolated class DefaultHandler {
 # + return - The typed error
 isolated function taskNotFound(string id) returns TaskNotFoundError {
     string msg = string `no task with id ${id}`;
+    return error TaskNotFoundError(msg, message = msg, code = -32001);
+}
+
+# Builds a TaskNotFoundError for an unknown push-notification config.
+#
+# The error taxonomy has no dedicated "config not found" type -- this is a
+# task-scoped resource, same as the task itself, so TaskNotFoundError is the
+# closest honest fit; the message says specifically what wasn't found.
+#
+# + taskId - The parent task id
+# + id - The config id that was not found
+# + return - The typed error
+isolated function taskPushNotificationConfigNotFound(string taskId, string id) returns TaskNotFoundError {
+    string msg = string `no push notification config with id ${id} for task ${taskId}`;
     return error TaskNotFoundError(msg, message = msg, code = -32001);
 }

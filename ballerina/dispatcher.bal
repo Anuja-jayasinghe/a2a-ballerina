@@ -207,6 +207,12 @@ isolated service class DispatcherService {
             string id = path.substring("/tasks/".length(), path.length() - ":subscribe".length());
             return self.onSubscribeToTask(id);
         }
+        if path.includes("/pushNotificationConfigs") {
+            return self.onPushNotificationConfigs(method, path, req);
+        }
+        if method == "GET" && path == "/extendedAgentCard" {
+            return jsonResponse((check self.handler.getExtendedAgentCard()).toJson());
+        }
         if method == "GET" && path == "/tasks" {
             ListTasksRequest filter = queryToListFilter(req);
             return jsonResponse((check self.handler.listTasks(filter)).toJson());
@@ -286,6 +292,69 @@ isolated service class DispatcherService {
         StreamResponse[] events = check self.handler.subscribeToTask({id});
         stream<http:SseEvent, error?> sseStream = new (new StreamResponseEventGenerator(events));
         return sseStream;
+    }
+
+    # Handles the four push-notification config operations, all under
+    # `/tasks/{taskId}/pushNotificationConfigs[/{id}]`:
+    # POST (create) and GET (list) on the collection path; GET (get) and
+    # DELETE (delete) on the item path.
+    #
+    # + method - The HTTP method
+    # + path - The path with no tenant prefix, already known to contain
+    #          "/pushNotificationConfigs"
+    # + req - The HTTP request
+    # + return - The response, or an error to serialise
+    private isolated function onPushNotificationConfigs(string method, string path, http:Request req)
+            returns http:Response|Error {
+        int marker = <int>path.indexOf("/pushNotificationConfigs");
+        string taskId = path.substring("/tasks/".length(), marker);
+        string rest = path.substring(marker + "/pushNotificationConfigs".length());
+
+        if rest == "" {
+            if method == "POST" {
+                json|error payload = req.getJsonPayload();
+                if payload is error {
+                    return invalidAgentResponse(string `request body is not valid JSON: ${payload.message()}`);
+                }
+                map<json>|error asMap = payload.ensureType();
+                if asMap is error {
+                    return invalidAgentResponse("request body is not a JSON object");
+                }
+                asMap["taskId"] = taskId;
+                TaskPushNotificationConfig|error request = asMap.cloneWithType(TaskPushNotificationConfig);
+                if request is error {
+                    return invalidAgentResponse(
+                            string `request body did not match TaskPushNotificationConfig: ${request.message()}`);
+                }
+                return jsonResponse((check self.handler.createTaskPushNotificationConfig(request)).toJson());
+            }
+            if method == "GET" {
+                ListTaskPushNotificationConfigsRequest request = {taskId};
+                string? pageSize = req.getQueryParamValue("pageSize");
+                if pageSize is string {
+                    int|error parsed = int:fromString(pageSize);
+                    if parsed is int {
+                        request.pageSize = parsed;
+                    }
+                }
+                string? pageToken = req.getQueryParamValue("pageToken");
+                if pageToken is string {
+                    request.pageToken = pageToken;
+                }
+                return jsonResponse((check self.handler.listTaskPushNotificationConfigs(request)).toJson());
+            }
+        } else if rest.startsWith("/") {
+            string id = rest.substring(1);
+            if method == "GET" {
+                return jsonResponse((check self.handler.getTaskPushNotificationConfig({taskId, id})).toJson());
+            }
+            if method == "DELETE" {
+                check self.handler.deleteTaskPushNotificationConfig({taskId, id});
+                return jsonResponse({});
+            }
+        }
+        string msg = string `no A2A operation at ${method} ${path}`;
+        return error InternalError(msg, message = msg, code = http:STATUS_NOT_FOUND);
     }
 }
 
