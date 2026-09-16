@@ -95,7 +95,7 @@ public isolated client class TaskUpdater {
             self.artifacts.push(artifact.clone());
             self.events.push(event.clone());
         }
-        return ();
+        return;
     }
 
     # Completes the task successfully: `TASK_STATE_COMPLETED`.

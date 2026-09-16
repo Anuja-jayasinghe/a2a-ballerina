@@ -30,6 +30,15 @@
 
 import ballerina/http;
 
+# The A2A protocol version this server implements.
+const A2A_PROTOCOL_VERSION = "1.0";
+
+# The task-scoped path prefix every task operation's path starts with.
+const TASKS_PATH_PREFIX = "/tasks/";
+
+# The push-notification-config collection segment under a task's path.
+const PUSH_NOTIFICATION_CONFIGS_SEGMENT = "/pushNotificationConfigs";
+
 isolated service class DispatcherService {
     *http:Service;
 
@@ -114,7 +123,7 @@ isolated service class DispatcherService {
             return self.card;
         }
         foreach int i in 0 ..< served.supportedInterfaces.length() {
-            if served.supportedInterfaces[i].protocolBinding == "HTTP+JSON" {
+            if served.supportedInterfaces[i].protocolBinding == HTTP_JSON {
                 served.supportedInterfaces[i].url = string `http://${host}`;
             }
         }
@@ -133,7 +142,7 @@ isolated service class DispatcherService {
     private isolated function checkVersion(http:Request req) returns Error? {
         string|http:HeaderNotFoundError header = req.getHeader("A2A-Version");
         string version = header is string ? header : "0.3";
-        if version != "1.0" {
+        if version != A2A_PROTOCOL_VERSION {
             string msg = string `A2A protocol version ${version} is not supported; `
                 + string `this interface serves v1.0`;
             return error VersionNotSupportedError(msg, message = msg);
@@ -191,8 +200,8 @@ isolated service class DispatcherService {
         if method == "POST" && path == "/message:stream" {
             return self.onSendStreamingMessage(tenant, req);
         }
-        if method == "POST" && path.startsWith("/tasks/") && path.endsWith(":cancel") {
-            string id = path.substring("/tasks/".length(), path.length() - ":cancel".length());
+        if method == "POST" && path.startsWith(TASKS_PATH_PREFIX) && path.endsWith(":cancel") {
+            string id = path.substring(TASKS_PATH_PREFIX.length(), path.length() - ":cancel".length());
             return jsonResponse((check self.handler.cancelTask({id})).toJson());
         }
         // The proto's own annotation is GET, but the client falls back to
@@ -203,11 +212,11 @@ isolated service class DispatcherService {
         // that fallback still reaches the real handler and surfaces the
         // correct typed error, rather than a second, unrelated 404 for "no
         // such route" masking the first.
-        if (method == "GET" || method == "POST") && path.startsWith("/tasks/") && path.endsWith(":subscribe") {
-            string id = path.substring("/tasks/".length(), path.length() - ":subscribe".length());
+        if (method == "GET" || method == "POST") && path.startsWith(TASKS_PATH_PREFIX) && path.endsWith(":subscribe") {
+            string id = path.substring(TASKS_PATH_PREFIX.length(), path.length() - ":subscribe".length());
             return self.onSubscribeToTask(id);
         }
-        if path.includes("/pushNotificationConfigs") {
+        if path.includes(PUSH_NOTIFICATION_CONFIGS_SEGMENT) {
             return self.onPushNotificationConfigs(method, path, req);
         }
         if method == "GET" && path == "/extendedAgentCard" {
@@ -217,9 +226,9 @@ isolated service class DispatcherService {
             ListTasksRequest filter = queryToListFilter(req);
             return jsonResponse((check self.handler.listTasks(filter)).toJson());
         }
-        if method == "GET" && path.startsWith("/tasks/") && !path.includes(":")
-                && !path.includes("/pushNotificationConfigs") {
-            string id = path.substring("/tasks/".length());
+        if method == "GET" && path.startsWith(TASKS_PATH_PREFIX) && !path.includes(":")
+                && !path.includes(PUSH_NOTIFICATION_CONFIGS_SEGMENT) {
+            string id = path.substring(TASKS_PATH_PREFIX.length());
             int? historyLength = queryInt(req, "historyLength");
             return jsonResponse((check self.handler.getTask({id, historyLength})).toJson());
         }
@@ -275,8 +284,7 @@ isolated service class DispatcherService {
                     string `request body did not match SendMessageRequest: ${request.message()}`);
         }
         StreamResponse[] events = check self.handler.sendStreamingMessage(request, tenant);
-        stream<http:SseEvent, error?> sseStream = new (new StreamResponseEventGenerator(events));
-        return sseStream;
+        return check eventsToSseStream(events);
     }
 
     # Handles GET /tasks/{id}:subscribe: the task's current state, as a
@@ -290,14 +298,13 @@ isolated service class DispatcherService {
             return serverStreamingUnsupportedError("subscribeToTask");
         }
         StreamResponse[] events = check self.handler.subscribeToTask({id});
-        stream<http:SseEvent, error?> sseStream = new (new StreamResponseEventGenerator(events));
-        return sseStream;
+        return check eventsToSseStream(events);
     }
 
-    # Handles the four push-notification config operations, all under
-    # `/tasks/{taskId}/pushNotificationConfigs[/{id}]`:
-    # POST (create) and GET (list) on the collection path; GET (get) and
-    # DELETE (delete) on the item path.
+    # Routes one of the four push-notification config operations, all under
+    # `/tasks/{taskId}/pushNotificationConfigs[/{id}]`: POST (create) and GET
+    # (list) on the collection path; GET (get) and DELETE (delete) on the
+    # item path.
     #
     # + method - The HTTP method
     # + path - The path with no tenant prefix, already known to contain
@@ -306,55 +313,71 @@ isolated service class DispatcherService {
     # + return - The response, or an error to serialise
     private isolated function onPushNotificationConfigs(string method, string path, http:Request req)
             returns http:Response|Error {
-        int marker = <int>path.indexOf("/pushNotificationConfigs");
-        string taskId = path.substring("/tasks/".length(), marker);
-        string rest = path.substring(marker + "/pushNotificationConfigs".length());
+        int marker = <int>path.indexOf(PUSH_NOTIFICATION_CONFIGS_SEGMENT);
+        string taskId = path.substring(TASKS_PATH_PREFIX.length(), marker);
+        string rest = path.substring(marker + PUSH_NOTIFICATION_CONFIGS_SEGMENT.length());
 
-        if rest == "" {
-            if method == "POST" {
-                json|error payload = req.getJsonPayload();
-                if payload is error {
-                    return invalidAgentResponse(string `request body is not valid JSON: ${payload.message()}`);
-                }
-                map<json>|error asMap = payload.ensureType();
-                if asMap is error {
-                    return invalidAgentResponse("request body is not a JSON object");
-                }
-                asMap["taskId"] = taskId;
-                TaskPushNotificationConfig|error request = asMap.cloneWithType(TaskPushNotificationConfig);
-                if request is error {
-                    return invalidAgentResponse(
-                            string `request body did not match TaskPushNotificationConfig: ${request.message()}`);
-                }
-                return jsonResponse((check self.handler.createTaskPushNotificationConfig(request)).toJson());
-            }
-            if method == "GET" {
-                ListTaskPushNotificationConfigsRequest request = {taskId};
-                string? pageSize = req.getQueryParamValue("pageSize");
-                if pageSize is string {
-                    int|error parsed = int:fromString(pageSize);
-                    if parsed is int {
-                        request.pageSize = parsed;
-                    }
-                }
-                string? pageToken = req.getQueryParamValue("pageToken");
-                if pageToken is string {
-                    request.pageToken = pageToken;
-                }
-                return jsonResponse((check self.handler.listTaskPushNotificationConfigs(request)).toJson());
-            }
-        } else if rest.startsWith("/") {
-            string id = rest.substring(1);
-            if method == "GET" {
-                return jsonResponse((check self.handler.getTaskPushNotificationConfig({taskId, id})).toJson());
-            }
-            if method == "DELETE" {
-                check self.handler.deleteTaskPushNotificationConfig({taskId, id});
-                return jsonResponse({});
-            }
+        if rest == "" && method == "POST" {
+            return self.onCreateTaskPushNotificationConfig(taskId, req);
+        }
+        if rest == "" && method == "GET" {
+            return self.onListTaskPushNotificationConfigs(taskId, req);
+        }
+        if rest.startsWith("/") && method == "GET" {
+            return jsonResponse(
+                    (check self.handler.getTaskPushNotificationConfig({taskId, id: rest.substring(1)})).toJson());
+        }
+        if rest.startsWith("/") && method == "DELETE" {
+            check self.handler.deleteTaskPushNotificationConfig({taskId, id: rest.substring(1)});
+            return jsonResponse({});
         }
         string msg = string `no A2A operation at ${method} ${path}`;
         return error InternalError(msg, message = msg, code = http:STATUS_NOT_FOUND);
+    }
+
+    # Handles POST /tasks/{taskId}/pushNotificationConfigs: decode the
+    # config, stamp its `taskId` from the path, and register it.
+    #
+    # + taskId - The parent task id, from the path
+    # + req - The HTTP request
+    # + return - The stored config, or an error
+    private isolated function onCreateTaskPushNotificationConfig(string taskId, http:Request req)
+            returns http:Response|Error {
+        json|error payload = req.getJsonPayload();
+        if payload is error {
+            return invalidAgentResponse(string `request body is not valid JSON: ${payload.message()}`);
+        }
+        map<json>|error asMap = payload.ensureType();
+        if asMap is error {
+            return invalidAgentResponse("request body is not a JSON object");
+        }
+        asMap["taskId"] = taskId;
+        TaskPushNotificationConfig|error request = asMap.cloneWithType(TaskPushNotificationConfig);
+        if request is error {
+            return invalidAgentResponse(
+                    string `request body did not match TaskPushNotificationConfig: ${request.message()}`);
+        }
+        return jsonResponse((check self.handler.createTaskPushNotificationConfig(request)).toJson());
+    }
+
+    # Handles GET /tasks/{taskId}/pushNotificationConfigs: list every config
+    # registered for the task, with optional pagination query params.
+    #
+    # + taskId - The parent task id, from the path
+    # + req - The HTTP request
+    # + return - The page of configs, or an error
+    private isolated function onListTaskPushNotificationConfigs(string taskId, http:Request req)
+            returns http:Response|Error {
+        ListTaskPushNotificationConfigsRequest request = {taskId};
+        int? pageSize = queryInt(req, "pageSize");
+        if pageSize is int {
+            request.pageSize = pageSize;
+        }
+        string? pageToken = req.getQueryParamValue("pageToken");
+        if pageToken is string {
+            request.pageToken = pageToken;
+        }
+        return jsonResponse((check self.handler.listTaskPushNotificationConfigs(request)).toJson());
     }
 }
 
@@ -393,26 +416,26 @@ isolated function wireEnvelopeFor(StreamResponse value) returns json|error {
     return {[arm]: wired};
 }
 
-# Yields one pre-computed `StreamResponse` list as SSE events, in order, then
-# ends the stream cleanly. Used by both `sendStreamingMessage` and
-# `subscribeToTask` -- this release computes the whole event sequence before
-# the SSE response opens (see `DefaultHandler.sendStreamingMessage`), so
-# framing it is the only thing left for this class to do.
-class StreamResponseEventGenerator {
-    private StreamResponse[] remaining;
-
-    isolated function init(StreamResponse[] events) {
-        self.remaining = events;
-    }
-
-    public isolated function next() returns record {| http:SseEvent value; |}|error? {
-        if self.remaining.length() == 0 {
-            return ();
+# Frames a pre-computed `StreamResponse` list as an SSE event stream, in
+# order. Used by both `sendStreamingMessage` and `subscribeToTask` -- this
+# release computes the whole event sequence before the SSE response opens
+# (see `DefaultHandler.sendStreamingMessage`), so there is nothing left to
+# generate lazily: each event is wire-encoded up front and the resulting
+# array is what a one-element array's `singleEventStream` does on the
+# client side, just with more than one element.
+#
+# + events - The events to frame, in order
+# + return - The SSE stream, or an error if any event failed to wire-encode
+isolated function eventsToSseStream(StreamResponse[] events) returns stream<http:SseEvent, error?>|Error {
+    http:SseEvent[] sseEvents = [];
+    foreach StreamResponse event in events {
+        json|error envelope = wireEnvelopeFor(event);
+        if envelope is error {
+            return wrapTransportError(envelope);
         }
-        StreamResponse next = self.remaining.shift();
-        json envelope = check wireEnvelopeFor(next);
-        return {value: {data: envelope.toJsonString()}};
+        sseEvents.push({data: envelope.toJsonString()});
     }
+    return sseEvents.toStream();
 }
 
 # Reads the tenant a card declares on its HTTP+JSON interface, or `()`.
@@ -421,11 +444,11 @@ class StreamResponseEventGenerator {
 # + return - The declared tenant, or `()` if the interface declares none
 isolated function declaredTenant(AgentCard card) returns string? {
     foreach AgentInterface iface in card.supportedInterfaces {
-        if iface.protocolBinding == "HTTP+JSON" {
+        if iface.protocolBinding == HTTP_JSON {
             return iface?.tenant;
         }
     }
-    return ();
+    return;
 }
 
 # Builds a JSON 200 response.
@@ -446,7 +469,7 @@ isolated function jsonResponse(json body) returns http:Response {
 isolated function queryInt(http:Request req, string name) returns int? {
     string? raw = req.getQueryParamValue(name);
     if raw is () {
-        return ();
+        return;
     }
     int|error parsed = int:fromString(raw);
     return parsed is int ? parsed : ();

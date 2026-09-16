@@ -179,7 +179,7 @@ public isolated class Listener {
 isolated function deriveServedCard(AgentCard supplied, boolean extendedCardConfigured) returns AgentCard {
     AgentCard card = supplied.clone();
     card.supportedInterfaces = [
-        {url: "", protocolBinding: "HTTP+JSON", protocolVersion: "1.0"}
+        {url: "", protocolBinding: HTTP_JSON, protocolVersion: A2A_PROTOCOL_VERSION}
     ];
     card.capabilities = {
         streaming: true,

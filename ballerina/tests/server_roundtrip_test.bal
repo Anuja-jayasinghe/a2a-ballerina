@@ -90,7 +90,7 @@ isolated service class EchoAgent {
         check updater->working();
         check updater->addArtifact([{text: string `echo: ${text}`}]);
         check updater->complete();
-        return ();
+        return;
     }
 }
 
@@ -190,7 +190,8 @@ function testServerRoundTripSendStreamingMessage() returns error? {
     StreamResponse third = check expectStreamValue(events);
     test:assertTrue(third is TaskArtifactUpdateEvent, "the third event must be the echoed artifact");
     test:assertEquals((<TaskArtifactUpdateEvent>third).artifact.parts[0]?.text, "echo: stream me");
-    test:assertTrue((<TaskArtifactUpdateEvent>third).lastChunk, "a whole-artifact addArtifact call is its own last chunk");
+    test:assertTrue((<TaskArtifactUpdateEvent>third).lastChunk,
+            "a whole-artifact addArtifact call is its own last chunk");
 
     StreamResponse fourth = check expectStreamValue(events);
     test:assertTrue(fourth is TaskStatusUpdateEvent, "the fourth event must be the COMPLETED status");

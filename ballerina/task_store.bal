@@ -283,5 +283,5 @@ isolated function indexOfTaskId(Task[] tasks, string id) returns int? {
             return i;
         }
     }
-    return ();
+    return;
 }

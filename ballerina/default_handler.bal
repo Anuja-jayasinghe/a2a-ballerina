@@ -234,7 +234,8 @@ isolated class DefaultHandler {
     #             existing task
     # + return - The stored config, with `id` filled in, or a
     #            TaskNotFoundError if `taskId` names no task
-    isolated function createTaskPushNotificationConfig(TaskPushNotificationConfig request) returns TaskPushNotificationConfig|Error {
+    isolated function createTaskPushNotificationConfig(TaskPushNotificationConfig request)
+            returns TaskPushNotificationConfig|Error {
         string? taskId = request?.taskId;
         if taskId is () {
             string msg = "TaskPushNotificationConfig.taskId is required to register a config";
@@ -258,7 +259,8 @@ isolated class DefaultHandler {
     #
     # + request - The parent task id and the config's own id
     # + return - The config, or a TaskNotFoundError if either id is unknown
-    isolated function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request) returns TaskPushNotificationConfig|Error {
+    isolated function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request)
+            returns TaskPushNotificationConfig|Error {
         lock {
             map<TaskPushNotificationConfig>? forTask = self.pushConfigs[request.taskId];
             TaskPushNotificationConfig? config = forTask is map<TaskPushNotificationConfig>
@@ -276,7 +278,8 @@ isolated class DefaultHandler {
     #
     # + request - The parent task id
     # + return - Every config registered for the task
-    isolated function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request) returns ListTaskPushNotificationConfigsResponse|Error {
+    isolated function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request)
+            returns ListTaskPushNotificationConfigsResponse|Error {
         TaskPushNotificationConfig[] configs;
         lock {
             configs = (self.pushConfigs[request.taskId] ?: {}).toArray().clone();
