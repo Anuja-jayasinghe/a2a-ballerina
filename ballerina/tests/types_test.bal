@@ -124,7 +124,7 @@ function testDecodeRawBytesFromWireLeavesUnrelatedMetadataRawKeyUntouched() retu
     Task task = check decoded.cloneWithType(Task);
 
     test:assertEquals(task?.metadata, {"raw": "arbitrary non-base64 text", "other": 42});
-    test:assertEquals(task.history[0].parts[0]?.raw, "hello".toBytes());
+    test:assertEquals((task.history ?: [])[0].parts[0]?.raw, "hello".toBytes());
 }
 
 @test:Config {}
@@ -193,8 +193,13 @@ function testMessageMinimalRoundTrip() returns error? {
     test:assertTrue(decoded?.contextId is (), "contextId should be nil");
     test:assertTrue(decoded?.taskId is (), "taskId should be nil");
     test:assertTrue(decoded?.metadata is (), "metadata should be nil");
-    test:assertEquals(decoded.referenceTaskIds, []);
-    test:assertEquals(decoded.extensions, []);
+    // Both are optional in the specification, so an absent field decodes to
+    // absent -- not to an empty array. Emitting `"extensions": []` for a
+    // field the sender never set is a value, not a non-statement, and
+    // specification 5.7 relies on that distinction for AgentCard signature
+    // canonicalization.
+    test:assertTrue(decoded?.referenceTaskIds is (), "referenceTaskIds should be absent, not defaulted to []");
+    test:assertTrue(decoded?.extensions is (), "extensions should be absent, not defaulted to []");
 }
 
 @test:Config {}
@@ -338,8 +343,7 @@ function testAgentSkillToleratesUnrecognizedField() returns error? {
         id: "weather-lookup",
         name: "Weather Lookup",
         description: "Reports current weather for a city",
-        futureField: "some value from a newer spec revision"
-    };
+        futureField: "some value from a newer spec revision", tags: []};
 
     AgentSkill decoded = check payload.cloneWithType(AgentSkill);
 
@@ -367,8 +371,7 @@ function testAgentInterfaceToleratesUnrecognizedField() returns error? {
     json payload = {
         url: "https://acme.example.com/a2a",
         protocolBinding: "JSONRPC",
-        futureField: "some value from a newer spec revision"
-    };
+        futureField: "some value from a newer spec revision", protocolVersion: "1.0"};
 
     AgentInterface decoded = check payload.cloneWithType(AgentInterface);
 
@@ -390,8 +393,8 @@ function testAgentCardCompositeRoundTrip() returns error? {
         documentationUrl: "https://weather.example.com/docs",
         capabilities: {streaming: true, pushNotifications: true},
         supportedInterfaces: [
-            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"},
-            {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp"}
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"},
+            {url: "https://weather.example.com/tenant/acme", protocolBinding: "JSONRPC", tenant: "acme-corp", protocolVersion: "1.0"}
         ],
         securitySchemes: {"bearerAuth": <HttpAuthSecurityScheme>{scheme: "bearer"}},
         securityRequirements: [{"bearerAuth": []}],
@@ -409,7 +412,9 @@ function testAgentCardCompositeRoundTrip() returns error? {
                 description: "Reports a multi-day forecast for a city",
                 tags: ["weather", "forecast"]
             }
-        ]
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 
@@ -428,9 +433,11 @@ function testAgentCardRoundTripWithoutLegacyUrl() returns error? {
         version: "1.2.0",
         capabilities: {streaming: true},
         supportedInterfaces: [
-            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC"}
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 
@@ -446,7 +453,10 @@ function testAgentCardRoundTripWithProtocolVersion() returns error? {
         version: "1.0.0",
         protocolVersion: "0.3.0",
         capabilities: {},
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
 
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
@@ -464,7 +474,9 @@ function testAgentCardToleratesMissingProtocolVersion() returns error? {
         supportedInterfaces: [
             {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
         ],
-        skills: []
+        skills: [],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     AgentCard decoded = check payload.cloneWithType(AgentCard);
@@ -480,8 +492,13 @@ function testAgentCardToleratesUnrecognizedField() returns error? {
         version: "1.2.0",
         url: "https://weather.example.com/a2a",
         capabilities: {},
+        supportedInterfaces: [
+            {url: "https://weather.example.com/a2a", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
         skills: [],
-        futureField: "some value from a newer spec revision"
+        futureField: "some value from a newer spec revision",
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 
     AgentCard decoded = check payload.cloneWithType(AgentCard);
@@ -656,32 +673,79 @@ function testTaskArtifactUpdateEventToleratesUnrecognizedField() returns error? 
     test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
 }
 
+# StreamResponse is a union of the four arms, so an event *is* one of them
+# rather than a wrapper holding one. The wire form is still the keyed
+# envelope, which decodeStreamResponseEnvelope unwraps.
+#
+# + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testStreamResponseRoundTrip() returns error? {
-    StreamResponse original = {
+function testStreamResponseEnvelopeDecodesToItsArm() returns error? {
+    json envelope = {
         statusUpdate: {taskId: "task-1", contextId: "ctx-1", status: {state: TASK_STATE_COMPLETED}}
     };
-    StreamResponse decoded = check original.toJson().cloneWithType(StreamResponse);
 
-    test:assertEquals(decoded, original);
-    test:assertTrue(decoded?.task is (), "task should be nil");
-    test:assertTrue(decoded?.message is (), "message should be nil");
-    test:assertTrue(decoded?.artifactUpdate is (), "artifactUpdate should be nil");
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is TaskStatusUpdateEvent, "the statusUpdate arm should decode to its own type");
+    if decoded is TaskStatusUpdateEvent {
+        test:assertEquals(decoded.taskId, "task-1");
+        test:assertEquals(decoded.status.state, TASK_STATE_COMPLETED);
+    }
+    test:assertFalse(decoded is Task, "and must not also satisfy another arm");
+    test:assertFalse(decoded is TaskArtifactUpdateEvent);
 }
 
+# An arm's own unrecognized fields still round-trip, since every arm type is
+# an open record.
+#
+# + return - an error if any step other than the assertions themselves fails
 @test:Config {}
-function testStreamResponseToleratesUnrecognizedField() returns error? {
-    json payload = {
-        message: {messageId: "msg-1", role: "ROLE_AGENT", parts: [{text: "Hello"}]},
-        futureField: "some value from a newer spec revision"
+function testStreamResponseArmToleratesUnrecognizedField() returns error? {
+    json envelope = {
+        message: {
+            messageId: "msg-1",
+            role: "ROLE_AGENT",
+            parts: [{text: "Hello"}],
+            futureField: "some value from a newer spec revision"
+        }
     };
 
-    StreamResponse decoded = check payload.cloneWithType(StreamResponse);
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
 
-    test:assertTrue(decoded?.message is Message, "message should decode");
+    test:assertTrue(decoded is Message, "message should decode");
+    if decoded is Message {
+        json reserialized = decoded.toJson();
+        test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+    }
+}
 
-    json reserialized = decoded.toJson();
-    test:assertEquals((check reserialized.futureField), "some value from a newer spec revision");
+# An envelope naming an arm this client does not know is skipped, not
+# rejected: StreamResponse is a specification oneof, and a later revision may
+# add an arm. Failing the stream on the first such event would break every
+# existing client the moment that happened.
+#
+# + return - an error if any step other than the assertions themselves fails
+@test:Config {}
+function testStreamResponseEnvelopeSkipsUnknownArm() returns error? {
+    json envelope = {futureEvent: {someField: 1}};
+
+    StreamResponse? decoded = check decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is (), "an unrecognized arm yields () so the caller can skip the event");
+}
+
+# A conformant oneof sets exactly one arm; two is malformed, and silently
+# picking the first would hide a broken agent.
+@test:Config {}
+function testStreamResponseEnvelopeRejectsTwoArms() {
+    json envelope = {
+        task: {id: "t1", status: {state: TASK_STATE_WORKING}},
+        message: {messageId: "m1", role: "ROLE_AGENT", parts: []}
+    };
+
+    StreamResponse?|Error decoded = decodeStreamResponseEnvelope(envelope);
+
+    test:assertTrue(decoded is InvalidAgentResponseError, "two arms set must be rejected");
 }
 
 @test:Config {}
@@ -756,7 +820,10 @@ function testSendMessageConfigurationDefaults() returns error? {
 
     SendMessageConfiguration decoded = check payload.cloneWithType(SendMessageConfiguration);
 
-    test:assertEquals(decoded.acceptedOutputModes, ["text"]);
+    // Unset means "no constraint" per the specification, not ["text"]. The
+    // old default silently told every agent to withhold images and files.
+    test:assertTrue(decoded?.acceptedOutputModes is (),
+            "acceptedOutputModes should be absent, imposing no constraint");
     test:assertTrue(decoded?.historyLength is (), "historyLength should be unset by default");
     test:assertEquals(decoded.returnImmediately, false);
     test:assertTrue(decoded?.taskPushNotificationConfig is (), "taskPushNotificationConfig should be unset by default");
@@ -775,8 +842,8 @@ function testSendMessageConfigurationToleratesUnrecognizedField() returns error?
 }
 
 @test:Config {}
-function testListTasksFilterRoundTrip() returns error? {
-    ListTasksFilter original = {
+function testListTasksRequestRoundTrip() returns error? {
+    ListTasksRequest original = {
         contextId: "ctx-1",
         status: TASK_STATE_COMPLETED,
         pageSize: 20,
@@ -785,16 +852,16 @@ function testListTasksFilterRoundTrip() returns error? {
         statusTimestampAfter: "2026-07-29T00:00:00Z",
         includeArtifacts: true
     };
-    ListTasksFilter decoded = check original.toJson().cloneWithType(ListTasksFilter);
+    ListTasksRequest decoded = check original.toJson().cloneWithType(ListTasksRequest);
 
     test:assertEquals(decoded, original);
 }
 
 @test:Config {}
-function testListTasksFilterToleratesUnrecognizedField() returns error? {
+function testListTasksRequestToleratesUnrecognizedField() returns error? {
     json payload = {futureField: "some value from a newer spec revision"};
 
-    ListTasksFilter decoded = check payload.cloneWithType(ListTasksFilter);
+    ListTasksRequest decoded = check payload.cloneWithType(ListTasksRequest);
 
     test:assertTrue(decoded?.contextId is (), "contextId should be nil, not defaulted");
 
@@ -803,8 +870,8 @@ function testListTasksFilterToleratesUnrecognizedField() returns error? {
 }
 
 @test:Config {}
-function testListTasksResultRoundTrip() returns error? {
-    ListTasksResult original = {
+function testListTasksResponseRoundTrip() returns error? {
+    ListTasksResponse original = {
         tasks: [
             {id: "task-1", status: {state: TASK_STATE_COMPLETED}}
         ],
@@ -812,20 +879,20 @@ function testListTasksResultRoundTrip() returns error? {
         pageSize: 20,
         totalSize: 1
     };
-    ListTasksResult decoded = check original.toJson().cloneWithType(ListTasksResult);
+    ListTasksResponse decoded = check original.toJson().cloneWithType(ListTasksResponse);
 
     test:assertEquals(decoded, original);
 }
 
 @test:Config {}
-function testListTaskPushNotificationConfigsResultRoundTrip() returns error? {
-    ListTaskPushNotificationConfigsResult original = {
+function testListTaskPushNotificationConfigsResponseRoundTrip() returns error? {
+    ListTaskPushNotificationConfigsResponse original = {
         configs: [
             {url: "https://client.example.com/webhooks/a2a", id: "webhook-1"}
         ],
         nextPageToken: "cursor-ghi"
     };
-    ListTaskPushNotificationConfigsResult decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResult);
+    ListTaskPushNotificationConfigsResponse decoded = check original.toJson().cloneWithType(ListTaskPushNotificationConfigsResponse);
 
     test:assertEquals(decoded, original);
 }
@@ -1067,9 +1134,13 @@ function testAgentCardWithTypedSecurityFieldsRoundTrip() returns error? {
                 id: "weather-lookup",
                 name: "Weather Lookup",
                 description: "Reports current weather for a city",
-                securityRequirements: [{"bearerAuth": []}]
+                securityRequirements: [{"bearerAuth": []}],
+                tags: []
             }
-        ]
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        supportedInterfaces: []
     };
     AgentCard decoded = check original.toJson().cloneWithType(AgentCard);
 
@@ -1210,4 +1281,96 @@ function testDecodeRawBytesFromWireRejectsMultipleVariantsSet() {
     };
     json|error result = decodeRawBytesFromWire(payload);
     test:assertTrue(result is InvalidAgentResponseError, "an agent sending a Part with more than one of text/raw/url/data set must be rejected, not silently narrowed to one");
+}
+
+// ---- Part variant counting and required-array validation ---------------
+
+# `Part.data` is `google.protobuf.Value`, the one field in the specification
+# where a JSON null is legal. Counting variants by non-nil value read
+# `{"data": null}` as zero variants set and rejected a conformant data part
+# as malformed; counting by member presence -- which is what the
+# specification names as the discriminator -- reads it as the one variant it
+# is.
+@test:Config {}
+function testDataPartHoldingNullCountsAsOneVariant() {
+    Part dataHoldingNull = {data: ()};
+    test:assertEquals(countSetPartVariants(dataHoldingNull), 1,
+            "a data part whose value is JSON null is still a data part");
+
+    map<json> wireForm = {"data": ()};
+    test:assertEquals(countSetPartVariantsJson(wireForm), 1,
+            "and the same holds on the raw wire form");
+}
+
+# Absence and a null value are different states, and only presence counts.
+@test:Config {}
+function testPartWithNoVariantCountsAsZero() {
+    Part noVariant = {mediaType: "text/plain"};
+    test:assertEquals(countSetPartVariants(noVariant), 0);
+    test:assertEquals(countSetPartVariantsJson({"mediaType": "text/plain"}), 0);
+}
+
+# Artifact.parts is the only array the proto itself marks non-empty ("Must
+# contain at least one part"), and a2a-java enforces it too.
+@test:Config {}
+function testEmptyArtifactPartsIsRejected() {
+    Task task = {
+        id: "t1",
+        status: {state: TASK_STATE_COMPLETED},
+        artifacts: [{artifactId: "a1", parts: []}]
+    };
+
+    Error? result = validateInboundTask(task);
+
+    test:assertTrue(result is InvalidAgentResponseError,
+            "an artifact carrying no parts violates specification section 4.1.7");
+}
+
+# Message.parts carries no proto statement, but it is the message's content
+# container and a2a-java enforces it (Message.java:70).
+@test:Config {}
+function testEmptyMessagePartsIsRejectedOutbound() {
+    Message empty = {messageId: "m1", role: ROLE_USER, parts: []};
+
+    Error? result = validateOutboundMessage(empty);
+
+    test:assertTrue(result is InternalError,
+            "a caller's own malformed message is caught before the request is sent");
+}
+
+# An AgentCard with no skills is explicitly valid: the specification's own
+# canonicalization example in section 8.4.1 publishes one and annotates
+# `"skills": []` as "REQUIRED field -> include". Section 5.7's blanket
+# "required arrays MUST contain at least one element" cannot be read
+# literally against that.
+@test:Config {}
+function testAgentCardWithNoSkillsIsAccepted() returns error? {
+    json payload = {
+        name: "Example Agent",
+        description: "",
+        version: "1.0.0",
+        capabilities: {},
+        supportedInterfaces: [
+            {url: "http://localhost:19199", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
+        ],
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"],
+        skills: []
+    };
+
+    AgentCard card = check parseAgentCardBody(payload);
+
+    test:assertEquals(card.skills.length(), 0, "an empty skills array is conformant");
+}
+
+# An empty page is a legitimate "no results matched", not a malformed
+# response.
+@test:Config {}
+function testEmptyListTasksPageIsAccepted() returns error? {
+    json payload = {tasks: [], nextPageToken: "", pageSize: 50, totalSize: 0};
+
+    ListTasksResponse decoded = check decodeListTasksResponse(payload);
+
+    test:assertEquals(decoded.tasks.length(), 0);
+    test:assertEquals(decoded.totalSize, 0);
 }

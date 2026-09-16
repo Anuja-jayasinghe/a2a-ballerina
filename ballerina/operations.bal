@@ -27,6 +27,160 @@
 // client class hold only its own marshaling: the eleven operations are
 // written once, not once per binding.
 
+# Unwraps a protobuf `oneof` envelope into the single arm it carries.
+#
+# Several specification messages are `oneof`s whose arms serialize as a
+# wrapper object keyed by the arm's own name — `SendMessageResponse` is
+# `{"task": {...}}` or `{"message": {...}}`, `StreamResponse` adds
+# `statusUpdate` and `artifactUpdate`. Exactly one arm is set in a
+# conformant payload.
+#
+# Presence is decided by member presence, not by a non-nil value, because
+# that is what the specification says the discriminator is
+# (`specification.md`, "member presence acts as discriminator"). Testing for
+# a non-nil value instead would misread a legitimately-null arm as absent.
+#
+# + envelope - the raw envelope object
+# + arms - the arm names this caller understands, in specification order
+# + return - the matched arm's name and payload; `()` when the envelope
+#            carries no arm this caller recognizes, which a newer
+#            specification revision can legitimately produce; or an
+#            InvalidAgentResponseError when more than one arm is set
+isolated function oneofArm(json envelope, string[] arms) returns [string, json]?|Error {
+    map<json>|error asMap = envelope.ensureType();
+    if asMap is error {
+        return invalidAgentResponse(
+                string `expected a oneof envelope object, found ${(typeof envelope).toString()}`);
+    }
+    string[] present = from string arm in arms
+        where asMap.hasKey(arm)
+        select arm;
+    if present.length() > 1 {
+        return invalidAgentResponse(
+                string `oneof envelope set more than one arm: ${string:'join(", ", ...present)}`);
+    }
+    if present.length() == 0 {
+        return ();
+    }
+    return [present[0], asMap.get(present[0])];
+}
+
+# Decodes one v1.0 StreamResponse envelope into its single arm.
+#
+# + envelope - the raw `{"task": {...}}` / `{"statusUpdate": {...}}` object
+# + return - the decoded arm; `()` when the envelope carries no arm this
+#            client recognizes, so the caller can skip the event and read
+#            on; or an InvalidAgentResponseError if the arm's payload does
+#            not match its type
+isolated function decodeStreamResponseEnvelope(json envelope) returns StreamResponse?|Error {
+    [string, json]? arm = check oneofArm(
+            envelope, ["task", "message", "statusUpdate", "artifactUpdate"]);
+    if arm is () {
+        return ();
+    }
+    [string, json] [name, payload] = arm;
+    anydata|error decoded;
+    match name {
+        "task" => {
+            decoded = payload.cloneWithType(Task);
+        }
+        "message" => {
+            decoded = payload.cloneWithType(Message);
+        }
+        "statusUpdate" => {
+            decoded = payload.cloneWithType(TaskStatusUpdateEvent);
+        }
+        _ => {
+            decoded = payload.cloneWithType(TaskArtifactUpdateEvent);
+        }
+    }
+    if decoded is error {
+        return invalidAgentResponse(
+                string `stream event "${name}" did not match the expected shape: ${decoded.message()}`);
+    }
+    return <StreamResponse>decoded;
+}
+
+# Enforces non-emptiness on the two arrays the specification actually
+# requires it for.
+#
+# Section 5.7 contains a blanket sentence -- "Arrays marked as required MUST
+# contain at least one element" -- which cannot be read literally. The
+# specification's own canonicalization example in section 8.4.1 publishes a
+# conformant AgentCard carrying `"skills": []` and annotates it "REQUIRED
+# field -> include", with a canonical output that keeps the empty array. A
+# rule the specification's own example violates is not the rule: REQUIRED
+# means the field must be *present*, which the type system already enforces.
+#
+# Non-emptiness is enforced only where the specification says so per field,
+# or where the reference implementation corroborates it:
+#
+#   Artifact.parts  - the proto states "Must contain at least one part", the
+#                     only such statement in the whole file; a2a-java
+#                     enforces it (Artifact.java:52)
+#   Message.parts   - no proto statement, but it is the message's content
+#                     container and a2a-java enforces it (Message.java:70)
+#
+# a2a-java has no non-empty check on AgentCard or AgentSkill at all, which
+# matches the section 8.4.1 example.
+#
+# Validated in both directions: section 5.7 asks implementations to "reject
+# messages with missing required fields" -- messages, not only responses --
+# and checking outbound turns a network round trip and whatever error the
+# agent chooses into an immediate, local, precise one.
+#
+# + name - the field's dotted name, for the message
+# + length - the array's actual length
+# + inbound - true when validating what an agent sent us, false for what a
+#             caller is about to send
+# + return - an error when the array is empty, otherwise nil
+isolated function requireNonEmpty(string name, int length, boolean inbound) returns Error? {
+    if length > 0 {
+        return ();
+    }
+    string message = string `${name} is a required array and must contain at least one element `
+        + string `(specification section 5.7)`;
+    // Inbound is the agent's fault; outbound is the caller's. InternalError
+    // is this library's catch-all for a client-side precondition failure --
+    // the specification defines no error for one, since section 3.3.2 and
+    // section 5.4 both describe server behaviour, and the same choice is
+    // already made by outboundPartVariantError.
+    return inbound
+        ? invalidAgentResponse(message)
+        : error InternalError(message, message = message);
+}
+
+# Validates a Message a caller is about to send.
+#
+# + message - the message to check
+# + return - an error when it violates a specification requirement
+isolated function validateOutboundMessage(Message message) returns Error? {
+    check requireNonEmpty("Message.parts", message.parts.length(), false);
+    foreach Part part in message.parts {
+        int variants = countSetPartVariants(part);
+        if variants != 1 {
+            error variantError = outboundPartVariantError(variants);
+            string m = variantError.message();
+            return error InternalError(m, message = m);
+        }
+    }
+    return ();
+}
+
+# Validates a Task an agent sent us, and the artifacts and history it carries.
+#
+# + task - the decoded task
+# + return - an error when it violates a specification requirement
+isolated function validateInboundTask(Task task) returns Error? {
+    foreach Artifact artifact in task.artifacts ?: [] {
+        check requireNonEmpty("Artifact.parts", artifact.parts.length(), true);
+    }
+    foreach Message historyMessage in task.history ?: [] {
+        check requireNonEmpty("Message.parts", historyMessage.parts.length(), true);
+    }
+    return ();
+}
+
 # Adds the tenant routing parameter when one applies.
 #
 # Tenant routing is a v1.0-only concept (per-AgentInterface tenant values).
@@ -56,6 +210,7 @@ isolated function buildSendMessageParams(
         map<json>? metadata,
         string? effectiveTenant,
         ProtocolMode mode) returns map<json>|Error {
+    check validateOutboundMessage(message);
     json|error messageJsonResult = mode == "V0_3"
         ? encodeV03Message(message)
         : encodeRawBytesForWire(message.toJson());
@@ -87,35 +242,27 @@ isolated function decodeSendMessageResult(json result, ProtocolMode mode) return
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
 
-    // The wire response wraps the payload — {"task": {...}} or
-    // {"message": {...}} — rather than returning either one flat.
+    // The wire response wraps the payload -- {"task": {...}} or
+    // {"message": {...}} -- rather than returning either one flat.
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `sendMessage response could not be decoded: ${rewired.message()}`);
     }
-    SendMessageResult|error wrapped = rewired.cloneWithType(SendMessageResult);
-    if wrapped is error {
-        return invalidAgentResponse(string `sendMessage response did not match the expected shape: ${wrapped.message()}`);
+    [string, json]? arm = check oneofArm(rewired, ["task", "message"]);
+    if arm is () {
+        return invalidAgentResponse("Response contained neither a task nor a message");
     }
-    Task? maybeTask = wrapped?.task;
-    Message? maybeMessage = wrapped?.message;
-
-    // A conforming server can't produce this — task/message form a real
-    // protobuf oneof upstream, which makes both being set structurally
-    // impossible in a well-formed response. But SendMessageResult is a
-    // plain open record on our side, not an actual oneof, so nothing
-    // stops a non-conforming server from sending both. Rather than
-    // silently preferring one, treat it as the malformed response it is.
-    if maybeTask is Task && maybeMessage is Message {
-        return invalidAgentResponse("Response contained both a task and a message");
+    [string, json] [name, payload] = arm;
+    if name == "task" {
+        Task|error task = payload.cloneWithType(Task);
+        return task is error
+            ? invalidAgentResponse(string `sendMessage response did not match the expected shape: ${task.message()}`)
+            : task;
     }
-    if maybeTask is Task {
-        return maybeTask;
-    }
-    if maybeMessage is Message {
-        return maybeMessage;
-    }
-    return invalidAgentResponse("Response contained neither a task nor a message");
+    Message|error message = payload.cloneWithType(Message);
+    return message is error
+        ? invalidAgentResponse(string `sendMessage response did not match the expected shape: ${message.message()}`)
+        : message;
 }
 
 # Decodes a response whose payload is a bare Task. Shared by getTask and
@@ -138,6 +285,7 @@ isolated function decodeTaskResult(json result, ProtocolMode mode) returns Task|
     if decoded is error {
         return invalidAgentResponse(string `Task response did not match the expected shape: ${decoded.message()}`);
     }
+    check validateInboundTask(decoded);
     return decoded;
 }
 
@@ -249,6 +397,24 @@ isolated function streamingUnsupportedError(string operation) returns Unsupporte
     return error UnsupportedOperationError(message, message = message, code = -32004);
 }
 
+# Builds the client-side rejection for a getExtendedAgentCard call the held
+# AgentCard says the agent does not support.
+#
+# Specification section 3.3.4 requires exactly this: "If
+# AgentCard.capabilities.extendedAgentCard is false or not present, attempts
+# to call the Get Extended Agent Card operation MUST return
+# UnsupportedOperationError." Sections 3.1.11 and 13.3 say the same, and
+# nowhere does the specification sanction returning the public card instead
+# -- section 3.1.11 defines the output as the extended card *when the
+# operation is available*, not a substitute when it is not.
+#
+# + return - the typed rejection
+isolated function extendedCardUnsupportedError() returns UnsupportedOperationError {
+    string message = "getExtendedAgentCard: AgentCard.capabilities.extendedAgentCard is false "
+        + "or not present - rejected client-side, no request sent";
+    return error UnsupportedOperationError(message, message = message, code = -32004);
+}
+
 # Builds the client-side rejection for a push-notification-config call the
 # held card says is unsupported. Same rationale as streamingUnsupportedError.
 #
@@ -264,11 +430,11 @@ isolated function pushNotificationsUnsupportedError(string operation) returns Pu
 # + mode - the wire dialect this client speaks
 # + return - the parameter map
 isolated function buildListTasksParams(
-        ListTasksFilter? filter,
+        ListTasksRequest? filter,
         string? effectiveTenant,
         ProtocolMode mode) returns map<json> {
     map<json> params = {};
-    if filter is ListTasksFilter {
+    if filter is ListTasksRequest {
         string? contextId = filter?.contextId;
         TaskState? status = filter?.status;
         int? pageSize = filter?.pageSize;
@@ -304,14 +470,20 @@ isolated function buildListTasksParams(
 # + result - the raw result payload
 # + return - the decoded page of tasks, or an InvalidAgentResponseError if
 #            it doesn't match the expected shape
-isolated function decodeListTasksResult(json result) returns ListTasksResult|Error {
+isolated function decodeListTasksResponse(json result) returns ListTasksResponse|Error {
     json|error rewired = decodeRawBytesFromWire(result);
     if rewired is error {
         return invalidAgentResponse(string `ListTasks response could not be decoded: ${rewired.message()}`);
     }
-    ListTasksResult|error decoded = rewired.cloneWithType(ListTasksResult);
+    ListTasksResponse|error decoded = rewired.cloneWithType(ListTasksResponse);
     if decoded is error {
         return invalidAgentResponse(string `ListTasks response did not match the expected shape: ${decoded.message()}`);
+    }
+    // No non-empty check on `tasks`: an empty page is a legitimate "no
+    // results matched". See requireNonEmpty for why section 5.7's blanket
+    // sentence is not read literally.
+    foreach Task task in decoded.tasks {
+        check validateInboundTask(task);
     }
     return decoded;
 }
@@ -403,13 +575,13 @@ isolated function buildListTaskPushNotificationConfigsParams(
 # + mode - the wire dialect this client speaks
 # + return - the decoded page of configs, or an InvalidAgentResponseError
 #            if it doesn't match the expected shape
-isolated function decodeListTaskPushNotificationConfigsResult(json result, ProtocolMode mode)
-        returns ListTaskPushNotificationConfigsResult|Error {
+isolated function decodeListTaskPushNotificationConfigsResponse(json result, ProtocolMode mode)
+        returns ListTaskPushNotificationConfigsResponse|Error {
     if mode == "V0_3" {
-        ListTaskPushNotificationConfigsResult|error v03Result = parseV03ListTaskPushNotificationConfigsResult(result);
+        ListTaskPushNotificationConfigsResponse|error v03Result = parseV03ListTaskPushNotificationConfigsResponse(result);
         return v03Result is error ? wrapTransportError(v03Result) : v03Result;
     }
-    ListTaskPushNotificationConfigsResult|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResult);
+    ListTaskPushNotificationConfigsResponse|error decoded = result.cloneWithType(ListTaskPushNotificationConfigsResponse);
     if decoded is error {
         return invalidAgentResponse(
             string `ListTaskPushNotificationConfigs response did not match the expected shape: ${decoded.message()}`);

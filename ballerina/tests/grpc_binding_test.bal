@@ -292,8 +292,8 @@ function testDecodeGrpcTask() returns error? {
     test:assertEquals(task.id, "t1");
     test:assertEquals(task?.contextId, "ctx1");
     test:assertEquals(task.status.state, TASK_STATE_WORKING);
-    test:assertEquals(task.history.length(), 1);
-    test:assertEquals(task.artifacts.length(), 1);
+    test:assertEquals((task.history ?: []).length(), 1);
+    test:assertEquals((task.artifacts ?: []).length(), 1);
 }
 
 @test:Config {groups: ["grpc"]}
@@ -345,22 +345,22 @@ function testDecodeGrpcSendResultNeitherIsInvalidAgentResponse() {
 @test:Config {groups: ["grpc"]}
 function testDecodeGrpcStreamResponseEachVariant() returns error? {
     StreamResponse r1 = check decodeGrpcStreamResponse({task: {id: "t1", status: {state: grpcstub:TASK_STATE_SUBMITTED}}});
-    test:assertTrue(r1?.task is Task);
+    test:assertTrue(r1 is Task);
     StreamResponse r2 = check decodeGrpcStreamResponse({message: {message_id: "m1", role: grpcstub:ROLE_AGENT, parts: [{text: "hi"}]}});
-    test:assertTrue(r2?.message is Message);
+    test:assertTrue(r2 is Message);
     StreamResponse r3 = check decodeGrpcStreamResponse({status_update: {task_id: "t1", context_id: "c1", status: {state: grpcstub:TASK_STATE_WORKING}}});
-    test:assertTrue(r3?.statusUpdate is TaskStatusUpdateEvent);
+    test:assertTrue(r3 is TaskStatusUpdateEvent);
     StreamResponse r4 = check decodeGrpcStreamResponse({artifact_update: {task_id: "t1", context_id: "c1", artifact: {artifact_id: "a1", parts: [{text: "x"}]}}});
-    test:assertTrue(r4?.artifactUpdate is TaskArtifactUpdateEvent);
+    test:assertTrue(r4 is TaskArtifactUpdateEvent);
 }
 
 @test:Config {groups: ["grpc"]}
-function testDecodeGrpcListTasksResult() returns error? {
+function testDecodeGrpcListTasksResponse() returns error? {
     grpcstub:ListTasksResponse resp = {
         tasks: [{id: "t1", status: {state: grpcstub:TASK_STATE_WORKING}}],
         next_page_token: "cursor1", page_size: 10, total_size: 1
     };
-    ListTasksResult result = check decodeGrpcListTasksResult(resp);
+    ListTasksResponse result = check decodeGrpcListTasksResponse(resp);
     test:assertEquals(result.tasks.length(), 1);
     test:assertEquals(result.nextPageToken, "cursor1");
     test:assertEquals(result.pageSize, 10);
@@ -373,8 +373,8 @@ function testDecodeGrpcListPushConfigsResult() returns error? {
         configs: [{url: "https://cb.example.com", task_id: "t1"}],
         next_page_token: "cursor2"
     };
-    ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(resp);
-    test:assertEquals(result.configs.length(), 1);
+    ListTaskPushNotificationConfigsResponse result = check decodeGrpcListPushConfigsResult(resp);
+    test:assertEquals((result.configs ?: []).length(), 1);
     test:assertEquals(result.nextPageToken, "cursor2");
 }
 
@@ -399,7 +399,7 @@ function testDecodeGrpcAgentCardApiKeyScheme() returns error? {
         security_schemes: [{key: "apiKeyAuth", value: {api_key_security_scheme: {location: "header", name: "X-API-Key"}}}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    SecurityScheme scheme = card.securitySchemes.get("apiKeyAuth");
+    SecurityScheme scheme = (card.securitySchemes ?: {}).get("apiKeyAuth");
     test:assertTrue(scheme is ApiKeySecurityScheme);
     if scheme is ApiKeySecurityScheme {
         test:assertEquals(scheme.'in, "header");
@@ -433,7 +433,7 @@ function testDecodeGrpcAgentCardOAuth2AuthorizationCodeFlow() returns error? {
         }}}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    SecurityScheme scheme = card.securitySchemes.get("oauth2");
+    SecurityScheme scheme = (card.securitySchemes ?: {}).get("oauth2");
     test:assertTrue(scheme is OAuth2SecurityScheme);
     if scheme is OAuth2SecurityScheme {
         AuthorizationCodeOAuthFlow? flow = scheme.flows?.authorizationCode;
@@ -452,8 +452,8 @@ function testDecodeGrpcAgentCardSecurityRequirements() returns error? {
         security_requirements: [{schemes: [{key: "apiKeyAuth", value: {list: []}}]}]
     };
     AgentCard card = check decodeGrpcAgentCard(grpcCard);
-    test:assertEquals(card.securityRequirements.length(), 1);
-    test:assertEquals(card.securityRequirements[0], {"apiKeyAuth": []});
+    test:assertEquals((card.securityRequirements ?: []).length(), 1);
+    test:assertEquals((card.securityRequirements ?: [])[0], {"apiKeyAuth": []});
 }
 
 @test:Config {groups: ["grpc"]}

@@ -263,8 +263,8 @@ isolated function encodeGrpcMessage(Message m) returns grpcstub:Message|error {
         message_id: m.messageId,
         role: <grpcstub:Role>m.role,
         parts: parts,
-        reference_task_ids: m.referenceTaskIds,
-        extensions: m.extensions,
+        reference_task_ids: m.referenceTaskIds ?: [],
+        extensions: m.extensions ?: [],
         metadata: jsonToGrpcStruct(m?.metadata)
     };
     string? contextId = m?.contextId;
@@ -316,7 +316,7 @@ isolated function decodeGrpcMessage(grpcstub:Message m) returns Message|error {
 # + return - the equivalent grpcstub:SendMessageConfiguration
 isolated function encodeGrpcSendConfiguration(SendMessageConfiguration c) returns grpcstub:SendMessageConfiguration|error {
     grpcstub:SendMessageConfiguration result = {
-        accepted_output_modes: c.acceptedOutputModes,
+        accepted_output_modes: c.acceptedOutputModes ?: [],
         return_immediately: c.returnImmediately
     };
     int? historyLength = c?.historyLength;
@@ -575,24 +575,24 @@ isolated function decodeGrpcSendResult(grpcstub:SendMessageResponse resp) return
 # per field is correct here too.
 #
 # + resp - the generated grpcstub:StreamResponse to decode
-# + return - the equivalent typed StreamResponse, with exactly the one
-#            field set that the oneof carried
+# + return - the equivalent typed StreamResponse -- the single arm the
+#            oneof carried, since StreamResponse is itself a union
 isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns StreamResponse|error {
     grpcstub:Task? t = resp?.task;
     if t is grpcstub:Task {
-        return {task: check decodeGrpcTask(t)};
+        return check decodeGrpcTask(t);
     }
     grpcstub:Message? m = resp?.message;
     if m is grpcstub:Message {
-        return {message: check decodeGrpcMessage(m)};
+        return check decodeGrpcMessage(m);
     }
     grpcstub:TaskStatusUpdateEvent? su = resp?.status_update;
     if su is grpcstub:TaskStatusUpdateEvent {
-        return {statusUpdate: check decodeGrpcStatusUpdate(su)};
+        return check decodeGrpcStatusUpdate(su);
     }
     grpcstub:TaskArtifactUpdateEvent? au = resp?.artifact_update;
     if au is grpcstub:TaskArtifactUpdateEvent {
-        return {artifactUpdate: check decodeGrpcArtifactUpdate(au)};
+        return check decodeGrpcArtifactUpdate(au);
     }
     return error InvalidAgentResponseError(
         "gRPC StreamResponse contained none of task/message/status_update/artifact_update",
@@ -602,8 +602,8 @@ isolated function decodeGrpcStreamResponse(grpcstub:StreamResponse resp) returns
 }
 
 # + resp - the generated grpcstub:ListTasksResponse to decode
-# + return - the equivalent typed ListTasksResult
-isolated function decodeGrpcListTasksResult(grpcstub:ListTasksResponse resp) returns ListTasksResult|error {
+# + return - the equivalent typed ListTasksResponse
+isolated function decodeGrpcListTasksResponse(grpcstub:ListTasksResponse resp) returns ListTasksResponse|error {
     Task[] tasks = [];
     foreach grpcstub:Task t in resp.tasks {
         tasks.push(check decodeGrpcTask(t));
@@ -617,8 +617,8 @@ isolated function decodeGrpcListTasksResult(grpcstub:ListTasksResponse resp) ret
 }
 
 # + resp - the generated grpcstub:ListTaskPushNotificationConfigsResponse to decode
-# + return - the equivalent typed ListTaskPushNotificationConfigsResult
-isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificationConfigsResponse resp) returns ListTaskPushNotificationConfigsResult|error {
+# + return - the equivalent typed ListTaskPushNotificationConfigsResponse
+isolated function decodeGrpcListPushConfigsResult(grpcstub:ListTaskPushNotificationConfigsResponse resp) returns ListTaskPushNotificationConfigsResponse|error {
     TaskPushNotificationConfig[] configs = [];
     foreach grpcstub:TaskPushNotificationConfig c in resp.configs {
         configs.push(check decodeGrpcPushConfig(c));
@@ -698,12 +698,11 @@ isolated function decodeGrpcSecurityScheme(grpcstub:SecurityScheme s) returns Se
     );
 }
 
-# + f - the generated grpcstub:OAuthFlows oneof to decode. Per design spec
-#       Known limitation 5, a device_code arm is dropped: types.bal's
-#       OAuthFlows has no DeviceCodeOAuthFlow member, and (unlike the JSON
-#       bindings' open records) the generated OAuthFlows record is closed,
-#       so there is no escape-hatch field to preserve it in. Also, per the
-#       proto's own [deprecated = true] annotations, `implicit` and
+# + f - the generated grpcstub:OAuthFlows oneof to decode. All five arms are
+#       decoded. The device_code arm used to be dropped -- design spec Known
+#       limitation 5 -- purely because types.bal had no DeviceCodeOAuthFlow
+#       member to put it in; it has one now, so the limitation is closed.
+#       Per the proto's own [deprecated = true] annotations, `implicit` and
 #       `password` are decoded for completeness even though upstream flags
 #       them deprecated.
 # + return - the equivalent typed OAuthFlows
@@ -720,6 +719,7 @@ isolated function decodeGrpcOAuthFlows(grpcstub:OAuthFlows f) returns OAuthFlows
         if refreshUrl is string {
             flow.refreshUrl = refreshUrl;
         }
+        flow.pkceRequired = authCode.pkce_required;
         result.authorizationCode = flow;
     }
     grpcstub:ClientCredentialsOAuthFlow? clientCreds = f?.client_credentials;
@@ -749,8 +749,19 @@ isolated function decodeGrpcOAuthFlows(grpcstub:OAuthFlows f) returns OAuthFlows
         }
         result.password = flow;
     }
-    // device_code (f?.device_code) is intentionally not read into result:
-    // types.bal's OAuthFlows has no field to put it in. See doc comment.
+    grpcstub:DeviceCodeOAuthFlow? deviceCode = f?.device_code;
+    if deviceCode is grpcstub:DeviceCodeOAuthFlow {
+        DeviceCodeOAuthFlow flow = {
+            deviceAuthorizationUrl: deviceCode.device_authorization_url,
+            tokenUrl: deviceCode.token_url,
+            scopes: grpcKvToMap(deviceCode.scopes)
+        };
+        string? refreshUrl = emptyGrpcStringToNil(deviceCode.refresh_url);
+        if refreshUrl is string {
+            flow.refreshUrl = refreshUrl;
+        }
+        result.deviceCode = flow;
+    }
     return result;
 }
 
@@ -785,7 +796,14 @@ isolated function decodeGrpcAgentSkill(grpcstub:AgentSkill s) returns AgentSkill
 # + i - the generated grpcstub:AgentInterface to decode
 # + return - the equivalent typed AgentInterface
 isolated function decodeGrpcAgentInterface(grpcstub:AgentInterface i) returns AgentInterface {
-    AgentInterface result = {url: i.url, protocolBinding: i.protocol_binding};
+    // protocolVersion is REQUIRED on AgentInterface per the specification, so
+    // it is carried through rather than left for the optional-field branch
+    // below; grpcstub defaults it to "" when the wire omitted it.
+    AgentInterface result = {
+        url: i.url,
+        protocolBinding: i.protocol_binding,
+        protocolVersion: i.protocol_version
+    };
     string? tenant = emptyGrpcStringToNil(i.tenant);
     if tenant is string {
         result.tenant = tenant;
@@ -1094,14 +1112,21 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
     match operation {
         "SendMessage" => {
             Task|Message result = check decodeGrpcSendResult(check response.ensureType(grpcstub:SendMessageResponse));
-            return {task: result is Task ? result : (), message: result is Message ? result : ()}.toJson();
+            // Set only the arm that is actually present. This used to build
+            // both keys and leave the unset one nil, which `toJson()` renders
+            // as an explicit `"message": null` -- a shape the specification
+            // never produces (it has no nullable fields; SendMessageResponse
+            // is a oneof, so exactly one arm exists). It decoded only because
+            // the envelope type was nilable on our side; once the types stopped
+            // accepting nulls, this internally-manufactured null was rejected.
+            return result is Task ? {task: result.toJson()} : {message: result.toJson()};
         }
         "GetTask"|"CancelTask" => {
             Task task = check decodeGrpcTask(check response.ensureType(grpcstub:Task));
             return task.toJson();
         }
         "ListTasks" => {
-            ListTasksResult result = check decodeGrpcListTasksResult(check response.ensureType(grpcstub:ListTasksResponse));
+            ListTasksResponse result = check decodeGrpcListTasksResponse(check response.ensureType(grpcstub:ListTasksResponse));
             return result.toJson();
         }
         "CreateTaskPushNotificationConfig"|"GetTaskPushNotificationConfig" => {
@@ -1109,7 +1134,7 @@ isolated function decodeGrpcResponse(string operation, anydata response) returns
             return config.toJson();
         }
         "ListTaskPushNotificationConfigs" => {
-            ListTaskPushNotificationConfigsResult result = check decodeGrpcListPushConfigsResult(check response.ensureType(grpcstub:ListTaskPushNotificationConfigsResponse));
+            ListTaskPushNotificationConfigsResponse result = check decodeGrpcListPushConfigsResult(check response.ensureType(grpcstub:ListTaskPushNotificationConfigsResponse));
             return result.toJson();
         }
         "DeleteTaskPushNotificationConfig" => {

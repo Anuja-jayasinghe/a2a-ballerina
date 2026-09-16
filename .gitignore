@@ -35,3 +35,9 @@ CONFORMANCE_CHECKLIST.md
 # Working checklist for tracking API review comments as they come in —
 # same scaffolding pattern as CONFORMANCE_CHECKLIST.md above.
 API_REVIEW_CHECKLIST.md
+
+# Working ledger for the method-by-method spec alignment review — records
+# the decisions taken per method so they survive across sessions. Same
+# scaffolding pattern as the two checklists above; delete once the review
+# is complete and its decisions are implemented.
+SPEC_REVIEW_LEDGER.md

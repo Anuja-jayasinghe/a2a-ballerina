@@ -442,11 +442,13 @@ isolated function encodeV03Message(Message message) returns json|error {
     if metadata is map<json> {
         result["metadata"] = metadata;
     }
-    if message.referenceTaskIds.length() > 0 {
-        result["referenceTaskIds"] = message.referenceTaskIds.toJson();
+    string[] referenceTaskIds = message.referenceTaskIds ?: [];
+    if referenceTaskIds.length() > 0 {
+        result["referenceTaskIds"] = referenceTaskIds.toJson();
     }
-    if message.extensions.length() > 0 {
-        result["extensions"] = message.extensions.toJson();
+    string[] extensions = message.extensions ?: [];
+    if extensions.length() > 0 {
+        result["extensions"] = extensions.toJson();
     }
     return result;
 }
@@ -532,11 +534,11 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
     match kind {
         "task" => {
             Task t = check parseV03Task(result);
-            return {task: t};
+            return t;
         }
         "message" => {
             Message msg = check parseV03Message(result);
-            return {message: msg};
+            return msg;
         }
         "status-update" => {
             TaskStatus status = check parseV03TaskStatus(m["status"]);
@@ -552,7 +554,7 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
             // the design spec's evidence that it's pure derived redundancy
             // and testDecodeV03StreamEventIgnoresFinalField above.
             TaskStatusUpdateEvent event = check v1Shape.cloneWithType(TaskStatusUpdateEvent);
-            return {statusUpdate: event};
+            return event;
         }
         "artifact-update" => {
             Artifact artifact = check parseV03Artifact(m["artifact"]);
@@ -571,7 +573,7 @@ isolated function decodeV03StreamEvent(json result) returns StreamResponse|error
                 v1Shape["metadata"] = m["metadata"];
             }
             TaskArtifactUpdateEvent event = check v1Shape.cloneWithType(TaskArtifactUpdateEvent);
-            return {artifactUpdate: event};
+            return event;
         }
         _ => {
             string msg = string `Unrecognized v0.3 stream event kind: ${kind}`;
@@ -661,8 +663,8 @@ isolated function encodeV03TaskPushNotificationConfig(TaskPushNotificationConfig
 # nextPageToken is synthesized as "" here rather than read from the wire.
 #
 # + resultJson - the raw v0.3 ListTaskPushNotificationConfigs result JSON (a bare array)
-# + return - the equivalent v1.0 ListTaskPushNotificationConfigsResult, or an error if malformed
-isolated function parseV03ListTaskPushNotificationConfigsResult(json resultJson) returns ListTaskPushNotificationConfigsResult|error {
+# + return - the equivalent v1.0 ListTaskPushNotificationConfigsResponse, or an error if malformed
+isolated function parseV03ListTaskPushNotificationConfigsResponse(json resultJson) returns ListTaskPushNotificationConfigsResponse|error {
     json[] rawConfigs = check resultJson.ensureType();
     TaskPushNotificationConfig[] configs = [];
     foreach json c in rawConfigs {

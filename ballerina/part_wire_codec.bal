@@ -40,6 +40,19 @@ isolated function isPartBearingContainerKey(string k) returns boolean {
     return partBearingContainerKeys.indexOf(k) is int;
 }
 
+# The four `Part` variants, in specification order.
+#
+# Presence is what counts, not a non-nil value: specification section 4.1.6
+# removed the `kind` discriminator in favour of member presence, and
+# `specification.md` says so outright -- "member presence acts as
+# discriminator". The distinction is not academic. `Part.data` is
+# `google.protobuf.Value`, the one field in the whole specification where a
+# JSON null is legal ("object, array, string, number, boolean, or null"),
+# so a conformant `{"data": null}` is a data part carrying null. Counting
+# non-nil values instead read that as zero variants set and rejected the
+# part as malformed.
+final readonly & string[] PART_VARIANTS = ["text", "raw", "url", "data"];
+
 # Counts how many of text/raw/url/data are actually set on a raw,
 # not-yet-typed Part JSON object. Per specification section 4.1.6,
 # exactly one must be — used by both encodePartsRawField (outbound) and
@@ -49,20 +62,13 @@ isolated function isPartBearingContainerKey(string k) returns boolean {
 #
 # + partMap - one Part-shaped element of a `parts` array, already
 #             confirmed to be a map<json>
-# + return - how many of the four variant fields are non-nil
+# + return - how many of the four variant fields are present
 isolated function countSetPartVariantsJson(map<json> partMap) returns int {
     int count = 0;
-    if partMap["text"] !is () {
-        count += 1;
-    }
-    if partMap["raw"] !is () {
-        count += 1;
-    }
-    if partMap["url"] !is () {
-        count += 1;
-    }
-    if partMap["data"] !is () {
-        count += 1;
+    foreach string variant in PART_VARIANTS {
+        if partMap.hasKey(variant) {
+            count += 1;
+        }
     }
     return count;
 }
@@ -72,20 +78,13 @@ isolated function countSetPartVariantsJson(map<json> partMap) returns int {
 # work with the typed record rather than raw JSON.
 #
 # + part - the Part to check
-# + return - how many of the four variant fields are non-nil
+# + return - how many of the four variant fields are present
 isolated function countSetPartVariants(Part part) returns int {
     int count = 0;
-    if part?.text is string {
-        count += 1;
-    }
-    if part?.raw is byte[] {
-        count += 1;
-    }
-    if part?.url is string {
-        count += 1;
-    }
-    if part?.data !is () {
-        count += 1;
+    foreach string variant in PART_VARIANTS {
+        if part.hasKey(variant) {
+            count += 1;
+        }
     }
     return count;
 }

@@ -9,7 +9,7 @@
 
 ## Overview
 
-This library provides a Ballerina client for the
+This library provides a Ballerina client and server for the
 [Agent2Agent (A2A) protocol](https://a2a-protocol.org) — the open
 standard that lets AI agents built by different teams, in different
 languages, discover and call each other over a shared wire protocol.
@@ -23,9 +23,11 @@ in a companion repo,
 [`a2a-interop-tests`](https://github.com/Anuja-jayasinghe/a2a-interop-tests),
 not just this library's own mocks.
 
-Server/listener support — letting a Ballerina program *be* an A2A agent —
-is a deliberately deferred later phase; see the package README's
-[Roadmap](ballerina/README.md#roadmap).
+A Ballerina program can also *be* an A2A agent: implement one method on
+an `a2a:Service` and an `a2a:Listener` runs the rest of the protocol
+around it, over the HTTP+JSON binding at protocol v1.0. JSON-RPC and
+gRPC server bindings, and A2A v0.3 server support, are later phases; see
+the package README's [Roadmap](ballerina/README.md#roadmap).
 
 ## Issues and feature requests
 

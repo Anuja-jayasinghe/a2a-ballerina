@@ -396,11 +396,11 @@ public isolated client class RestClient {
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
     # + return - A Task or a Message on success, or a typed Error on failure
-    isolated remote function sendMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|Error {
+    isolated remote function sendMessage(SendMessageRequest request) returns Task|Message|Error {
+        Message message = request.message;
+        SendMessageConfiguration? config = request?.configuration;
+        string? tenant = request?.tenant;
+        map<json>? metadata = request?.metadata;
         return self.sendMessageUnary(message, config, tenant, metadata);
     }
 
@@ -416,11 +416,12 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function sendStreamingMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
+    isolated remote function sendStreamingMessage(SendMessageRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        Message message = request.message;
+        SendMessageConfiguration? config = request?.configuration;
+        string? tenant = request?.tenant;
+        map<json>? metadata = request?.metadata;
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -449,7 +450,10 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            Error) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
+    isolated remote function getTask(GetTaskRequest request) returns Task|Error {
+        string taskId = request.id;
+        int? historyLength = request?.historyLength;
+        string? tenant = request?.tenant;
         string encodedId = check urlEncodeOrWrap(taskId);
         string path = check prefixTenant(string `/tasks/${encodedId}`, tenant ?: self.tenant);
         if historyLength is int {
@@ -466,10 +470,10 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
     #            (or other typed Error)
-    isolated remote function cancelTask(
-            string taskId,
-            map<json>? metadata = (),
-            string? tenant = ()) returns Task|Error {
+    isolated remote function cancelTask(CancelTaskRequest request) returns Task|Error {
+        string taskId = request.id;
+        map<json>? metadata = request?.metadata;
+        string? tenant = request?.tenant;
         string? effectiveTenant = tenant ?: self.tenant;
         map<json> body = buildCancelTaskParams(taskId, metadata, effectiveTenant, self.mode);
         string encodedId = check urlEncodeOrWrap(taskId);
@@ -488,9 +492,10 @@ public isolated client class RestClient {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function subscribeToTask(
-            string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
+    isolated remote function subscribeToTask(SubscribeToTaskRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        string taskId = request.id;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesStreaming(self.agentCard);
@@ -517,45 +522,42 @@ public isolated client class RestClient {
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
     #            or another typed Error
-    isolated remote function listTasks(
-            ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|Error {
+    isolated remote function listTasks(ListTasksRequest request = {}) returns ListTasksResponse|Error {
+        string? tenant = request?.tenant;
         check guardListTasksSupported(self.mode);
         map<string> queryParams = {};
-        if filter is ListTasksFilter {
-            string? contextId = filter?.contextId;
-            if contextId is string {
-                queryParams["contextId"] = contextId;
-            }
-            TaskState? status = filter?.status;
-            if status is TaskState {
-                queryParams["status"] = status;
-            }
-            int? pageSize = filter?.pageSize;
-            if pageSize is int {
-                queryParams["pageSize"] = pageSize.toString();
-            }
-            string? pageToken = filter?.pageToken;
-            if pageToken is string {
-                queryParams["pageToken"] = pageToken;
-            }
-            int? historyLength = filter?.historyLength;
-            if historyLength is int {
-                queryParams["historyLength"] = historyLength.toString();
-            }
-            string? statusTimestampAfter = filter?.statusTimestampAfter;
-            if statusTimestampAfter is string {
-                queryParams["statusTimestampAfter"] = statusTimestampAfter;
-            }
-            boolean? includeArtifacts = filter?.includeArtifacts;
-            if includeArtifacts is boolean {
-                queryParams["includeArtifacts"] = includeArtifacts.toString();
-            }
+        string? contextId = request?.contextId;
+        if contextId is string {
+            queryParams["contextId"] = contextId;
+        }
+        TaskState? status = request?.status;
+        if status is TaskState {
+            queryParams["status"] = status;
+        }
+        int? pageSize = request?.pageSize;
+        if pageSize is int {
+            queryParams["pageSize"] = pageSize.toString();
+        }
+        string? pageToken = request?.pageToken;
+        if pageToken is string {
+            queryParams["pageToken"] = pageToken;
+        }
+        int? historyLength = request?.historyLength;
+        if historyLength is int {
+            queryParams["historyLength"] = historyLength.toString();
+        }
+        string? statusTimestampAfter = request?.statusTimestampAfter;
+        if statusTimestampAfter is string {
+            queryParams["statusTimestampAfter"] = statusTimestampAfter;
+        }
+        boolean? includeArtifacts = request?.includeArtifacts;
+        if includeArtifacts is boolean {
+            queryParams["includeArtifacts"] = includeArtifacts.toString();
         }
         string path = check prefixTenant("/tasks", tenant ?: self.tenant);
         path = path + check buildQueryString(queryParams);
         json result = check self.restCall("GET", path, ());
-        return decodeListTasksResult(result);
+        return decodeListTasksResponse(result);
     }
 
     # Registers a webhook to receive updates for a task.
@@ -564,9 +566,10 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function createTaskPushNotificationConfig(
-            TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
+    isolated remote function createTaskPushNotificationConfig(TaskPushNotificationConfig request)
+            returns TaskPushNotificationConfig|Error {
+        TaskPushNotificationConfig config = request;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -595,10 +598,11 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
     #            TaskNotFoundError (or other typed Error)
-    isolated remote function getTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
+    isolated remote function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request)
+            returns TaskPushNotificationConfig|Error {
+        string taskId = request.taskId;
+        string id = request.id;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -622,11 +626,12 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function listTaskPushNotificationConfigs(
-            string taskId,
-            int? pageSize = (),
-            string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
+    isolated remote function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request)
+            returns ListTaskPushNotificationConfigsResponse|Error {
+        string taskId = request.taskId;
+        int? pageSize = request?.pageSize;
+        string? pageToken = request?.pageToken;
+        string? tenant = request?.tenant;
         boolean denied;
         lock {
             denied = cardDeniesPushNotifications(self.agentCard);
@@ -645,26 +650,40 @@ public isolated client class RestClient {
         }
         path = path + check buildQueryString(queryParams);
         json result = check self.restCall("GET", path, ());
-        return decodeListTaskPushNotificationConfigsResult(result, self.mode);
+        return decodeListTaskPushNotificationConfigsResponse(result, self.mode);
     }
 
     # Deletes a push-notification webhook config. Idempotent per
     # specification section 3.1.10.
     #
-    # deleteTaskPushNotificationConfig is deliberately NOT gated on
-    # capabilities.pushNotifications - deletion is idempotent per
-    # specification section 3.1.10, so a card that (perhaps stale-ly)
-    # denies the capability shouldn't block a call that's a legitimate
-    # no-op either way. See issue #11.
+    # Gated on capabilities.pushNotifications like the other three config
+    # operations. This used to be deliberately ungated, on the grounds that
+    # deletion is idempotent per specification section 3.1.10 so a stale
+    # card should not block a legitimate no-op. That conflated two separate
+    # rules: section 3.1.10's idempotency is about *repeated deletes of the
+    # same config* having the same effect, and says nothing about capability
+    # gating. Section 3.3.4 names this operation explicitly -- "operations
+    # related to push notification configuration (Create, Get, List, Delete)
+    # MUST return PushNotificationNotSupportedError" when the capability is
+    # false or not present. An agent that never supported push notifications
+    # has no config to idempotently delete.
     #
     # + taskId - The task the config was registered against
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
     # + return - nil on success, or a typed Error
-    isolated remote function deleteTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns Error? {
+    isolated remote function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request)
+            returns Error? {
+        boolean denied;
+        lock {
+            denied = cardDeniesPushNotifications(self.agentCard);
+        }
+        if denied {
+            return pushNotificationsUnsupportedError("deleteTaskPushNotificationConfig");
+        }
+        string taskId = request.taskId;
+        string id = request.id;
+        string? tenant = request?.tenant;
         string encodedTaskId = check urlEncodeOrWrap(taskId);
         string encodedId = check urlEncodeOrWrap(id);
         string path = check prefixTenant(
@@ -677,11 +696,18 @@ public isolated client class RestClient {
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or a typed Error
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
+    isolated remote function getExtendedAgentCard(GetExtendedAgentCardRequest request = {}) returns AgentCard|Error {
+        string? tenant = request?.tenant;
         lock {
+            // Specification section 3.3.4: when the held card says the agent
+            // does not support extended cards, this MUST fail rather than
+            // silently hand back the public card the caller already had.
+            // With no card held there is nothing to validate against, so the
+            // request goes out and the server -- which owns the MUST --
+            // decides; its error maps back through the usual path.
             AgentCard? held = self.agentCard;
             if held is AgentCard && !held.capabilities.extendedAgentCard {
-                return held.clone();
+                return extendedCardUnsupportedError();
             }
         }
         string path = check prefixTenant("/extendedAgentCard", tenant ?: self.tenant);

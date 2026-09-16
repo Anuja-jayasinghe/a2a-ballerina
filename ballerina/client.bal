@@ -21,6 +21,7 @@
 // that owns it: jsonrpc_client.bal, rest_client.bal, grpc_client.bal.
 
 import ballerina/http;
+import ballerina/time;
 
 # Rewrites a pre-v1.0 card's transport declarations into the v1.0
 # `supportedInterfaces` shape, in place on the raw card map.
@@ -48,16 +49,25 @@ import ballerina/http;
 #
 # + cardMap - the raw card map, mutated in place
 isolated function normalizeLegacyInterfaces(map<json> cardMap) {
-    // Only pre-v1.0 cards carry these two fields; v1.0 removed them. Their
-    // absence means there is nothing here to translate, and a card already
-    // declaring supportedInterfaces is v1.0-native and left untouched.
-    boolean hasLegacyTransportFields =
-        cardMap.hasKey("preferredTransport") || cardMap.hasKey("additionalInterfaces");
-    if !hasLegacyTransportFields {
-        return;
-    }
+    // A card already declaring supportedInterfaces is v1.0-native and left
+    // untouched.
     json? existing = cardMap["supportedInterfaces"];
     if existing is json[] && existing.length() > 0 {
+        return;
+    }
+    // preferredTransport/additionalInterfaces are the pre-v1.0 way of
+    // declaring transports; v1.0 removed both. A card carrying neither *and*
+    // no supportedInterfaces still has to be translated, because it declares
+    // its single endpoint in the legacy top-level `url` alone — v0.3's
+    // default transport being JSONRPC when unstated. Such a card used to be
+    // returned as-is, which was harmless while supportedInterfaces carried a
+    // `= []` default; now that the specification's REQUIRED marking is
+    // honoured, leaving it absent makes the card undecodable. Synthesizing
+    // the one interface it implies keeps v0.3 cards working and gives
+    // selection a real entry instead of the legacy-url fallback.
+    boolean hasLegacyTransportFields =
+        cardMap.hasKey("preferredTransport") || cardMap.hasKey("additionalInterfaces");
+    if !hasLegacyTransportFields && !cardMap.hasKey("url") {
         return;
     }
 
@@ -334,24 +344,88 @@ public isolated function resolveAgentCard(
     return parseAgentCardBody(body);
 }
 
-# An AgentCard together with the HTTP caching metadata needed to make a
-# conditional follow-up request.
+# An AgentCard together with the HTTP caching metadata needed to honour
+# specification section 8.6.2 on a follow-up fetch.
+#
+# Treat this as opaque: hand it back to `resolveAgentCardCached` as
+# `previous` and let that function decide whether a request is needed at
+# all, and which conditional header to send.
 public type CachedAgentCard record {|
     # The parsed AgentCard
     AgentCard card;
-    # The ETag header value from the response, if any, for use in conditional requests
+    # The `ETag` response header, for a conditional `If-None-Match` request
     string? etag;
+    # The `Last-Modified` response header, for a conditional
+    # `If-Modified-Since` request when the server sent no `ETag`
+    string? lastModified;
+    # When this card stops being fresh, derived from the response's
+    # `Cache-Control: max-age`. `()` when the server sent no usable
+    # directive, in which case every follow-up revalidates.
+    time:Utc? freshUntil;
 |};
+
+# Reads `max-age` out of a `Cache-Control` header value.
+#
+# + headerValue - the raw header, e.g. "public, max-age=3600"
+# + return - the max-age in seconds, or `()` when absent or unparseable
+isolated function parseMaxAge(string headerValue) returns int? {
+    foreach string directive in re `,`.split(headerValue) {
+        string trimmed = directive.trim().toLowerAscii();
+        if !trimmed.startsWith("max-age") {
+            continue;
+        }
+        int? eq = trimmed.indexOf("=");
+        if eq is () {
+            continue;
+        }
+        int|error seconds = int:fromString(trimmed.substring(eq + 1).trim());
+        if seconds is int && seconds >= 0 {
+            return seconds;
+        }
+    }
+    return ();
+}
+
+# Whether a previously fetched card is still within its freshness lifetime.
+#
+# A card with no `freshUntil` is never fresh, so it always revalidates —
+# the conservative reading of a server that sent no `Cache-Control`.
+#
+# + previous - the card to check
+# + return - true while the card may be reused without contacting the server
+isolated function isStillFresh(CachedAgentCard previous) returns boolean {
+    time:Utc? freshUntil = previous.freshUntil;
+    if freshUntil is () {
+        return false;
+    }
+    return time:utcDiffSeconds(freshUntil, time:utcNow()) > 0d;
+}
 
 # Fetches an agent's Agent Card, reusing a previous fetch's body when the
 # server confirms nothing changed (HTTP 304), per standard HTTP caching.
 #
-# Spec 8.6.2 says clients "SHOULD cache Agent Cards locally to reduce
-# network requests" but does not mandate a mechanism; ETag/If-None-Match
-# is this library's own choice of standard HTTP caching to satisfy that
-# SHOULD, opt-in and additive - resolveAgentCard's own behavior
-# (always fetch fresh) is unchanged, and unaffected by whether a caller
-# ever reaches for this function at all.
+# Implements specification section 8.6.2's client requirements. That section
+# does name the mechanism, contrary to what this comment claimed until now:
+#
+#   - clients SHOULD honour RFC 9111 caching semantics when fetching cards
+#   - when a cached card has expired, clients SHOULD use conditional requests
+#     ("If-None-Match with the stored ETag, or If-Modified-Since")
+#   - when the server sends no caching headers, clients MAY apply their own
+#     default cache duration
+#
+# So: a card still inside its Cache-Control max-age is returned without
+# contacting the server at all; past that, the fetch is conditional, using
+# If-None-Match when an ETag is held and falling back to If-Modified-Since
+# when only Last-Modified is. A 304 refreshes the freshness deadline rather
+# than reusing the expired one.
+#
+# The third bullet is deliberately not taken up: with no caching headers this
+# never treats a card as fresh, so every call revalidates. Inventing a
+# duration the server never asked for is the one behaviour here that could
+# serve a stale card, and the specification only permits it, never asks.
+#
+# Opt-in and additive: resolveAgentCard's own behaviour (always fetch fresh)
+# is unchanged, and unaffected by whether a caller ever reaches for this.
 #
 # + agentBaseUrl - Root URL of the agent with no path component
 # + clientConfig - Optional HTTP configuration for auth, TLS, or proxy
@@ -376,9 +450,20 @@ public isolated function resolveAgentCardCached(
     foreach [string, string] [k, v] in headers.entries() {
         reqHeaders[k] = v;
     }
+    // While the previous fetch is still within its Cache-Control lifetime
+    // there is nothing to ask: specification section 8.6.2 scopes conditional
+    // requests to "when a cached Agent Card has expired".
+    if previous is CachedAgentCard && isStillFresh(previous) {
+        return previous;
+    }
+    // ETag is preferred; Last-Modified is the fallback the same bullet names
+    // for servers that send no ETag.
     string? conditionalEtag = previous?.etag;
+    string? conditionalLastModified = previous?.lastModified;
     if conditionalEtag is string {
         reqHeaders["If-None-Match"] = conditionalEtag;
+    } else if conditionalLastModified is string {
+        reqHeaders["If-Modified-Since"] = conditionalLastModified;
     }
     http:Response|error resp = discoveryClient->get(
         "/.well-known/agent-card.json", reqHeaders
@@ -387,7 +472,15 @@ public isolated function resolveAgentCardCached(
         return wrapTransportError(resp);
     }
     if resp.statusCode == 304 && previous is CachedAgentCard {
-        return previous;
+        // The body is unchanged, but the freshness lifetime restarts: a 304
+        // carries its own Cache-Control, and reusing the old deadline would
+        // revalidate on every call forever.
+        return {
+            card: previous.card,
+            etag: previous.etag,
+            lastModified: previous.lastModified,
+            freshUntil: freshUntilFrom(resp)
+        };
     }
     if resp.statusCode != 200 {
         return error InternalError(
@@ -401,7 +494,30 @@ public isolated function resolveAgentCardCached(
     }
     AgentCard card = check parseAgentCardBody(body);
     string|http:HeaderNotFoundError etagHeader = resp.getHeader("ETag");
-    return {card, etag: etagHeader is string ? etagHeader : ()};
+    string|http:HeaderNotFoundError lastModifiedHeader = resp.getHeader("Last-Modified");
+    return {
+        card,
+        etag: etagHeader is string ? etagHeader : (),
+        lastModified: lastModifiedHeader is string ? lastModifiedHeader : (),
+        freshUntil: freshUntilFrom(resp)
+    };
+}
+
+# Derives a freshness deadline from a response's `Cache-Control: max-age`.
+#
+# + resp - the Agent Card response
+# + return - when the card stops being fresh, or `()` when the server sent
+#            no usable directive
+isolated function freshUntilFrom(http:Response resp) returns time:Utc? {
+    string|http:HeaderNotFoundError cacheControl = resp.getHeader("Cache-Control");
+    if cacheControl !is string {
+        return ();
+    }
+    int? maxAge = parseMaxAge(cacheControl);
+    if maxAge is () {
+        return ();
+    }
+    return time:utcAddSeconds(time:utcNow(), <decimal>maxAge);
 }
 
 # The A2A transport bindings this library can speak.
@@ -711,12 +827,8 @@ public isolated client class Client {
     #              (specification section 3.2.1) — distinct from
     #              message.metadata, which is metadata on the Message itself
     # + return - A Task or a Message on success, or a typed Error on failure
-    isolated remote function sendMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns Task|Message|Error {
-        return self.delegate->sendMessage(message, config, tenant, metadata);
+    isolated remote function sendMessage(SendMessageRequest request) returns Task|Message|Error {
+        return self.delegate->sendMessage(request);
     }
 
     # Sends a message and receives updates as they happen, delegating to the
@@ -727,12 +839,9 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + metadata - Optional request-level metadata
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function sendStreamingMessage(
-            Message message,
-            SendMessageConfiguration? config = (),
-            string? tenant = (),
-            map<json>? metadata = ()) returns stream<StreamResponse, error?>|Error {
-        return self.delegate->sendStreamingMessage(message, config, tenant, metadata);
+    isolated remote function sendStreamingMessage(SendMessageRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        return self.delegate->sendStreamingMessage(request);
     }
 
     # Retrieves the current state of a task, delegating to the transport
@@ -743,8 +852,8 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The current Task, or a TaskNotFoundError (or other typed
     #            Error) if unknown
-    isolated remote function getTask(string taskId, int? historyLength = (), string? tenant = ()) returns Task|Error {
-        return self.delegate->getTask(taskId, historyLength, tenant);
+    isolated remote function getTask(GetTaskRequest request) returns Task|Error {
+        return self.delegate->getTask(request);
     }
 
     # Requests cancellation of an in-progress task, delegating to the
@@ -755,11 +864,8 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The updated Task, or a TaskNotFoundError/TaskNotCancelableError
     #            (or other typed Error)
-    isolated remote function cancelTask(
-            string taskId,
-            map<json>? metadata = (),
-            string? tenant = ()) returns Task|Error {
-        return self.delegate->cancelTask(taskId, metadata, tenant);
+    isolated remote function cancelTask(CancelTaskRequest request) returns Task|Error {
+        return self.delegate->cancelTask(request);
     }
 
     # Opens a stream on an existing task, delegating to the transport client
@@ -768,10 +874,9 @@ public isolated client class Client {
     # + taskId - The task to subscribe to
     # + tenant - Optional per-call tenant override
     # + return - A stream of StreamResponse values, or a typed Error
-    isolated remote function subscribeToTask(
-            string taskId,
-            string? tenant = ()) returns stream<StreamResponse, error?>|Error {
-        return self.delegate->subscribeToTask(taskId, tenant);
+    isolated remote function subscribeToTask(SubscribeToTaskRequest request)
+            returns stream<StreamResponse, error?>|Error {
+        return self.delegate->subscribeToTask(request);
     }
 
     # Lists tasks matching an optional filter, with cursor-based pagination,
@@ -782,10 +887,8 @@ public isolated client class Client {
     # + return - A page of matching tasks, or a VersionNotSupportedError if
     #            the agent speaks A2A v0.3 (ListTasks has no v0.3 equivalent),
     #            or another typed Error
-    isolated remote function listTasks(
-            ListTasksFilter? filter = (),
-            string? tenant = ()) returns ListTasksResult|Error {
-        return self.delegate->listTasks(filter, tenant);
+    isolated remote function listTasks(ListTasksRequest request = {}) returns ListTasksResponse|Error {
+        return self.delegate->listTasks(request);
     }
 
     # Registers a webhook to receive updates for a task, delegating to the
@@ -795,10 +898,9 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The created config as the server persisted it, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function createTaskPushNotificationConfig(
-            TaskPushNotificationConfig config,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
-        return self.delegate->createTaskPushNotificationConfig(config, tenant);
+    isolated remote function createTaskPushNotificationConfig(TaskPushNotificationConfig request)
+            returns TaskPushNotificationConfig|Error {
+        return self.delegate->createTaskPushNotificationConfig(request);
     }
 
     # Retrieves a previously registered push-notification webhook config,
@@ -809,11 +911,9 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The config, or a PushNotificationNotSupportedError/
     #            TaskNotFoundError (or other typed Error)
-    isolated remote function getTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns TaskPushNotificationConfig|Error {
-        return self.delegate->getTaskPushNotificationConfig(taskId, id, tenant);
+    isolated remote function getTaskPushNotificationConfig(GetTaskPushNotificationConfigRequest request)
+            returns TaskPushNotificationConfig|Error {
+        return self.delegate->getTaskPushNotificationConfig(request);
     }
 
     # Lists all push-notification webhook configs registered for a task,
@@ -825,12 +925,9 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - A page of matching configs, or a
     #            PushNotificationNotSupportedError (or other typed Error)
-    isolated remote function listTaskPushNotificationConfigs(
-            string taskId,
-            int? pageSize = (),
-            string? pageToken = (),
-            string? tenant = ()) returns ListTaskPushNotificationConfigsResult|Error {
-        return self.delegate->listTaskPushNotificationConfigs(taskId, pageSize, pageToken, tenant);
+    isolated remote function listTaskPushNotificationConfigs(ListTaskPushNotificationConfigsRequest request)
+            returns ListTaskPushNotificationConfigsResponse|Error {
+        return self.delegate->listTaskPushNotificationConfigs(request);
     }
 
     # Deletes a push-notification webhook config, delegating to the
@@ -841,11 +938,9 @@ public isolated client class Client {
     # + id - The config's identifier
     # + tenant - Optional per-call tenant override
     # + return - nil on success, or a typed Error
-    isolated remote function deleteTaskPushNotificationConfig(
-            string taskId,
-            string id,
-            string? tenant = ()) returns Error? {
-        return self.delegate->deleteTaskPushNotificationConfig(taskId, id, tenant);
+    isolated remote function deleteTaskPushNotificationConfig(DeleteTaskPushNotificationConfigRequest request)
+            returns Error? {
+        return self.delegate->deleteTaskPushNotificationConfig(request);
     }
 
     # Retrieves the agent's extended AgentCard, delegating to the transport
@@ -854,7 +949,7 @@ public isolated client class Client {
     # + tenant - Optional per-call tenant override
     # + return - The extended AgentCard, the already-held card when that
     #            card declares no extended-card support, or a typed Error
-    isolated remote function getExtendedAgentCard(string? tenant = ()) returns AgentCard|Error {
-        return self.delegate->getExtendedAgentCard(tenant);
+    isolated remote function getExtendedAgentCard(GetExtendedAgentCardRequest request = {}) returns AgentCard|Error {
+        return self.delegate->getExtendedAgentCard(request);
     }
 }

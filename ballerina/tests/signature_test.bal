@@ -85,7 +85,7 @@ isolated function rs256FixtureCard() returns json => {
     supportedInterfaces: [
         {url: "https://fixture.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"}
     ],
-    skills: [{id: "echo", name: "Echo", description: "Echoes the input back"}],
+    skills: [{id: "echo", name: "Echo", description: "Echoes the input back", tags: []}],
     securitySchemes: {},
     securityRequirements: []
 };

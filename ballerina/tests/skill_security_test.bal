@@ -37,10 +37,12 @@ isolated function cardWithSkills(AgentSkill[] skills, SecurityRequirement[] card
         description: "x",
         version: "1.0.0",
         capabilities: {},
-        supportedInterfaces: [{url: "https://agent.example.com", protocolBinding: "JSONRPC"}],
+        supportedInterfaces: [{url: "https://agent.example.com", protocolBinding: "JSONRPC", protocolVersion: "1.0"}],
         skills: skills,
         securitySchemes: schemes,
-        securityRequirements: cardRequirements
+        securityRequirements: cardRequirements,
+        defaultInputModes: ["text"],
+        defaultOutputModes: ["text"]
     };
 }
 
@@ -50,7 +52,7 @@ isolated function cardWithSkills(AgentSkill[] skills, SecurityRequirement[] card
 # + requirements - the skill's own securityRequirements
 # + return - a minimal skill
 isolated function skillWithSecurity(string id, SecurityRequirement[] requirements = []) returns AgentSkill {
-    return {id: id, name: id, description: "x", securityRequirements: requirements};
+    return {id: id, name: id, description: "x", securityRequirements: requirements, tags: []};
 }
 
 @test:Config {}
@@ -101,7 +103,7 @@ function testSkillSecurityRequirementsDoesNotMutateTheCard() returns error? {
     AgentCard card = cardWithSkills([skillWithSecurity("escalate", [{"bearer-admin": []}])]);
     SecurityRequirement[] requirements = check skillSecurityRequirements(card, "escalate");
     requirements.push({"injected": []});
-    test:assertEquals(card.skills[0].securityRequirements.length(), 1,
+    test:assertEquals((card.skills[0].securityRequirements ?: []).length(), 1,
             "mutating the returned list must not alter the card");
 }
 
@@ -156,12 +158,12 @@ function testParsesSecurityRequirementsFromRealV10WireForm() returns error? {
                 "name": "n",
                 "description": "d",
                 "securityRequirements": [{"schemes": {"bearer-staff": {"list": ["write"]}}}]
-            }
+            , "tags": []}
         ]
-    };
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]};
     AgentCard card = check parseAgentCardBody(realV10Card);
 
-    test:assertEquals(card.securitySchemes.length(), 1, "the v1.0 oneof-wrapped scheme must parse");
+    test:assertEquals((card.securitySchemes ?: {}).length(), 1, "the v1.0 oneof-wrapped scheme must parse");
     test:assertEquals(card.securityRequirements, <SecurityRequirement[]>[{"bearer-staff": []}],
             "a v1.0 card-level securityRequirement must unwrap `schemes` and its empty StringList");
     test:assertEquals(card.skills[0].securityRequirements, <SecurityRequirement[]>[{"bearer-staff": ["write"]}],
@@ -185,8 +187,8 @@ function testStillParsesSecurityRequirementsFromV03WireForm() returns error? {
         "capabilities": {},
         "securitySchemes": {"bearer-staff": {"type": "http", "scheme": "Bearer"}},
         "securityRequirements": [{"bearer-staff": ["write"]}],
-        "skills": [{"id": "s", "name": "n", "description": "d", "securityRequirements": [{"bearer-staff": []}]}]
-    };
+        "skills": [{"id": "s", "name": "n", "description": "d", "securityRequirements": [{"bearer-staff": []}], "tags": []}]
+    , "defaultInputModes": ["text"], "defaultOutputModes": ["text"]};
     AgentCard card = check parseAgentCardBody(v03Card);
     test:assertEquals(card.securityRequirements, <SecurityRequirement[]>[{"bearer-staff": ["write"]}]);
     test:assertEquals(card.skills[0].securityRequirements, <SecurityRequirement[]>[{"bearer-staff": []}]);

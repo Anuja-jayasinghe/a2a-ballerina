@@ -69,10 +69,11 @@ public isolated function skillSecurityRequirements(AgentCard card, string skillI
         if skill.id != skillId {
             continue;
         }
-        if skill.securityRequirements.length() > 0 {
-            return skill.securityRequirements.clone();
+        SecurityRequirement[] skillRequirements = skill.securityRequirements ?: [];
+        if skillRequirements.length() > 0 {
+            return skillRequirements.clone();
         }
-        return card.securityRequirements.clone();
+        return (card.securityRequirements ?: []).clone();
     }
     string message = string `the agent card declares no skill with id "${skillId}"`;
     return error Error(message, message = message);

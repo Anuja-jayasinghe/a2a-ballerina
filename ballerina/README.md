@@ -5,11 +5,13 @@ This module provides a client for the [Agent2Agent (A2A) protocol](https://a2a-p
 different languages, discover and call each other over a shared wire
 protocol.
 
-`ballerina/a2a` is the client half: given any A2A-compliant agent's URL,
-discover its capabilities and call it — send messages, stream responses,
+`ballerina/a2a` gives a Ballerina program both halves of the protocol:
+call any A2A-compliant agent's URL — send messages, stream responses,
 manage tasks, configure push notifications — the same way regardless of
 which language, framework, or protocol dialect that agent happens to
-speak underneath.
+speak underneath; or *be* one, by implementing one method on an
+`a2a:Service` and letting an `a2a:Listener` run the rest of the protocol
+around it.
 
 **Client-side: complete and verified against real, independently-built
 agents** — not just this library's own mocks. All 11 spec operations, all
@@ -20,9 +22,13 @@ against four independently-built reference agents (three Python, one
 Java) — see that repo's `VERIFICATION_EVIDENCE.md` for real captured
 proof, not just test counts.
 
-Server/listener support — letting a Ballerina program *be* an A2A agent,
-not just call one — is deliberately out of scope for this phase; see
-[Roadmap](#roadmap).
+**Server-side: HTTP+JSON binding, protocol v1.0.** All 11 operations —
+`sendMessage`/`sendStreamingMessage` through a developer's `onMessage`,
+`getTask`/`cancelTask`/`listTasks` over a pluggable `a2a:TaskStore`,
+`subscribeToTask`, push-notification config CRUD (stored, not yet
+delivered — see [Roadmap](#roadmap)), and the extended Agent Card.
+JSON-RPC and gRPC server bindings, and A2A v0.3 server support, are later
+phases; see [Roadmap](#roadmap).
 
 It includes capabilities for:
 
@@ -36,6 +42,7 @@ It includes capabilities for:
    might declare.
 5. **AgentCard Resolution and Verification** – Discovering and trusting
    an agent's capabilities.
+6. **Serving an Agent** – Implementing and running one, over HTTP+JSON.
 
 ## 1. Getting Started
 
@@ -270,7 +277,11 @@ Everything above is about what a **client** sends. Deciding whether a
 caller may actually use a guarded skill is the **server's** job — spec
 §7.5 makes authorization implementation-specific to the agent, and §13.1
 requires servers to "implement authorization checks on every request".
-This library has no server side (see Roadmap), so hiding a skill from an
+`a2a:Listener` surfaces the hooks (an unauthenticated request reaches
+`onMessage` exactly like an authenticated one) but does not enforce
+anything itself — checking `RequestContext` and calling `requireAuth`
+when a request isn't entitled is the agent author's own responsibility,
+same as every reference SDK leaves it. Hiding a skill from an
 unauthenticated card does not prevent anyone from invoking it; only the
 agent implementation can do that.
 
@@ -300,12 +311,123 @@ request the card has already said will fail (matching the reference
 Python SDK). A successful fetch replaces the held card, so later calls
 reason about the extended one.
 
+## 6. Serving an Agent
+
+```ballerina
+listener a2a:Listener agent = new (9090, agentCard = {
+    name: "Weather Agent",
+    description: "Answers weather questions",
+    version: "1.0.0",
+    skills: [{id: "forecast", name: "Forecast", description: "Multi-day forecasts", tags: ["weather"]}],
+    defaultInputModes: ["text"],
+    defaultOutputModes: ["text"],
+    capabilities: {},         // derived by the listener from what it implements
+    supportedInterfaces: []   // derived by the listener; fills in at request time
+});
+
+isolated service class WeatherAgent {
+    *a2a:Service;
+
+    isolated remote function onMessage(a2a:RequestContext context, a2a:TaskUpdater updater)
+            returns a2a:Message|a2a:Error? {
+        // A quick exchange: reply directly, no task created.
+        // return {messageId: uuid:createType4AsString(), role: a2a:ROLE_AGENT, parts: [{text: "..."}]};
+
+        // A longer-running one: drive the task the listener already seeded.
+        check updater->working();
+        check updater->addArtifact([{text: "Sunny, 22°C"}]);
+        check updater->complete();
+        return ();
+    }
+}
+
+public function main() returns error? {
+    check agent.attach(new WeatherAgent());
+    check agent.'start();
+}
+```
+
+One method, `onMessage`, is the entire agent. The listener runs the rest
+of the protocol around it: `getTask`/`cancelTask`/`listTasks` over the
+task `onMessage` created; `sendStreamingMessage`/`subscribeToTask` replay
+the same events as SSE; push-notification config CRUD; the well-known
+discovery endpoint; version and capability gating (§3.3.4, §3.6.2); and
+error serialization matching exactly what the client half of this same
+library decodes, so a self-round-trip (this library's `Client` against
+this library's `Listener`) is how the two halves are verified against
+each other — see [Testing](#testing).
+
+`supportedInterfaces` and `capabilities` on the card you pass are
+placeholders — the listener overrides both to match what is actually
+implemented, so the served card can never advertise something the server
+doesn't do. Only `HTTP+JSON` at protocol `1.0` is served in this release;
+a client resolving the card sees exactly that one interface.
+
+### 6.1 Driving a task
+
+`a2a:TaskUpdater` is what `onMessage` drives a long-running task through:
+
+```ballerina
+check updater->working();                          // TASK_STATE_WORKING
+check updater->addArtifact([{text: "partial..."}]); // one TaskArtifactUpdateEvent
+check updater->requireInput(promptMessage);         // TASK_STATE_INPUT_REQUIRED, pauses
+// ... on a later message to the same taskId, onMessage runs again ...
+check updater->complete();                          // TASK_STATE_COMPLETED
+```
+
+Every call also persists through the attached `a2a:TaskStore`, so a
+concurrent `getTask` sees each update as it happens. `onMessage` always
+runs to completion inside the request that started it — there is no
+concurrent task execution in this release — so `sendStreamingMessage`'s
+stream and `subscribeToTask`'s snapshot are both built from what
+`onMessage` already did, not a live feed from a still-running one; the
+wire looks the same to a client either way. `requireAuth` is the same
+shape as `requireInput`, for §7.6's in-task authorization pause.
+
+### 6.2 Task storage
+
+```ballerina
+listener a2a:Listener agent = new (9090, agentCard = {...}, taskStore = new MyDatabaseTaskStore());
+```
+
+`a2a:InMemoryTaskStore` is the default — tasks do not survive a restart.
+Implement `a2a:TaskStore` (`put`/`get`/`list`/`remove`) to back an agent
+with real storage; `list` must sort by status timestamp descending and
+omit `artifacts` unless asked, per specification §3.1.4.
+
+### 6.3 The extended Agent Card
+
+```ballerina
+listener a2a:Listener agent = new (9090, agentCard = publicCard, extendedAgentCard = richerCard);
+```
+
+Unset (the default), `capabilities.extendedAgentCard` is `false` and a
+request for it fails with `a2a:ExtendedAgentCardNotConfiguredError` — the
+listener never advertises a capability it cannot back. Configuring one
+flips the capability true and serves it from `GET /extendedAgentCard`.
+
+### 6.4 Push notifications: registered, not yet delivered
+
+The four config operations work — an agent can register, read, list, and
+remove a task's webhook configuration — but this release never actually
+calls one; outbound delivery is a later phase (see
+[Roadmap](#roadmap)). `capabilities.pushNotifications` stays `false`
+accordingly, so this library's own `Client`/`RestClient` refuse those
+four calls client-side rather than let a caller register a webhook that
+will never fire. A caller speaking the wire directly can still use them.
+
 ## Roadmap
 
-Deliberately deferred to a later phase (not started): `a2a:Listener` and
-a service-object contract for exposing a Ballerina program as an A2A
-agent, a `TaskStore` abstraction, an Agent Card/skills authoring guide,
-and a push notification webhook receiver.
+Deliberately deferred to a later phase: JSON-RPC and gRPC server
+bindings, A2A v0.3 server support, outbound push-notification delivery
+(config CRUD is implemented; the actual webhook call is not), and an
+Agent Card/skills authoring guide.
+
+**Not planned**, unlike `ballerina/mcp`'s equivalent: an `AdvancedService`
+escape hatch for implementing all eleven operations directly. Considered
+and declined — A2A's eleven operations are a fixed protocol surface
+around one piece of business logic, `onMessage`, not a registry of
+developer-defined tools a library might need to get out of the way of.
 
 ## Client Lifecycle
 
@@ -336,11 +458,17 @@ a credential means constructing a new client.
 
 ## Testing
 
-444 tests passing, 0 failing (441 in the main package + 3 in
+518 tests passing, 0 failing (515 in the main package + 3 in
 `a2a.transport`; `bal test --sticky` — see the note on `http` pinning in
-`Ballerina.toml` for why `--sticky` matters here) — this package's own
-fast, deterministic, mock-based suite. Real-server proof against
-independently-built agents lives in the companion
+`Ballerina.toml` for why `--sticky` matters here) — fast, deterministic,
+and mostly mock-based, except the server tests, which are the one place a
+mock would prove less than the real thing: they run this library's own
+`Client` against this library's own `Listener`, in-process, exercising
+all eleven operations end to end. If the two halves disagree about any
+part of the wire — a field name, an error shape, an SSE framing detail —
+that fails, the same way a real second implementation would catch it.
+Real-server proof for the *client* half against independently-built
+agents lives in the companion
 [`a2a-interop-tests`](https://github.com/Anuja-jayasinghe/a2a-interop-tests)
 repo, deliberately kept separate: testing only against your own mocks
 validates your own misreadings of the spec.

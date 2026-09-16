@@ -108,10 +108,16 @@ class A2aStreamGenerator {
                 return toA2AErrorFromRest(200, errBody is json ? errBody : ());
             }
 
-            StreamResponse|error result = self.decodeEvent(data);
+            StreamResponse?|error result = self.decodeEvent(data);
             if result is error {
                 self.closed = true;
                 return result;
+            }
+            if result is () {
+                // An event carrying no arm this client recognizes -- a newer
+                // specification revision can legitimately send one. Skip it
+                // and read on rather than failing the whole stream.
+                continue;
             }
 
             if isTerminalEvent(result) {
@@ -121,12 +127,23 @@ class A2aStreamGenerator {
         }
     }
 
-    private isolated function decodeEvent(string data) returns StreamResponse|error {
+    # Decodes one StreamResponse arm, or `()` for an event this client does
+    # not recognize.
+    #
+    # `()` is not a failure. StreamResponse is a specification `oneof`, and a
+    # later revision may add an arm; a client that rejected the whole stream
+    # on the first unrecognized event would break the moment that happened.
+    # The caller skips these and reads on, which is what specification 5.7's
+    # "SHOULD ignore unrecognized fields" asks for.
+    #
+    # + data - one raw SSE `data:` payload
+    # + return - the decoded event, `()` to skip it, or an error
+    private isolated function decodeEvent(string data) returns StreamResponse?|error {
         if self.binding == HTTP_JSON {
             // REST events carry a bare StreamResponse with no JSON-RPC
             // envelope, unlike the JSON-RPC binding's enveloped events.
             json restEnvelope = check data.fromJsonString();
-            return check (check decodeRawBytesFromWire(restEnvelope)).cloneWithType(StreamResponse);
+            return decodeStreamResponseEnvelope(check decodeRawBytesFromWire(restEnvelope));
         }
         json envelope = check data.fromJsonString();
         transport:JsonRpcResponse rpcResp = check envelope.cloneWithType(transport:JsonRpcResponse);
@@ -143,7 +160,10 @@ class A2aStreamGenerator {
                 message = "SSE event contained neither result nor error"
             );
         }
-        return self.mode == "V0_3" ? decodeV03StreamEvent(result) : check (check decodeRawBytesFromWire(result)).cloneWithType(StreamResponse);
+        if self.mode == "V0_3" {
+            return decodeV03StreamEvent(result);
+        }
+        return decodeStreamResponseEnvelope(check decodeRawBytesFromWire(result));
     }
 
     public isolated function close() returns error? {
@@ -164,17 +184,9 @@ class A2aStreamGenerator {
 # + result - the unary sendMessage reply to wrap
 # + return - a stream yielding exactly that one event, then closing
 isolated function singleEventStream(Task|Message result) returns stream<StreamResponse, error?> {
-    // Task and Message are both open records (explicit `json...;` rest
-    // field, per repo convention), so the compiler can't prove `is Task`
-    // narrows `result` in the corresponding else branch - hence the
-    // explicit casts rather than relying on flow-sensitive narrowing.
-    StreamResponse response;
-    if result is Task {
-        response = {task: <Task>result};
-    } else {
-        response = {message: <Message>result};
-    }
-    return new (new SingleEventStreamGenerator(response));
+    // Task and Message are both arms of the StreamResponse union, so the
+    // value needs no wrapping -- it already is a StreamResponse.
+    return new (new SingleEventStreamGenerator(result));
 }
 
 # Yields one pre-built StreamResponse, then ends the stream cleanly. See
@@ -344,19 +356,18 @@ isolated function wrapReconnecting(
             new (new ReconnectingStreamGenerator(rawStream, owner, "", 0, tenant = tenant));
         return wrapped;
     }
-    Task? maybeTask = peeked.value?.task;
-    if maybeTask is Task {
+    StreamResponse first = peeked.value;
+    if first is Task {
         stream<StreamResponse, error?> wrapped =
-            new (new ReconnectingStreamGenerator(rawStream, owner, maybeTask.id, maxReconnectAttempts, peeked, tenant));
+            new (new ReconnectingStreamGenerator(rawStream, owner, first.id, maxReconnectAttempts, peeked, tenant));
         return wrapped;
     }
     // A stream can also legitimately open with a status update rather than
     // a Task (e.g. resubscribing to an already-created task), and that
     // update still carries a taskId worth reconnecting against.
-    string? maybeTaskId = peeked.value?.statusUpdate?.taskId;
-    if maybeTaskId is string {
+    if first is TaskStatusUpdateEvent {
         stream<StreamResponse, error?> wrapped =
-            new (new ReconnectingStreamGenerator(rawStream, owner, maybeTaskId, maxReconnectAttempts, peeked, tenant));
+            new (new ReconnectingStreamGenerator(rawStream, owner, first.taskId, maxReconnectAttempts, peeked, tenant));
         return wrapped;
     }
     stream<StreamResponse, error?> wrapped =
@@ -369,11 +380,10 @@ isolated function wrapReconnecting(
 # + event - the decoded stream event to inspect
 # + return - true if this event should close the stream
 isolated function isTerminalEvent(StreamResponse event) returns boolean {
-    TaskStatusUpdateEvent? statusUpdate = event?.statusUpdate;
-    if statusUpdate is () {
+    if event !is TaskStatusUpdateEvent {
         return false;
     }
-    TaskState state = statusUpdate.status.state;
+    TaskState state = event.status.state;
     return state == TASK_STATE_COMPLETED
         || state == TASK_STATE_FAILED
         || state == TASK_STATE_CANCELED
