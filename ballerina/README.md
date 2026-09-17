@@ -124,9 +124,14 @@ a2a:Message msg = {
 // a Task you can poll, cancel, or list alongside others.
 a2a:Task|a2a:Message result = check agentClient->sendMessage(msg);
 
-if result is a2a:Task {
-    a2a:Task status = check agentClient->getTask(result.id);
-    // or: check agentClient->cancelTask(result.id);
+match result {
+    a2a:Task task => {
+        a2a:Task status = check agentClient->getTask(task.id);
+        // or: check agentClient->cancelTask(task.id);
+    }
+    a2a:Message message => {
+        // Use the direct reply, for example: message.parts[0].text
+    }
 }
 
 a2a:ListTasksResult allTasks = check agentClient->listTasks();
